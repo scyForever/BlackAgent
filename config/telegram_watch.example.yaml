@@ -1,0 +1,23 @@
+telegram:
+  api_id: ${BLACKAGENT_TG_API_ID}
+  api_hash: ${BLACKAGENT_TG_API_HASH}
+  phone: ${BLACKAGENT_TG_PHONE}
+  session: data/telethon/blackagent_telegram
+  db: data/blackagent_telegram.db
+  legal_basis: AUTHORIZED_PARTNER
+  source_name_prefix: telegram_watch
+  watch:
+    keywords:
+      - 接码
+      - 跑分
+      - 刷单
+      - 黑产
+    usernames:
+      - pythonzh
+    invite_links: []
+  collection:
+    search_limit_per_keyword: 20
+    history_limit_per_chat: 200
+    poll_seconds: 15
+    download_media: false
+    save_jsonl_path: data/telegram_raw.jsonl

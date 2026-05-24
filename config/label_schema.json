@@ -1,0 +1,41 @@
+{
+  "version": "mvp-v1",
+  "labels": [
+    {
+      "name": "fraud_traffic",
+      "display_name": "诈骗引流",
+      "level": 1,
+      "risk_level": "high"
+    },
+    {
+      "name": "account_trade",
+      "display_name": "账号交易",
+      "level": 1,
+      "risk_level": "high"
+    },
+    {
+      "name": "tool_trade",
+      "display_name": "工具交易",
+      "level": 1,
+      "risk_level": "medium"
+    },
+    {
+      "name": "task_fraud",
+      "display_name": "刷单作弊",
+      "level": 1,
+      "risk_level": "medium"
+    },
+    {
+      "name": "unknown_review_required",
+      "display_name": "未知/待研判",
+      "level": 1,
+      "risk_level": "unknown",
+      "requires_sandbox": true
+    }
+  ],
+  "review_policy": {
+    "confidence_threshold": 0.75,
+    "unknown_labels_require_review": true,
+    "sandbox_outputs_require_human_review": true
+  }
+}

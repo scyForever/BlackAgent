@@ -1,0 +1,75 @@
+app:
+  name: BlackAgent
+  mode: controlled_exploration
+  year: 2026
+  environment: local
+
+api:
+  prefix: /api/v1
+
+pipeline:
+  confidence_threshold: 0.75
+  max_input_chars: 4000
+  default_legal_basis: PUBLIC_COMPLIANT_DATA
+
+sandbox:
+  max_rounds: 3
+  max_tokens: 4096
+  max_elapsed_ms: 25000
+
+storage:
+  backend: memory
+  review_queue: memory
+  # Use sqlite:///data/blackagent.db for local persistent backend or
+  # postgresql://user:pass@host:5432/dbname when psycopg is installed.
+  dsn: ${BLACKAGENT_STORAGE_DSN}
+  auto_create_schema: true
+  connect_timeout_seconds: 5
+
+tasks:
+  backend: local
+  persist: true
+  max_workers: 2
+
+network:
+  # Real HTTP(S) feed collection is opt-in. Keep false for local tests and
+  # turn on only after legal basis, robots/terms, and rate limits are confirmed.
+  enabled: false
+  allowed_domains: []
+  timeout_seconds: 15
+  max_records_per_fetch: 100
+  user_agent: BlackAgent-HTTPFeedCollector/0.1
+
+enforcement:
+  # High-impact production actions stay dry-run unless explicitly enabled,
+  # approved, confidence-gated, token-gated, and wired to a real connector.
+  enabled: false
+  dry_run: true
+  require_human_approval: true
+  min_confidence: 0.95
+  max_actions_per_run: 50
+  allowed_actions: [ban, block, blacklist, intercept]
+  allowed_target_types: [account, domain, url, ip, phone, device, merchant, group]
+  connector: audit
+  webhook_url: ${BLACKAGENT_ENFORCEMENT_WEBHOOK_URL}
+  webhook_token: ${BLACKAGENT_ENFORCEMENT_WEBHOOK_TOKEN}
+  require_production_token: true
+  production_safety_token: ${BLACKAGENT_PRODUCTION_SAFETY_TOKEN}
+
+llm:
+  provider: mock
+  enabled: false
+  base_url: ${BLACKAGENT_LLM_BASE_URL}
+  api_key: ${BLACKAGENT_LLM_API_KEY}
+  model: gpt-5.5
+  service_tier: ${BLACKAGENT_LLM_SERVICE_TIER}
+  timeout_seconds: 30
+  dry_run: true
+
+labels:
+  schema_path: config/label_schema.json
+
+prompts:
+  classifier: prompts/classifier_prompt_v1.yaml
+  extractor: prompts/extractor_prompt_v1.yaml
+  exploration: prompts/exploration_prompt_v1.yaml

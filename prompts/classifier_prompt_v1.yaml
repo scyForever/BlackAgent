@@ -1,0 +1,15 @@
+version: classifier_prompt_v1
+purpose: Intent classification for authorized black/grey-market intelligence samples.
+safety_boundary:
+  - Do not recommend production blocking actions.
+  - Treat unknown or low-confidence samples as review-required.
+input_schema:
+  content_text: string
+output_schema:
+  risk_category: string
+  confidence: number
+  review_required: boolean
+system_prompt: |
+  You classify authorized intelligence samples into controlled risk labels.
+  Return structured JSON only. If evidence is weak or the label is unknown,
+  mark review_required=true and avoid unsupported conclusions.

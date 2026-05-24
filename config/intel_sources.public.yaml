@@ -1,0 +1,103 @@
+# Publicly reachable source catalog used to verify BlackAgent's multi-source
+# collection path against live pages / source hubs. These are operator-provided
+# HTTP access paths, not embedded crawler bypass logic.
+
+sources:
+  - source_name: tieba_search_hub
+    source_type: Social
+    platform: tieba
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com/p%20%E6%8E%A5%E7%A0%81
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    robots_allowed: true
+    terms_allow_security_research: true
+    rate_limit_per_minute: 3
+
+  - source_name: short_video_search_hub
+    source_type: Social
+    platform: short_video
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.douyin.com/video%20%E5%85%BC%E8%81%8C
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    robots_allowed: true
+    terms_allow_security_research: true
+    rate_limit_per_minute: 3
+
+  - source_name: seeding_note_mirror
+    source_type: Social
+    platform: seeding_community
+    source_url: http://r.jina.ai/http://www.xiaohongshu.com/explore/691066740000000005033bca
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    robots_allowed: true
+    terms_allow_security_research: true
+    rate_limit_per_minute: 3
+
+  - source_name: crowdsourcing_market_watch
+    source_type: Vertical
+    platform: crowdsourcing
+    source_url: http://r.jina.ai/http://www.freelancer.com/jobs/
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    robots_allowed: true
+    terms_allow_security_research: true
+    rate_limit_per_minute: 3
+
+  - source_name: second_hand_market_watch
+    source_type: Vertical
+    platform: second_hand_market
+    source_url: http://r.jina.ai/http://www.goofish.com/search?q=%E4%BA%8C%E6%89%8B
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    robots_allowed: true
+    terms_allow_security_research: true
+    rate_limit_per_minute: 3
+
+  - source_name: darkweb_gateway_watch
+    source_type: Vertical
+    platform: darkweb
+    source_url: http://r.jina.ai/http://dark.fail/
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    robots_allowed: true
+    terms_allow_security_research: true
+    rate_limit_per_minute: 3
+
+  - source_name: tech_forum_watch
+    source_type: Forum
+    platform: technical_community
+    source_url: http://r.jina.ai/http://www.v2ex.com/?tab=all
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    robots_allowed: true
+    terms_allow_security_research: true
+    rate_limit_per_minute: 3
+
+  - source_name: x_public_timeline
+    source_type: IM
+    platform: x
+    source_url: http://r.jina.ai/http://x.com/telegram
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    robots_allowed: true
+    terms_allow_security_research: true
+    rate_limit_per_minute: 3
+
+  - source_name: telegram_group_public_timeline
+    source_type: IM
+    platform: telegram
+    source_url: http://r.jina.ai/http://t.me/s/pythonzh
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    robots_allowed: true
+    terms_allow_security_research: true
+    rate_limit_per_minute: 3

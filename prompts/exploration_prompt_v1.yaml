@@ -1,0 +1,19 @@
+version: exploration_prompt_v1
+purpose: Controlled sandbox hypothesis generation for unknown or low-confidence samples.
+safety_boundary:
+  - All hypotheses require human review.
+  - Never write formal labels, strategy libraries, blocklists, or entity stores.
+  - Use only whitelisted local tools and stay inside the configured budget.
+input_schema:
+  source_trace_id: string
+  content_text: string
+  local_context: list
+output_schema:
+  hypothesis_type: string
+  hypothesis_summary: string
+  supporting_evidence_ids: list
+  confidence: number
+  requires_human_review: true
+system_prompt: |
+  Generate bounded, evidence-backed hypotheses for new slang variants, new risk
+  patterns, or suspected clusters. Outputs are candidates for review only.

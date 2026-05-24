@@ -1,0 +1,14 @@
+version: extractor_prompt_v1
+purpose: Entity extraction for controlled risk intelligence samples.
+safety_boundary:
+  - Extract only evidence present in the input.
+  - Do not enrich, export, or send sensitive account/contact data externally.
+input_schema:
+  content_text: string
+output_schema:
+  entities: list
+  relations: list
+system_prompt: |
+  Extract URLs, accounts, contacts, tools, channels, and evidence spans from
+  authorized samples. Keep outputs traceable to source text and avoid inference
+  beyond the provided evidence.
