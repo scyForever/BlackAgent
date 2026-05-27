@@ -15,7 +15,7 @@ import json
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from threading import RLock
@@ -128,6 +128,66 @@ class SQLBackend:
             """,
             "CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status)",
             "CREATE INDEX IF NOT EXISTS idx_task_runs_type ON task_runs(task_type)",
+            """
+            CREATE TABLE IF NOT EXISTS scheduled_jobs (
+                schedule_name TEXT PRIMARY KEY,
+                task_type TEXT NOT NULL,
+                layer TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                interval_seconds INTEGER,
+                cron_expr TEXT,
+                priority INTEGER NOT NULL,
+                lease_seconds INTEGER NOT NULL,
+                max_attempts INTEGER NOT NULL,
+                next_run_at TEXT NOT NULL,
+                last_run_at TEXT,
+                last_enqueue_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                payload TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_next_run ON scheduled_jobs(enabled, next_run_at)",
+            "CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_layer ON scheduled_jobs(layer, enabled)",
+            """
+            CREATE TABLE IF NOT EXISTS queue_jobs (
+                job_id TEXT PRIMARY KEY,
+                schedule_name TEXT,
+                task_type TEXT NOT NULL,
+                layer TEXT NOT NULL,
+                priority INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                dedupe_key TEXT,
+                attempt_count INTEGER NOT NULL,
+                max_attempts INTEGER NOT NULL,
+                available_at TEXT NOT NULL,
+                lease_seconds INTEGER NOT NULL,
+                lease_owner TEXT,
+                lease_expires_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                last_error TEXT,
+                payload TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_queue_jobs_ready ON queue_jobs(status, available_at, priority)",
+            "CREATE INDEX IF NOT EXISTS idx_queue_jobs_dedupe ON queue_jobs(dedupe_key, status)",
+            "CREATE INDEX IF NOT EXISTS idx_queue_jobs_layer ON queue_jobs(layer, status)",
+            """
+            CREATE TABLE IF NOT EXISTS clue_batch_items (
+                raw_key TEXT PRIMARY KEY,
+                raw_trace_id TEXT,
+                status TEXT NOT NULL,
+                source_job_id TEXT,
+                reserved_by_job_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                payload TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_clue_batch_items_status ON clue_batch_items(status, updated_at)",
         ]
         for statement in statements:
             self._execute(statement)
@@ -205,6 +265,19 @@ class SQLBackend:
             "SELECT payload FROM raw_records ORDER BY created_at, hash_id",
             limit=limit,
         )
+
+    def list_raw_by_hash_ids(self, hash_ids: list[str]) -> list[dict[str, Any]]:
+        """Load a specific subset of raw records by stable raw hash ids."""
+
+        normalized = [str(item).strip() for item in hash_ids if str(item).strip()]
+        if not normalized:
+            return []
+        sql = (
+            "SELECT payload FROM raw_records "
+            f"WHERE hash_id IN ({self._placeholders(len(normalized))}) "
+            "ORDER BY created_at, hash_id"
+        )
+        return self._list_payloads(sql, normalized)
 
     def list_cleaned(self, *, risk_level: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
         """List cleaned-text payloads, optionally filtered by risk level."""
@@ -457,6 +530,416 @@ class SQLBackend:
         )
         return self._list_payloads(sql, [status])
 
+    def save_schedule(self, schedule: Mapping[str, Any] | Any) -> dict[str, Any]:
+        """Upsert one cron/interval schedule definition."""
+
+        data = _normalize_payload(schedule)
+        schedule_name = _require_text(data, "schedule_name")
+        existing = self.get_schedule(schedule_name)
+        created_at = str(data.get("created_at") or (existing or {}).get("created_at") or _now_iso())
+        updated_at = str(data.get("updated_at") or _now_iso())
+        next_run_at = str(data.get("next_run_at") or (existing or {}).get("next_run_at") or _now_iso())
+        enabled = bool(data.get("enabled", True))
+        data["schedule_name"] = schedule_name
+        data["created_at"] = created_at
+        data["updated_at"] = updated_at
+        data["next_run_at"] = next_run_at
+        data["enabled"] = enabled
+
+        self._upsert(
+            "scheduled_jobs",
+            key_column="schedule_name",
+            columns={
+                "schedule_name": schedule_name,
+                "task_type": _require_text(data, "task_type"),
+                "layer": _require_text(data, "layer"),
+                "enabled": 1 if enabled else 0,
+                "interval_seconds": data.get("interval_seconds"),
+                "cron_expr": data.get("cron_expr"),
+                "priority": int(data.get("priority") or 50),
+                "lease_seconds": int(data.get("lease_seconds") or 120),
+                "max_attempts": int(data.get("max_attempts") or 3),
+                "next_run_at": next_run_at,
+                "last_run_at": data.get("last_run_at"),
+                "last_enqueue_at": data.get("last_enqueue_at"),
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "payload": _to_json(data),
+            },
+        )
+        return dict(data)
+
+    def get_schedule(self, schedule_name: str) -> dict[str, Any] | None:
+        """Return one schedule payload by name."""
+
+        sql = f"SELECT payload FROM scheduled_jobs WHERE schedule_name = {self._placeholder}"
+        cursor = self._execute(sql, [schedule_name])
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return _from_json(_row_value(row, "payload"))
+
+    def list_schedules(self, *, enabled: bool | None = None) -> list[dict[str, Any]]:
+        """List schedules, optionally filtering by enabled flag."""
+
+        if enabled is None:
+            return self._list_payloads("SELECT payload FROM scheduled_jobs ORDER BY layer, schedule_name")
+        sql = (
+            "SELECT payload FROM scheduled_jobs "
+            f"WHERE enabled = {self._placeholder} "
+            "ORDER BY layer, schedule_name"
+        )
+        return self._list_payloads(sql, [1 if enabled else 0])
+
+    def list_due_schedules(self, *, now: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        """List enabled schedules whose next_run_at is due."""
+
+        sql = (
+            "SELECT payload FROM scheduled_jobs "
+            f"WHERE enabled = {self._placeholder} AND next_run_at <= {self._placeholder} "
+            "ORDER BY next_run_at, priority DESC, schedule_name"
+        )
+        return self._list_payloads(sql, [1, str(now or _now_iso())], limit=limit)
+
+    def save_queue_job(self, job: Mapping[str, Any] | Any) -> dict[str, Any]:
+        """Upsert one queued job payload."""
+
+        data = _normalize_payload(job)
+        job_id = str(data.get("job_id") or uuid4())
+        existing = self.get_queue_job(job_id)
+        created_at = str(data.get("created_at") or (existing or {}).get("created_at") or _now_iso())
+        updated_at = str(data.get("updated_at") or _now_iso())
+        available_at = str(data.get("available_at") or (existing or {}).get("available_at") or _now_iso())
+        status = str(data.get("status") or (existing or {}).get("status") or "PENDING").upper()
+        attempt_count = int(data.get("attempt_count") or (existing or {}).get("attempt_count") or 0)
+        max_attempts = int(data.get("max_attempts") or (existing or {}).get("max_attempts") or 3)
+        lease_seconds = int(data.get("lease_seconds") or (existing or {}).get("lease_seconds") or 120)
+        priority = int(data.get("priority") or (existing or {}).get("priority") or 50)
+
+        data["job_id"] = job_id
+        data["created_at"] = created_at
+        data["updated_at"] = updated_at
+        data["available_at"] = available_at
+        data["status"] = status
+        data["attempt_count"] = attempt_count
+        data["max_attempts"] = max_attempts
+        data["lease_seconds"] = lease_seconds
+        data["priority"] = priority
+
+        self._upsert(
+            "queue_jobs",
+            key_column="job_id",
+            columns={
+                "job_id": job_id,
+                "schedule_name": data.get("schedule_name"),
+                "task_type": _require_text(data, "task_type"),
+                "layer": _require_text(data, "layer"),
+                "priority": priority,
+                "status": status,
+                "dedupe_key": data.get("dedupe_key"),
+                "attempt_count": attempt_count,
+                "max_attempts": max_attempts,
+                "available_at": available_at,
+                "lease_seconds": lease_seconds,
+                "lease_owner": data.get("lease_owner"),
+                "lease_expires_at": data.get("lease_expires_at"),
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "started_at": data.get("started_at"),
+                "finished_at": data.get("finished_at"),
+                "last_error": data.get("last_error"),
+                "payload": _to_json(data),
+            },
+        )
+        return dict(data)
+
+    def get_queue_job(self, job_id: str) -> dict[str, Any] | None:
+        """Return one queued job payload by id."""
+
+        sql = f"SELECT payload FROM queue_jobs WHERE job_id = {self._placeholder}"
+        cursor = self._execute(sql, [job_id])
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return _from_json(_row_value(row, "payload"))
+
+    def list_queue_jobs(
+        self,
+        *,
+        status: str | None = None,
+        layer: str | None = None,
+        limit: int | None = None,
+        dedupe_key: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List queued jobs with optional status/layer filters."""
+
+        conditions: list[str] = []
+        params: list[Any] = []
+        if status is not None and str(status).strip():
+            conditions.append(f"status = {self._placeholder}")
+            params.append(str(status).strip().upper())
+        if layer is not None and str(layer).strip():
+            conditions.append(f"layer = {self._placeholder}")
+            params.append(str(layer).strip())
+        if dedupe_key is not None and str(dedupe_key).strip():
+            conditions.append(f"dedupe_key = {self._placeholder}")
+            params.append(str(dedupe_key).strip())
+
+        where = f"WHERE {' AND '.join(conditions)} " if conditions else ""
+        sql = f"SELECT payload FROM queue_jobs {where}ORDER BY priority DESC, available_at, created_at"
+        return self._list_payloads(sql, params, limit=limit)
+
+    def has_active_queue_job(self, dedupe_key: str) -> bool:
+        """Whether a dedupe key already has a pending or claimed job."""
+
+        if not str(dedupe_key).strip():
+            return False
+        sql = (
+            "SELECT 1 FROM queue_jobs "
+            f"WHERE dedupe_key = {self._placeholder} AND status IN ({self._placeholder}, {self._placeholder}) "
+            f"LIMIT {self._placeholder}"
+        )
+        cursor = self._execute(sql, [dedupe_key, "PENDING", "CLAIMED", 1])
+        return cursor.fetchone() is not None
+
+    def claim_queue_jobs(
+        self,
+        *,
+        worker_id: str,
+        limit: int = 1,
+        now: str | None = None,
+        layers: list[str] | tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
+        """Claim due queue jobs for one logical worker."""
+
+        current = str(now or _now_iso())
+        params: list[Any] = ["PENDING", current]
+        sql = (
+            "SELECT payload FROM queue_jobs "
+            f"WHERE status = {self._placeholder} AND available_at <= {self._placeholder} "
+        )
+        normalized_layers = [str(item).strip() for item in layers if str(item).strip()]
+        if normalized_layers:
+            sql += f"AND layer IN ({self._placeholders(len(normalized_layers))}) "
+            params.extend(normalized_layers)
+        sql += "ORDER BY priority DESC, available_at, created_at"
+        candidates = self._list_payloads(sql, params, limit=limit)
+        claimed: list[dict[str, Any]] = []
+        for candidate in candidates:
+            lease_seconds = int(candidate.get("lease_seconds") or 120)
+            lease_expires_at = _shift_seconds(current, lease_seconds)
+            candidate["status"] = "CLAIMED"
+            candidate["lease_owner"] = worker_id
+            candidate["lease_expires_at"] = lease_expires_at
+            candidate["attempt_count"] = int(candidate.get("attempt_count") or 0) + 1
+            candidate["updated_at"] = current
+            candidate["started_at"] = str(candidate.get("started_at") or current)
+            claimed.append(self.save_queue_job(candidate))
+        return claimed
+
+    def complete_queue_job(self, job_id: str, *, result: Any | None = None, now: str | None = None) -> dict[str, Any]:
+        """Mark one queue job completed successfully."""
+
+        existing = self.get_queue_job(job_id)
+        if existing is None:
+            raise KeyError(f"unknown job_id: {job_id}")
+        current = str(now or _now_iso())
+        existing["status"] = "SUCCEEDED"
+        existing["result"] = result
+        existing["lease_owner"] = None
+        existing["lease_expires_at"] = None
+        existing["last_error"] = None
+        existing["updated_at"] = current
+        existing["finished_at"] = current
+        return self.save_queue_job(existing)
+
+    def fail_queue_job(
+        self,
+        job_id: str,
+        *,
+        error: str,
+        retry_backoff_seconds: int = 0,
+        now: str | None = None,
+    ) -> dict[str, Any]:
+        """Fail or requeue one queue job depending on remaining attempts."""
+
+        existing = self.get_queue_job(job_id)
+        if existing is None:
+            raise KeyError(f"unknown job_id: {job_id}")
+        current = str(now or _now_iso())
+        attempt_count = int(existing.get("attempt_count") or 0)
+        max_attempts = int(existing.get("max_attempts") or 3)
+        retryable = attempt_count < max_attempts
+        existing["status"] = "PENDING" if retryable else "FAILED"
+        existing["available_at"] = _shift_seconds(current, retry_backoff_seconds) if retryable else current
+        existing["lease_owner"] = None
+        existing["lease_expires_at"] = None
+        existing["last_error"] = str(error)
+        existing["updated_at"] = current
+        existing["finished_at"] = None if retryable else current
+        return self.save_queue_job(existing)
+
+    def add_clue_batch_items(
+        self,
+        rows: list[Mapping[str, Any] | Any],
+        *,
+        source_job_id: str | None = None,
+    ) -> int:
+        """Register raw rows that still need candidate clue build processing."""
+
+        inserted = 0
+        for row in rows:
+            data = _normalize_payload(row)
+            raw_key = str(data.get("hash_id") or "").strip()
+            if not raw_key:
+                continue
+            existing = self.get_clue_batch_item(raw_key)
+            if existing is not None:
+                continue
+            created_at = str(data.get("created_at") or data.get("crawl_time") or _now_iso())
+            payload = {
+                "raw_key": raw_key,
+                "raw_trace_id": str(data.get("trace_id") or ""),
+                "status": "PENDING",
+                "source_job_id": source_job_id,
+                "reserved_by_job_id": None,
+                "created_at": created_at,
+                "updated_at": created_at,
+                "source_name": data.get("source_name"),
+                "source_type": data.get("source_type"),
+            }
+            self._upsert(
+                "clue_batch_items",
+                key_column="raw_key",
+                columns={
+                    "raw_key": raw_key,
+                    "raw_trace_id": payload["raw_trace_id"],
+                    "status": "PENDING",
+                    "source_job_id": source_job_id,
+                    "reserved_by_job_id": None,
+                    "created_at": created_at,
+                    "updated_at": created_at,
+                    "payload": _to_json(payload),
+                },
+            )
+            inserted += 1
+        return inserted
+
+    def get_clue_batch_item(self, raw_key: str) -> dict[str, Any] | None:
+        """Return one pending clue batch item by raw key."""
+
+        sql = f"SELECT payload FROM clue_batch_items WHERE raw_key = {self._placeholder}"
+        cursor = self._execute(sql, [raw_key])
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return _from_json(_row_value(row, "payload"))
+
+    def list_clue_batch_items(self, *, status: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        """List clue batch items, optionally filtered by status."""
+
+        if status is None:
+            return self._list_payloads("SELECT payload FROM clue_batch_items ORDER BY created_at, raw_key", limit=limit)
+        sql = (
+            "SELECT payload FROM clue_batch_items "
+            f"WHERE status = {self._placeholder} "
+            "ORDER BY created_at, raw_key"
+        )
+        return self._list_payloads(sql, [str(status).strip().upper()], limit=limit)
+
+    def count_clue_batch_items(self, *, status: str = "PENDING") -> int:
+        """Count clue batch items by status."""
+
+        sql = f"SELECT COUNT(*) AS count FROM clue_batch_items WHERE status = {self._placeholder}"
+        cursor = self._execute(sql, [str(status).strip().upper()])
+        row = cursor.fetchone()
+        return int(_row_value(row, "count")) if row is not None else 0
+
+    def claim_clue_batch_items(self, *, job_id: str, limit: int, now: str | None = None) -> list[dict[str, Any]]:
+        """Reserve pending clue batch items for one clue-build queue job."""
+
+        current = str(now or _now_iso())
+        items = self.list_clue_batch_items(status="PENDING", limit=limit)
+        claimed: list[dict[str, Any]] = []
+        for item in items:
+            item["status"] = "CLAIMED"
+            item["reserved_by_job_id"] = job_id
+            item["updated_at"] = current
+            self._upsert(
+                "clue_batch_items",
+                key_column="raw_key",
+                columns={
+                    "raw_key": item["raw_key"],
+                    "raw_trace_id": item.get("raw_trace_id"),
+                    "status": "CLAIMED",
+                    "source_job_id": item.get("source_job_id"),
+                    "reserved_by_job_id": job_id,
+                    "created_at": item.get("created_at") or current,
+                    "updated_at": current,
+                    "payload": _to_json(item),
+                },
+            )
+            claimed.append(dict(item))
+        return claimed
+
+    def complete_clue_batch_items(self, *, job_id: str, raw_keys: list[str], now: str | None = None) -> int:
+        """Mark reserved clue batch items completed."""
+
+        current = str(now or _now_iso())
+        updated = 0
+        for raw_key in [str(item).strip() for item in raw_keys if str(item).strip()]:
+            item = self.get_clue_batch_item(raw_key)
+            if item is None or str(item.get("reserved_by_job_id") or "") != str(job_id):
+                continue
+            item["status"] = "COMPLETED"
+            item["reserved_by_job_id"] = None
+            item["updated_at"] = current
+            self._upsert(
+                "clue_batch_items",
+                key_column="raw_key",
+                columns={
+                    "raw_key": item["raw_key"],
+                    "raw_trace_id": item.get("raw_trace_id"),
+                    "status": "COMPLETED",
+                    "source_job_id": item.get("source_job_id"),
+                    "reserved_by_job_id": None,
+                    "created_at": item.get("created_at") or current,
+                    "updated_at": current,
+                    "payload": _to_json(item),
+                },
+            )
+            updated += 1
+        return updated
+
+    def release_clue_batch_items(self, *, job_id: str, raw_keys: list[str], now: str | None = None) -> int:
+        """Return claimed clue batch items back to pending state."""
+
+        current = str(now or _now_iso())
+        updated = 0
+        for raw_key in [str(item).strip() for item in raw_keys if str(item).strip()]:
+            item = self.get_clue_batch_item(raw_key)
+            if item is None or str(item.get("reserved_by_job_id") or "") != str(job_id):
+                continue
+            item["status"] = "PENDING"
+            item["reserved_by_job_id"] = None
+            item["updated_at"] = current
+            self._upsert(
+                "clue_batch_items",
+                key_column="raw_key",
+                columns={
+                    "raw_key": item["raw_key"],
+                    "raw_trace_id": item.get("raw_trace_id"),
+                    "status": "PENDING",
+                    "source_job_id": item.get("source_job_id"),
+                    "reserved_by_job_id": None,
+                    "created_at": item.get("created_at") or current,
+                    "updated_at": current,
+                    "payload": _to_json(item),
+                },
+            )
+            updated += 1
+        return updated
+
     def close(self) -> None:
         """Close the underlying SQL connection."""
 
@@ -599,6 +1082,15 @@ def _row_value(row: Any, key: str) -> Any:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _shift_seconds(value: str, seconds: int) -> str:
+    if seconds <= 0:
+        return value
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (parsed + timedelta(seconds=int(seconds))).isoformat()
 
 
 __all__ = ["SQLBackend", "connect"]

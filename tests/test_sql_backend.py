@@ -130,6 +130,9 @@ def test_sql_backend_sqlite_creates_tables_and_roundtrips_contracts(tmp_path):
         "candidate_clues",
         "entities",
         "task_runs",
+        "scheduled_jobs",
+        "queue_jobs",
+        "clue_batch_items",
     }.issubset(table_names)
 
 

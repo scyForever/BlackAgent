@@ -31,6 +31,24 @@ tasks:
   persist: true
   max_workers: 2
 
+scheduler:
+  enabled: false
+  dsn: sqlite:///data/blackagent_scheduler.db
+  bootstrap_on_start: false
+  start_immediately: true
+  worker_count: 3
+  claim_limit_per_worker: 2
+  max_claim_rounds: 6
+  fast_interval_seconds: 60
+  slow_interval_seconds: 600
+  clue_build_interval_seconds: 180
+  lease_seconds: 120
+  retry_backoff_seconds: 45
+  max_attempts: 3
+  clue_batch_limit: 500
+  cron_overrides: {}
+  default_db_path: data/blackagent_scheduler.db
+
 network:
   # Real HTTP(S) feed collection is opt-in. Keep false for local tests and
   # turn on only after legal basis, robots/terms, and rate limits are confirmed.
@@ -62,7 +80,6 @@ llm:
   base_url: ${BLACKAGENT_LLM_BASE_URL}
   api_key: ${BLACKAGENT_LLM_API_KEY}
   model: gpt-5.5
-  service_tier: ${BLACKAGENT_LLM_SERVICE_TIER}
   timeout_seconds: 30
   dry_run: true
 

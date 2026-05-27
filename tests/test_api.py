@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from main import create_app
+from src.config_loader import Settings
 
 
 def test_health_endpoint_returns_prd_mode():
@@ -319,3 +320,36 @@ def test_clue_build_endpoint_and_task_seed_candidate_pool():
     assert task_submit.status_code == 200
     run_pending = client.post("/api/v1/tasks/run-pending")
     assert run_pending.status_code == 200
+
+
+def test_scheduler_bootstrap_tick_and_status_endpoints(tmp_path):
+    scheduler_db = tmp_path / "scheduler.db"
+    settings = Settings.model_validate(
+        {
+            "storage": {"backend": "memory"},
+            "scheduler": {
+                "enabled": True,
+                "dsn": f"sqlite:///{scheduler_db.as_posix()}",
+                "start_immediately": True,
+                "worker_count": 2,
+                "claim_limit_per_worker": 1,
+                "max_claim_rounds": 2,
+            },
+        }
+    )
+    client = TestClient(create_app(settings))
+
+    bootstrap = client.post("/api/v1/scheduler/bootstrap")
+    assert bootstrap.status_code == 200
+    assert bootstrap.json()["schedule_count"] >= 5
+
+    tick = client.post("/api/v1/scheduler/tick")
+    assert tick.status_code == 200
+    assert tick.json()["due_count"] >= 5
+    assert tick.json()["enqueued_count"] >= 5
+
+    status_response = client.get("/api/v1/scheduler/status")
+    assert status_response.status_code == 200
+    payload = status_response.json()
+    assert payload["schedule_count"] >= 5
+    assert payload["pending_jobs"] >= 5

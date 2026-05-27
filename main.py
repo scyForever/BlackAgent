@@ -216,6 +216,61 @@ class TaskRunPendingResponse(BaseModel):
     tasks: list[dict[str, Any]]
 
 
+class SchedulerWorkerRunRequest(BaseModel):
+    worker_count: int = Field(default=0, ge=0)
+    claim_limit: int = Field(default=0, ge=0)
+    max_rounds: int = Field(default=0, ge=0)
+    layers: list[str] = Field(default_factory=list)
+
+
+class SchedulerBootstrapResponse(BaseModel):
+    status: str
+    schedule_count: int
+    schedules: list[dict[str, Any]]
+
+
+class SchedulerTickResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    status: str
+    due_count: int
+    enqueued_count: int
+    skipped_count: int
+    due_schedules: list[str]
+    enqueued_jobs: list[dict[str, Any]]
+    skipped: list[dict[str, Any]]
+
+
+class SchedulerWorkerRunResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    status: str
+    claimed_count: int
+    completed_count: int
+    failed_count: int
+    executed: list[dict[str, Any]]
+
+
+class SchedulerStatusResponse(BaseModel):
+    status: str
+    schedule_count: int
+    pending_jobs: int
+    claimed_jobs: int
+    failed_jobs: int
+    succeeded_jobs: int
+    pending_clue_batches: int
+    schedules: list[dict[str, Any]]
+
+
+class SchedulerCycleResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    status: str
+    tick: dict[str, Any]
+    workers: dict[str, Any]
+    scheduler: dict[str, Any]
+
+
 class LLMChatRequest(BaseModel):
     messages: list[dict[str, Any]]
     temperature: float = 0.0
@@ -573,6 +628,11 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
             sql_backend.close()
             app_instance.state.sql_backend = None
             app_instance.state.sql_backend_initialized = False
+        scheduler_backend = getattr(app_instance.state, "scheduler_backend", None)
+        if scheduler_backend is not None and hasattr(scheduler_backend, "close"):
+            scheduler_backend.close()
+            app_instance.state.scheduler_backend = None
+            app_instance.state.scheduler_backend_initialized = False
 
     app = FastAPI(
         title=settings.app.name,
@@ -591,6 +651,9 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     app.state.llm_gateway = None
     app.state.sql_backend = None
     app.state.sql_backend_initialized = False
+    app.state.scheduler_backend = None
+    app.state.scheduler_backend_initialized = False
+    app.state.collection_scheduler = None
 
     def get_orchestrator() -> tuple[Any | None, str | None]:
         if not app.state.orchestrator_initialized:
@@ -664,6 +727,40 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
             backend.create_schema()
         app.state.sql_backend = backend
         return backend
+
+    def _scheduler_dsn() -> str:
+        if settings.scheduler.dsn:
+            return settings.scheduler.dsn
+        if settings.storage.dsn and settings.storage.backend.lower() in {"sql", "sqlite"}:
+            return settings.storage.dsn
+        fallback = resolve_project_path(settings.scheduler.default_db_path)
+        return f"sqlite:///{fallback.as_posix()}"
+
+    def get_scheduler_backend() -> Any:
+        if app.state.scheduler_backend_initialized:
+            return app.state.scheduler_backend
+        app.state.scheduler_backend_initialized = True
+        from storage import connect
+
+        backend = connect(_scheduler_dsn())
+        backend.create_schema()
+        app.state.scheduler_backend = backend
+        return backend
+
+    def get_collection_scheduler() -> Any:
+        if app.state.collection_scheduler is None:
+            from src.scheduling import CollectionQueueScheduler
+
+            app.state.collection_scheduler = CollectionQueueScheduler(
+                get_scheduler_backend(),
+                start_immediately=settings.scheduler.start_immediately,
+                default_worker_count=settings.scheduler.worker_count,
+                claim_limit_per_worker=settings.scheduler.claim_limit_per_worker,
+                max_claim_rounds=settings.scheduler.max_claim_rounds,
+                retry_backoff_seconds=settings.scheduler.retry_backoff_seconds,
+                clue_batch_limit=settings.scheduler.clue_batch_limit,
+            )
+        return app.state.collection_scheduler
 
     def persist_task(record: Any) -> None:
         sql_backend = get_sql_backend()
@@ -1262,6 +1359,71 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail=f"unknown task_id: {task_id}")
             return {"status": "ok", "task": persisted, "source": "sql"}
         return {"status": "ok", "task": _coerce_task(record), "source": "local"}
+
+    @app.post(f"{settings.api.prefix}/scheduler/bootstrap", response_model=SchedulerBootstrapResponse)
+    async def bootstrap_scheduler() -> SchedulerBootstrapResponse:
+        scheduler = get_collection_scheduler()
+        schedules = scheduler.sync_schedules(
+            scheduler.default_schedules(
+                public_catalog="config/intel_sources.blackgray.yaml",
+                x_config="config/x_watch.example.yaml",
+                telegram_config="config/telegram_watch.example.yaml",
+                fast_interval_seconds=settings.scheduler.fast_interval_seconds,
+                slow_interval_seconds=settings.scheduler.slow_interval_seconds,
+                clue_build_interval_seconds=settings.scheduler.clue_build_interval_seconds,
+                lease_seconds=settings.scheduler.lease_seconds,
+                max_attempts=settings.scheduler.max_attempts,
+                cron_overrides=settings.scheduler.cron_overrides,
+            )
+        )
+        return SchedulerBootstrapResponse(status="ok", schedule_count=len(schedules), schedules=schedules)
+
+    @app.get(f"{settings.api.prefix}/scheduler/status", response_model=SchedulerStatusResponse)
+    async def scheduler_status() -> SchedulerStatusResponse:
+        summary = get_collection_scheduler().status().model_dump()
+        return SchedulerStatusResponse(status="ok", **summary)
+
+    @app.post(f"{settings.api.prefix}/scheduler/tick", response_model=SchedulerTickResponse)
+    async def scheduler_tick() -> SchedulerTickResponse:
+        result = get_collection_scheduler().tick()
+        return SchedulerTickResponse(**result)
+
+    @app.post(f"{settings.api.prefix}/scheduler/workers/run", response_model=SchedulerWorkerRunResponse)
+    async def scheduler_run_workers(request: SchedulerWorkerRunRequest) -> SchedulerWorkerRunResponse:
+        result = get_collection_scheduler().run_workers(
+            worker_count=(request.worker_count or settings.scheduler.worker_count),
+            claim_limit=(request.claim_limit or settings.scheduler.claim_limit_per_worker),
+            max_rounds=(request.max_rounds or settings.scheduler.max_claim_rounds),
+            layers=request.layers,
+        )
+        return SchedulerWorkerRunResponse(**result)
+
+    @app.post(f"{settings.api.prefix}/scheduler/cycle", response_model=SchedulerCycleResponse)
+    async def scheduler_cycle(request: SchedulerWorkerRunRequest) -> SchedulerCycleResponse:
+        scheduler = get_collection_scheduler()
+        if not scheduler.status().schedule_count:
+            scheduler.sync_schedules(
+                scheduler.default_schedules(
+                    public_catalog="config/intel_sources.blackgray.yaml",
+                    x_config="config/x_watch.example.yaml",
+                    telegram_config="config/telegram_watch.example.yaml",
+                    fast_interval_seconds=settings.scheduler.fast_interval_seconds,
+                    slow_interval_seconds=settings.scheduler.slow_interval_seconds,
+                    clue_build_interval_seconds=settings.scheduler.clue_build_interval_seconds,
+                    lease_seconds=settings.scheduler.lease_seconds,
+                    max_attempts=settings.scheduler.max_attempts,
+                    cron_overrides=settings.scheduler.cron_overrides,
+                )
+            )
+        tick = scheduler.tick()
+        workers = scheduler.run_workers(
+            worker_count=(request.worker_count or settings.scheduler.worker_count),
+            claim_limit=(request.claim_limit or settings.scheduler.claim_limit_per_worker),
+            max_rounds=(request.max_rounds or settings.scheduler.max_claim_rounds),
+            layers=request.layers,
+        )
+        status_payload = scheduler.status().model_dump()
+        return SchedulerCycleResponse(status="ok", tick=tick, workers=workers, scheduler=status_payload)
 
     @app.post(f"{settings.api.prefix}/llm/chat", response_model=LLMChatResponse)
     async def llm_chat(request: LLMChatRequest) -> LLMChatResponse:

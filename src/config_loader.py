@@ -89,6 +89,29 @@ class TaskConfig(BaseModel):
     max_workers: int = Field(default=2, ge=1)
 
 
+class SchedulerConfig(BaseModel):
+    """Bounded cron/queue orchestration for local collection workers."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    dsn: str | None = None
+    bootstrap_on_start: bool = False
+    start_immediately: bool = True
+    worker_count: int = Field(default=3, ge=1)
+    claim_limit_per_worker: int = Field(default=2, ge=1)
+    max_claim_rounds: int = Field(default=6, ge=1)
+    fast_interval_seconds: int = Field(default=60, ge=1)
+    slow_interval_seconds: int = Field(default=600, ge=1)
+    clue_build_interval_seconds: int = Field(default=180, ge=1)
+    lease_seconds: int = Field(default=120, ge=1)
+    retry_backoff_seconds: int = Field(default=45, ge=0)
+    max_attempts: int = Field(default=3, ge=1)
+    clue_batch_limit: int = Field(default=500, ge=1)
+    cron_overrides: dict[str, str] = Field(default_factory=dict)
+    default_db_path: str = "data/blackagent_scheduler.db"
+
+
 class NetworkConfig(BaseModel):
     """Explicit opt-in controls for real HTTP(S) source collection."""
 
@@ -171,6 +194,7 @@ class Settings(BaseModel):
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     tasks: TaskConfig = Field(default_factory=TaskConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     enforcement: EnforcementConfig = Field(default_factory=EnforcementConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
