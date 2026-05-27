@@ -1,0 +1,32 @@
+version: theme_synonyms_v2
+
+themes:
+  诈骗引流:
+    match_terms: [诈骗引流, 引流, 导流, 拉新, 吸粉, 打粉, 私域, 私域导流, 引流到私域, 私聊进群, 落地页, 返利, 高佣, 推广引流, 拉群, 拉裙, 加v, 加微, 加薇, 加威, 加围, 加vx, ➕v, 跑分, 代付, 刷流水, 流水单, 流水号]
+    search_terms: [私域导流, 加v, 拉群, 高佣]
+    variant_search_terms: [加薇, ➕v, 拉裙]
+
+  刷单作弊:
+    match_terms: [刷单, 刷单作弊, 补单, 放单, 返佣, 日结, 垫付, 点赞任务, 关注任务, 做任务, 连单, 联单, 手工单, 卡单, 垫付单, 做单, 试岗单, 寄拍]
+    search_terms: [卡单, 手工单, 垫付单, 补单, 做单]
+    variant_search_terms: [联单, 试岗单]
+
+  账号交易:
+    match_terms: [账号交易, 帐号交易, 账号买卖, 帐号买卖, 卖号, 收号, 出号, 实名号, 白号, 老号, 养号, 成品号, 料子, 号料, 资料号, 号商, sell account, verified account, old account, account sale, account trade, bulk account, account shop, market account, telegram accounts, 电报号, 飞机号, session号]
+    search_terms: [收号, 实名号, 号商, 出号]
+    variant_search_terms: [白号料子, 飞机号]
+
+  众包任务:
+    match_terms: [众包任务, 众包, 真人众包, 接单, 任务单, 外包任务, 接任务, 代发, 代聊, 代做, 工作室接单, userbot, automation, 自动化脚本, telethon, pyrogram, marketing, lead, dm, 群发, 采集群成员, 群成员采集, 拉人, 拉裙, 批量私信, 模拟真人, 筛活, 偷人]
+    search_terms: [userbot, automation, 群发, 采集群成员, 拉人]
+    variant_search_terms: [筛活, 偷人, 拉裙]
+
+  工具交易:
+    match_terms: [工具交易, 群控, 协议号, 云控, 改机, 批量注册, 打粉工具, 自动化工具, 脚本, 爬虫, 拉群端, 拉裙端]
+    search_terms: [群控, 协议号, 云控, 改机]
+    variant_search_terms: [拉群端, 拉裙端]
+
+  接码:
+    match_terms: [接码, 接码平台, 验证码, 验证码平台, 虚拟号码, 短信平台, 在线接码, 云短信, 短信验证码, 实卡, 接ma, 验号]
+    search_terms: [在线接码, 云短信, 短信验证码, 验证码平台]
+    variant_search_terms: [接ma, 验号]

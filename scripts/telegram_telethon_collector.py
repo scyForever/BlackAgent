@@ -24,10 +24,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config_loader import load_yaml_file, resolve_project_path
+from src.collector.relevance import DEFAULT_DEFENSIVE_EXCLUDE_KEYWORDS, decide_text_relevance
 from storage.sql_backend import connect
 
 
 T_ME_INVITE_RE = re.compile(r"(?:https?://)?t\.me/(?:joinchat/|\+)([A-Za-z0-9_-]+)")
+
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 
 @dataclass
@@ -45,6 +50,9 @@ def parse_args() -> argparse.Namespace:
         default="config/telegram_watch.example.yaml",
         help="Project-relative YAML config path (default: config/telegram_watch.example.yaml)",
     )
+    parser.add_argument("--db", default=None, help="Optional DB path override")
+    parser.add_argument("--jsonl-path", default=None, help="Optional JSONL output path override")
+    parser.add_argument("--once", action="store_true", help="Backfill once and exit without tailing new messages")
     parser.add_argument("--fresh-state", action="store_true", help="Delete saved state before collecting")
     return parser.parse_args()
 
@@ -161,9 +169,9 @@ async def run() -> int:
         raise SystemExit("Telethon is not installed. Install with: pip install telethon") from exc
 
     session_path = resolve_project_path(telegram_cfg.get("session") or "data/telethon/blackagent_telegram")
-    db_path = resolve_project_path(telegram_cfg.get("db") or "data/blackagent_telegram.db")
+    db_path = resolve_project_path(args.db or telegram_cfg.get("db") or "data/blackagent_telegram.db")
     state_path = session_path.parent / (session_path.name + ".state.json")
-    jsonl_path = telegram_cfg.get("collection", {}).get("save_jsonl_path")
+    jsonl_path = args.jsonl_path or telegram_cfg.get("collection", {}).get("save_jsonl_path")
     jsonl_file = resolve_project_path(jsonl_path) if jsonl_path else None
     source_name_prefix = str(telegram_cfg.get("source_name_prefix") or "telegram_watch")
     legal_basis = str(telegram_cfg.get("legal_basis") or "AUTHORIZED_PARTNER")
@@ -173,6 +181,11 @@ async def run() -> int:
     search_limit = int(telegram_cfg.get("collection", {}).get("search_limit_per_keyword", 20) or 20)
     history_limit = int(telegram_cfg.get("collection", {}).get("history_limit_per_chat", 200) or 200)
     download_media = bool(telegram_cfg.get("collection", {}).get("download_media", False))
+    include_keywords = telegram_cfg.get("collection", {}).get("include_keywords") or keywords
+    exclude_keywords = telegram_cfg.get("collection", {}).get("exclude_keywords") or list(DEFAULT_DEFENSIVE_EXCLUDE_KEYWORDS)
+    include_themes = telegram_cfg.get("collection", {}).get("include_themes") or []
+    exclude_themes = telegram_cfg.get("collection", {}).get("exclude_themes") or []
+    min_keyword_hits = int(telegram_cfg.get("collection", {}).get("min_keyword_hits", 1) or 1)
 
     if args.fresh_state and state_path.exists():
         state_path.unlink()
@@ -181,6 +194,7 @@ async def run() -> int:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     backend = connect(f"sqlite:///{db_path.as_posix()}")
     backend.create_schema()
+    persisted_count = 0
 
     async with TelegramClient(str(session_path), int(api_id), str(api_hash)) as client:
         if phone:
@@ -270,8 +284,19 @@ async def run() -> int:
         save_state(state_path, state)
 
         async def persist_message(entity: Any, message: Any) -> None:
+            nonlocal persisted_count
             text = message_text(message)
             if not text:
+                return
+            decision = decide_text_relevance(
+                text,
+                include_keywords=include_keywords,
+                exclude_keywords=exclude_keywords,
+                include_themes=include_themes,
+                exclude_themes=exclude_themes,
+                min_keyword_hits=min_keyword_hits,
+            )
+            if not decision.relevant:
                 return
             chat_id = str(getattr(entity, "id"))
             last_id = int(state.setdefault("last_message_ids", {}).get(chat_id, 0) or 0)
@@ -294,10 +319,17 @@ async def run() -> int:
                     "sender_username": getattr(sender, "username", None) if sender is not None else None,
                     "reply_to_msg_id": getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None),
                     "has_media": bool(getattr(message, "media", None)),
+                    "matched_keywords": list(decision.matched_keywords),
+                    "excluded_keywords": list(decision.excluded_keywords),
+                    "matched_themes": list(decision.matched_themes),
+                    "excluded_themes": list(decision.excluded_themes),
+                    "keyword_hit_count": decision.hit_count,
+                    "relevance_version": decision.policy_version,
                 },
             )
             backend.save_raw(payload)
             append_jsonl(jsonl_file, payload)
+            persisted_count += 1
             if message_id:
                 state["last_message_ids"][chat_id] = message_id
                 save_state(state_path, state)
@@ -314,27 +346,45 @@ async def run() -> int:
                     except Exception:
                         pass
 
-        @client.on(events.NewMessage(chats=tracked_chat_ids))
-        async def on_new_message(event: Any) -> None:
-            try:
-                chat = await event.get_chat()
-                await persist_message(chat, event.message)
-            except FloodWaitError as exc:
-                await asyncio.sleep(int(getattr(exc, "seconds", 5) or 5))
-
-        print(
-            json.dumps(
-                {
-                    "status": "running",
-                    "db_path": str(db_path),
-                    "tracked_chat_count": len(tracked_chat_ids),
-                    "tracked_chats": list(state.get("targets", {}).values()),
-                },
-                ensure_ascii=False,
-                indent=2,
+        if args.once:
+            print(
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "mode": "backfill_once",
+                        "db_path": str(db_path),
+                        "tracked_chat_count": len(tracked_chat_ids),
+                        "persisted_count": persisted_count,
+                        "tracked_chats": list(state.get("targets", {}).values()),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
             )
-        )
-        await client.run_until_disconnected()
+        else:
+            @client.on(events.NewMessage(chats=tracked_chat_ids))
+            async def on_new_message(event: Any) -> None:
+                try:
+                    chat = await event.get_chat()
+                    await persist_message(chat, event.message)
+                except FloodWaitError as exc:
+                    await asyncio.sleep(int(getattr(exc, "seconds", 5) or 5))
+
+            print(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "mode": "tail",
+                        "db_path": str(db_path),
+                        "tracked_chat_count": len(tracked_chat_ids),
+                        "persisted_count": persisted_count,
+                        "tracked_chats": list(state.get("targets", {}).values()),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            await client.run_until_disconnected()
 
     backend.close()
     return 0

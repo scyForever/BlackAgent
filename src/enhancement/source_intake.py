@@ -74,23 +74,12 @@ class MultimodalTextExtractor:
     makes the pipeline contract ready for multimodal resources.
     """
 
-    TEXT_FIELDS = ("content_text", "text", "raw_text", "caption", "ocr_text", "alt_text")
-    ATTACHMENT_TEXT_FIELDS = ("ocr_text", "alt_text", "caption", "description")
+    TEXT_FIELDS = ("content_text", "text", "raw_text", "caption", "ocr_text", "alt_text", "image_ocr_text", "poster_text", "subtitle_text")
+    ATTACHMENT_TEXT_FIELDS = ("ocr_text", "alt_text", "caption", "description", "image_ocr_text", "poster_text", "subtitle_text", "text")
+    NESTED_COLLECTION_FIELDS = ("attachments", "media", "images", "screenshots", "albums", "cards", "frames", "ocr_blocks", "text_blocks")
 
     def extract_text(self, record: Mapping[str, Any] | Any) -> str:
-        parts: list[str] = []
-        for field_name in self.TEXT_FIELDS:
-            value = get_record_field(record, field_name)
-            if value:
-                parts.append(str(value))
-        attachments = get_record_field(record, "attachments") or get_record_field(record, "media") or []
-        if isinstance(attachments, Mapping):
-            attachments = [attachments]
-        for attachment in attachments if isinstance(attachments, Iterable) and not isinstance(attachments, (str, bytes)) else []:
-            for field_name in self.ATTACHMENT_TEXT_FIELDS:
-                value = get_record_field(attachment, field_name)
-                if value:
-                    parts.append(str(value))
+        parts, _sources = self._collect_text_parts(record)
         return normalize_text(" ".join(parts))
 
     def materialize(self, record: Mapping[str, Any] | Any) -> dict[str, Any]:
@@ -99,9 +88,41 @@ class MultimodalTextExtractor:
             for key in dir(record)
             if not key.startswith("_") and not callable(getattr(record, key))
         }
-        data["content_text"] = self.extract_text(record)
+        parts, sources = self._collect_text_parts(record)
+        data["content_text"] = normalize_text(" ".join(parts))
         data["multimodal_text_extracted"] = True
+        data["multimodal_text_sources"] = sorted(sources)
+        data["multimodal_signal_count"] = len(sources)
         return data
+
+    def _collect_text_parts(self, record: Mapping[str, Any] | Any, *, _depth: int = 0) -> tuple[list[str], set[str]]:
+        if _depth > 4:
+            return [], set()
+        parts: list[str] = []
+        sources: set[str] = set()
+        fields = self.TEXT_FIELDS if _depth == 0 else self.ATTACHMENT_TEXT_FIELDS
+        for field_name in fields:
+            value = get_record_field(record, field_name)
+            if value:
+                text = normalize_text(str(value))
+                if text:
+                    parts.append(text)
+                    sources.add(field_name)
+        for field_name in self.NESTED_COLLECTION_FIELDS:
+            nested = get_record_field(record, field_name)
+            if not nested:
+                continue
+            if isinstance(nested, Mapping):
+                nested_items = [nested]
+            elif isinstance(nested, Iterable) and not isinstance(nested, (str, bytes)):
+                nested_items = list(nested)
+            else:
+                continue
+            for item in nested_items:
+                sub_parts, sub_sources = self._collect_text_parts(item, _depth=_depth + 1)
+                parts.extend(sub_parts)
+                sources.update({f"{field_name}.{name}" for name in sub_sources} or {field_name})
+        return parts, sources
 
 
 @dataclass(frozen=True)

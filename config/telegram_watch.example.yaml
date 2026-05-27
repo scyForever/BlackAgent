@@ -12,6 +12,13 @@ telegram:
       - 跑分
       - 刷单
       - 黑产
+      - 引流
+      - 卖号
+      - 账号交易
+      - 众包
+      - 返佣
+      - 白号
+      - 接单
     usernames:
       - pythonzh
     invite_links: []
@@ -20,4 +27,52 @@ telegram:
     history_limit_per_chat: 200
     poll_seconds: 15
     download_media: false
+    include_themes:
+      - 诈骗引流
+      - 刷单作弊
+      - 账号交易
+      - 众包任务
+      - 接码
+    include_keywords:
+      - 诈骗引流
+      - 接码
+      - 跑分
+      - 刷单
+      - 引流
+      - 拉新
+      - 卖号
+      - 收号
+      - 账号交易
+      - 帐号买卖
+      - 实名号
+      - 老号
+      - 白号
+      - 众包任务
+      - 众包
+      - 接单
+      - 群控
+      - 协议号
+    exclude_keywords:
+      - 警方通报
+      - 反诈
+      - 安全通告
+      - 曝光
+      - 推荐
+      - 教程
+      - 指南
+      - 攻略
+      - 评测
+      - 解析
+      - 精选
+      - 合集
+      - 收藏
+      - 实用
+      - 使用指南
+      - 选择建议
+      - 怎么用
+      - 什么意思
+      - 目录
+      - 交流群
+      - 频道目录
+    min_keyword_hits: 2
     save_jsonl_path: data/telegram_raw.jsonl

@@ -99,6 +99,11 @@ class NetworkConfig(BaseModel):
     timeout_seconds: float = Field(default=15.0, gt=0)
     max_records_per_fetch: int = Field(default=100, ge=1)
     user_agent: str = "BlackAgent-HTTPFeedCollector/0.1"
+    rate_limit_per_minute: int = Field(default=0, ge=0)
+    retry_attempts: int = Field(default=0, ge=0)
+    retry_backoff_seconds: float = Field(default=0.0, ge=0.0)
+    retry_backoff_multiplier: float = Field(default=2.0, ge=1.0)
+    retry_statuses: list[int] = Field(default_factory=lambda: [429, 500, 502, 503, 504])
 
 
 class EnforcementConfig(BaseModel):

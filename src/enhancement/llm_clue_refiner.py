@@ -1,0 +1,127 @@
+"""LLM-backed refinement for top-N candidate clues."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from typing import Any, Mapping
+
+from src.backend import LLMGateway
+
+
+@dataclass(frozen=True)
+class RefinedClue:
+    clue_id: str
+    refined_summary: str
+    confidence_delta: float
+    final_confidence: float
+    review_required: bool
+    refinement_reasons: list[str]
+    llm_ok: bool
+    used_fallback: bool
+
+    def model_dump(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+class LLMClueRefiner:
+    """Refine high-value clue cards with an external LLM, fallback locally when needed."""
+
+    def __init__(self, llm_gateway: LLMGateway) -> None:
+        self.llm_gateway = llm_gateway
+
+    def refine(self, clue: Mapping[str, Any], *, query: str, intent: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        response = self.llm_gateway.chat(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are BlackAgent's clue refiner. Return only JSON with fields: "
+                        "refined_summary, confidence_delta, review_required, refinement_reasons. "
+                        "Summarize why this clue matters for the current investigation request."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"query={query}\nintent={dict(intent)}\nclue={dict(clue)}",
+                },
+            ],
+            temperature=0.0,
+            max_tokens=300,
+            response_format={"type": "json_object"},
+        )
+        parsed = response.parsed_json or {}
+        usable = isinstance(parsed.get("refined_summary"), str)
+        payload = _fallback_refinement(clue) if not usable else _normalize_payload(parsed, clue)
+        final_confidence = round(max(0.0, min(float(clue.get("confidence") or 0.0) + float(payload["confidence_delta"]), 0.99)), 4)
+        refined = RefinedClue(
+            clue_id=str(clue.get("clue_id") or "unknown_clue"),
+            refined_summary=str(payload["refined_summary"]),
+            confidence_delta=float(payload["confidence_delta"]),
+            final_confidence=final_confidence,
+            review_required=bool(payload["review_required"]),
+            refinement_reasons=[str(item) for item in payload.get("refinement_reasons", [])],
+            llm_ok=response.ok,
+            used_fallback=not usable,
+        )
+        enriched = dict(clue)
+        enriched["refinement"] = refined.model_dump()
+        enriched["confidence"] = final_confidence
+        trace = {
+            "stage": "clue_refine",
+            "clue_id": refined.clue_id,
+            "llm_ok": response.ok,
+            "used_fallback": not usable,
+            "parsed_json": parsed if parsed else None,
+            "error": response.error,
+        }
+        return enriched, trace
+
+
+def _normalize_payload(payload: Mapping[str, Any], clue: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "refined_summary": str(payload.get("refined_summary") or _fallback_refinement(clue)["refined_summary"]),
+        "confidence_delta": _coerce_delta(payload.get("confidence_delta")),
+        "review_required": _coerce_bool(payload.get("review_required"), default=False),
+        "refinement_reasons": _string_list(payload.get("refinement_reasons")) or _fallback_refinement(clue)["refinement_reasons"],
+    }
+
+
+def _fallback_refinement(clue: Mapping[str, Any]) -> dict[str, Any]:
+    clue_type = str(clue.get("clue_type") or "risk_clue")
+    key = str(clue.get("key") or "")
+    sources = [str(item) for item in (clue.get("source_names") or [])]
+    entities = [str(item) for item in (clue.get("entity_values") or [])[:3]]
+    summary = f"候选线索 {clue_type} 命中 {key}，来源 {', '.join(sources[:3]) or 'unknown'}，关键实体 {', '.join(entities) or 'none'}。"
+    return {
+        "refined_summary": summary,
+        "confidence_delta": 0.0,
+        "review_required": bool(((clue.get('quality') or {}).get("review_required")) or clue.get("quality_level") != "high"),
+        "refinement_reasons": ["deterministic_fallback_summary", "preserve_candidate_clue_contract"],
+    }
+
+
+def _coerce_delta(value: Any) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(-0.2, min(parsed, 0.2))
+
+
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+__all__ = ["LLMClueRefiner", "RefinedClue"]

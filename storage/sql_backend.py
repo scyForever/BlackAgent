@@ -66,6 +66,19 @@ class SQLBackend:
             "CREATE INDEX IF NOT EXISTS idx_review_tasks_status ON review_tasks(status)",
             "CREATE INDEX IF NOT EXISTS idx_review_tasks_source_trace_id ON review_tasks(source_trace_id)",
             """
+            CREATE TABLE IF NOT EXISTS cleaned_texts (
+                source_trace_id TEXT PRIMARY KEY,
+                clean_id TEXT,
+                dedup_group_id TEXT,
+                risk_level TEXT,
+                quality_score REAL,
+                created_at TEXT NOT NULL,
+                payload TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_cleaned_texts_risk_level ON cleaned_texts(risk_level)",
+            "CREATE INDEX IF NOT EXISTS idx_cleaned_texts_quality_score ON cleaned_texts(quality_score)",
+            """
             CREATE TABLE IF NOT EXISTS audit_events (
                 event_id TEXT PRIMARY KEY,
                 event_type TEXT NOT NULL,
@@ -89,6 +102,20 @@ class SQLBackend:
             """,
             "CREATE INDEX IF NOT EXISTS idx_entities_source_trace_id ON entities(source_trace_id)",
             "CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type)",
+            """
+            CREATE TABLE IF NOT EXISTS candidate_clues (
+                clue_id TEXT PRIMARY KEY,
+                clue_type TEXT,
+                risk_category TEXT,
+                quality_score REAL,
+                confidence REAL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                payload TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_candidate_clues_risk_category ON candidate_clues(risk_category)",
+            "CREATE INDEX IF NOT EXISTS idx_candidate_clues_quality_score ON candidate_clues(quality_score)",
             """
             CREATE TABLE IF NOT EXISTS task_runs (
                 task_id TEXT PRIMARY KEY,
@@ -131,6 +158,46 @@ class SQLBackend:
         )
         return dict(data)
 
+    def save_cleaned(self, record: Mapping[str, Any] | Any, *, commit: bool = True) -> dict[str, Any]:
+        """Upsert one cleaned-text payload keyed by source trace id."""
+
+        data = _normalize_payload(record)
+        source_trace_id = _require_text(data, "source_trace_id")
+        clean_id = str(data.get("clean_id") or uuid4())
+        created_at = str(data.get("created_at") or _now_iso())
+
+        data["source_trace_id"] = source_trace_id
+        data["clean_id"] = clean_id
+        data["created_at"] = created_at
+
+        columns = {
+            "source_trace_id": source_trace_id,
+            "clean_id": clean_id,
+            "dedup_group_id": data.get("dedup_group_id"),
+            "risk_level": data.get("risk_level"),
+            "quality_score": data.get("quality_score"),
+            "created_at": created_at,
+            "payload": _to_json(data),
+        }
+        if commit:
+            self._upsert(
+                "cleaned_texts",
+                key_column="source_trace_id",
+                columns=columns,
+            )
+        else:
+            names = list(columns)
+            assignments = ", ".join(
+                f"{name} = excluded.{name}" for name in names if name != "source_trace_id"
+            )
+            sql = (
+                f"INSERT INTO cleaned_texts ({', '.join(names)}) "
+                f"VALUES ({self._placeholders(len(names))}) "
+                f"ON CONFLICT(source_trace_id) DO UPDATE SET {assignments}"
+            )
+            self._execute(sql, [columns[name] for name in names])
+        return dict(data)
+
     def list_raw(self, limit: int | None = None) -> list[dict[str, Any]]:
         """List raw intelligence payloads in insertion-time order."""
 
@@ -138,6 +205,25 @@ class SQLBackend:
             "SELECT payload FROM raw_records ORDER BY created_at, hash_id",
             limit=limit,
         )
+
+    def list_cleaned(self, *, risk_level: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        """List cleaned-text payloads, optionally filtered by risk level."""
+
+        if risk_level is None:
+            sql = "SELECT payload FROM cleaned_texts ORDER BY created_at, source_trace_id"
+            return self._list_payloads(sql, limit=limit)
+        sql = (
+            "SELECT payload FROM cleaned_texts "
+            f"WHERE risk_level = {self._placeholder} "
+            "ORDER BY created_at, source_trace_id"
+        )
+        return self._list_payloads(sql, [risk_level], limit=limit)
+
+    def clear_cleaned(self) -> None:
+        """Delete all cleaned-text rows before replacing a derived corpus snapshot."""
+
+        self._execute("DELETE FROM cleaned_texts")
+        self._commit()
 
     def save_review(
         self,
@@ -260,6 +346,48 @@ class SQLBackend:
             },
         )
         return dict(data)
+
+    def save_clue(self, clue: Mapping[str, Any] | Any) -> dict[str, Any]:
+        """Upsert one candidate clue."""
+
+        data = _normalize_payload(clue)
+        clue_id = _require_text(data, "clue_id")
+        created_at = str(data.get("created_at") or _now_iso())
+        updated_at = str(data.get("updated_at") or created_at)
+        data["clue_id"] = clue_id
+        data["created_at"] = created_at
+        data["updated_at"] = updated_at
+
+        self._upsert(
+            "candidate_clues",
+            key_column="clue_id",
+            columns={
+                "clue_id": clue_id,
+                "clue_type": data.get("clue_type"),
+                "risk_category": data.get("risk_category"),
+                "quality_score": data.get("quality_score"),
+                "confidence": data.get("confidence"),
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "payload": _to_json(data),
+            },
+        )
+        return dict(data)
+
+    def list_clues(self, *, risk_category: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        """List candidate clues, optionally filtered by risk category."""
+
+        if risk_category is None:
+            return self._list_payloads(
+                "SELECT payload FROM candidate_clues ORDER BY quality_score DESC, confidence DESC, updated_at DESC",
+                limit=limit,
+            )
+        sql = (
+            "SELECT payload FROM candidate_clues "
+            f"WHERE risk_category = {self._placeholder} "
+            "ORDER BY quality_score DESC, confidence DESC, updated_at DESC"
+        )
+        return self._list_payloads(sql, [risk_category], limit=limit)
 
     def list_entities(self, source_trace_id: str | None = None) -> list[dict[str, Any]]:
         """List entities, optionally filtered by source trace id."""

@@ -1,0 +1,87 @@
+from src.retrieval import ClueRetriever
+from storage import InMemoryClueRepo
+
+
+def test_clue_retriever_ranks_matching_risk_clues():
+    repo = InMemoryClueRepo()
+    repo.save(
+        {
+            "clue_id": "clue-1",
+            "clue_type": "shared_contact_48h",
+            "key": "tg:core01",
+            "risk_category": "诈骗引流",
+            "source_names": ["telegram_feed", "forum_feed"],
+            "entity_values": ["tg:core01", "risk.example"],
+            "confidence": 0.88,
+            "quality_score": 0.83,
+        }
+    )
+    repo.save(
+        {
+            "clue_id": "clue-2",
+            "clue_type": "shared_domain_multi_source",
+            "key": "benign.example",
+            "risk_category": "普通噪声",
+            "source_names": ["news_feed"],
+            "entity_values": ["benign.example"],
+            "confidence": 0.2,
+            "quality_score": 0.1,
+        }
+    )
+
+    results = ClueRetriever().retrieve(
+        repo.list(),
+        query="找诈骗引流 telegram 高质量线索",
+        intent={
+            "risk_types": ["诈骗引流"],
+            "source_preferences": ["telegram"],
+            "require_cross_source": True,
+        },
+        limit=5,
+    )
+
+    assert results[0]["clue_id"] == "clue-1"
+    assert results[0]["retrieval_score"] > 0
+
+
+def test_clue_retriever_applies_time_source_and_quality_filters():
+    repo = InMemoryClueRepo()
+    repo.save(
+        {
+            "clue_id": "recent-good",
+            "clue_type": "shared_contact_48h",
+            "key": "tg:core01",
+            "risk_category": "诈骗引流",
+            "source_names": ["telegram_feed"],
+            "source_types": ["IM"],
+            "entity_values": ["tg:core01"],
+            "confidence": 0.88,
+            "quality_score": 0.85,
+            "last_seen": "2026-05-27T00:00:00+00:00",
+        }
+    )
+    repo.save(
+        {
+            "clue_id": "old-or-low",
+            "clue_type": "shared_contact_48h",
+            "key": "tg:old01",
+            "risk_category": "诈骗引流",
+            "source_names": ["forum_feed"],
+            "source_types": ["Forum"],
+            "entity_values": ["tg:old01"],
+            "confidence": 0.5,
+            "quality_score": 0.2,
+            "last_seen": "2020-05-27T00:00:00+00:00",
+        }
+    )
+
+    results = ClueRetriever().retrieve(
+        repo.list(),
+        query="找诈骗引流 telegram 高质量线索",
+        intent={"risk_types": ["诈骗引流"], "source_preferences": ["telegram"]},
+        limit=5,
+        time_range_hours=24 * 365 * 2,
+        allowed_source_types=["im"],
+        min_quality_score=0.8,
+    )
+    assert [item["clue_id"] for item in results] == ["recent-good"]

@@ -1,0 +1,295 @@
+# High-signal public source catalog for black/gray raw collection.
+# Each entry targets publicly reachable search/result pages and filters out
+# ordinary defensive/news content before persistence.
+
+sources:
+  - source_name: tieba_blackgray_search
+    source_type: Social
+    platform: tieba
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com/p%20%E6%8E%A5%E7%A0%81
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:tieba.baidu.com/p"]
+    query_global_terms: [接码, 刷单, 卖号, 私域导流, userbot]
+    query_themes: [接码, 刷单作弊, 账号交易, 诈骗引流, 众包任务]
+    query_term_limit: 3
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [诈骗引流, 接码, 刷单, 补单, 放单, 引流, 拉新, 私域导流, 加v, 拉群, 返佣, 高佣, 卖号, 收号, 账号交易, 帐号买卖, 实名号, 老号, 白号, userbot, automation, 群发, 采集群成员, 拉人]
+    include_themes: [诈骗引流, 刷单作弊, 账号交易, 众包任务, 接码]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣, 普法, 推荐, 教程, 指南, 攻略, 评测, 解析, 精选, 合集, 收藏, 实用, 使用指南, 选择建议, 怎么用, 什么意思, 分享, 汇总, 资源汇总, 官网, 客服, 使用须知, 卖号指南, 账号评估, 估价, 电子合同, 正规平台, 维权, 价值, 情怀, 筛选标准]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: short_video_blackgray_search
+    source_type: Social
+    platform: short_video
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.douyin.com/video%20%E6%8E%A5%E7%A0%81%E5%B9%B3%E5%8F%B0
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [诈骗引流, 接码平台, 接码, 刷单, 刷单作弊, 返佣, 引流, 拉新, 私域导流, 加v, 拉群, 高佣, 卖号, 账号交易, 虚拟号码, 验证码]
+    include_themes: [诈骗引流, 刷单作弊, 账号交易, 接码]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 后果很严重, 律师, 宣传, 杀猪盘, 保号, 开卡, Grok, 白嫖, 辟谣, 推荐, 教程, 指南, 攻略, 评测, 解析, 精选, 合集, 收藏, 实用, 使用指南, 选择建议, 怎么用, 什么意思, 分享, 汇总, 资源汇总, 官网, 客服, 使用须知, 小程序, APP注册]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: seeding_note_blackgray_search
+    source_type: Social
+    platform: seeding_community
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Apost.smzdm.com%20%E8%99%9A%E6%8B%9F%E5%8F%B7
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:post.smzdm.com"]
+    query_global_terms: [私域导流, 高佣]
+    query_themes: [接码, 账号交易, 诈骗引流]
+    query_term_limit: 3
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [诈骗引流, 接码, 刷单, 引流, 私域导流, 加v, 拉群, 高佣, 卖号, 账号交易, 虚拟号码, 验证码]
+    include_themes: [诈骗引流, 刷单作弊, 账号交易, 接码]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, Claude, ChatGPT, Codex, Google Voice, Grok, 辟谣, 推荐, 教程, 指南, 攻略, 评测, 解析, 精选, 合集, 收藏, 实用, 使用指南, 选择建议, 怎么用, 什么意思, 分享, 汇总, 资源汇总, 官网, 客服, 使用须知, 卖号指南, 账号评估, 估价, 电子合同, 正规平台, 维权]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: crowdsourcing_blackgray_search
+    source_type: Vertical
+    platform: crowdsourcing
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.freelancer.com/jobs%20telethon%20pyrogram%20automation
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:www.freelancer.com/jobs"]
+    query_global_terms: [userbot, automation]
+    query_themes: [众包任务]
+    query_term_limit: 5
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [telethon, pyrogram, userbot, automation, 自动化脚本, 群发, 采集群成员, 拉人, account, bulk, scraper, marketing, lead, dm, crowdsourcing, outsourcing, 众包任务, 真人众包]
+    include_themes: [众包任务]
+    exclude_keywords: [news, research, anti-spam, prevent, legitimate, moderation, tutorial, open-source, one-file, simple module structure]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: second_hand_blackgray_search
+    source_type: Vertical
+    platform: second_hand_market
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Acarousell.sg%20sell%20account
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:carousell.sg"]
+    query_global_terms: [sell account, verified account, old account, account sale, 白号, 卖号, 收号]
+    query_themes: [账号交易]
+    query_term_limit: 4
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [account, old account, verified account, bulk account, sell account, account trade]
+    include_themes: [账号交易]
+    exclude_keywords: [login, signup, register, security verification, just a moment, 警方通报, 反诈, 安全通告, 曝光, guide, tutorial, review, how to, official, meaning, valuation, recommended]
+    min_keyword_hits: 2
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: darkweb_blackgray_search
+    source_type: Vertical
+    platform: darkweb
+    source_url: http://r.jina.ai/http://ahmia.fi/search/?q=carding%20account%20shop
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [carding, shop, market, account]
+    exclude_keywords: [research, article, news]
+    min_keyword_hits: 2
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: tech_forum_blackgray_search
+    source_type: Forum
+    platform: technical_community
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7%20%E8%84%9A%E6%9C%AC
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:www.v2ex.com"]
+    query_global_terms: [群控, userbot, automation, 群发]
+    query_themes: [诈骗引流, 众包任务]
+    query_term_limit: 3
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [群控, 脚本, 接码, 协议号, 卖号, 账号交易, 引流, 私域导流, 加v, 拉群, 高佣, userbot, automation, 群发, 采集群成员, 拉人, 众包任务]
+    include_themes: [诈骗引流, 账号交易, 众包任务, 接码]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: x_blackgray_search
+    source_type: IM
+    platform: x
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Ax.com%20%E6%8E%A5%E7%A0%81
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:x.com"]
+    query_global_terms: [私域导流, 加v, 拉群, 高佣]
+    query_themes: [接码, 诈骗引流, 刷单作弊, 众包任务]
+    query_term_limit: 4
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [诈骗引流, 接码, 跑分, 刷单, 引流, 拉新, 私域导流, 加v, 拉群, 卖号, 账号交易, 高佣, userbot, automation, 群发, 采集群成员, 拉人]
+    include_themes: [诈骗引流, 刷单作弊, 账号交易, 众包任务, 接码]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣, 推荐, 教程, 指南, 攻略, 评测, 解析, 精选, 合集, 收藏, 实用, 使用指南, 选择建议, 怎么用, 什么意思, 分享, 汇总, 资源汇总, 官网, 客服, 使用须知, 卖号指南, 账号评估, 估价, 电子合同, 正规平台, 维权]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: telegram_blackgray_search
+    source_type: IM
+    platform: telegram
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3At.me/s%20%E6%8E%A5%E7%A0%81%20%E7%BE%A4
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:t.me/s"]
+    query_global_terms: [私域导流, 加v, 拉群, userbot, automation]
+    query_themes: [接码, 账号交易, 诈骗引流, 众包任务]
+    query_term_limit: 4
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [诈骗引流, 接码, 刷单, 引流, 私域导流, 加v, 拉群, 高佣, 卖号, 账号交易, 众包任务, userbot, automation, 群发, 采集群成员, 拉人]
+    include_themes: [诈骗引流, 刷单作弊, 账号交易, 众包任务, 接码]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣, 推荐, 教程, 指南, 攻略, 评测, 解析, 精选, 合集, 收藏, 实用, 使用指南, 选择建议, 怎么用, 什么意思, 分享, 汇总, 资源汇总, 官网, 客服, 使用须知, 目录, 交流群, 频道目录, 观看, 动画, 电影]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: tieba_task_fraud_search
+    source_type: Social
+    platform: tieba
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%88%B7%E5%8D%95
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:tieba.baidu.com/p"]
+    query_global_terms: [卡单, 手工单]
+    query_themes: [刷单作弊]
+    query_term_limit: 5
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [刷单, 刷单作弊, 补单, 放单, 返佣, 高佣, 日结, 点赞任务, 关注任务, 做任务, 垫付, 连单, 卡单, 手工单, 垫付单]
+    include_themes: [刷单作弊]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣, 普法, 警惕, 安全中心, 维权]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: tieba_account_trade_search
+    source_type: Social
+    platform: tieba
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%8D%96%E5%8F%B7
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:tieba.baidu.com/p"]
+    query_themes: [账号交易]
+    query_term_limit: 3
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [账号交易, 账号买卖, 帐号买卖, 卖号, 收号, 实名号, 白号, 老号, 养号]
+    include_themes: [账号交易]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣, 普法, 推荐, 教程, 指南, 攻略, 评测, 解析, 精选, 合集, 收藏, 实用, 使用指南, 选择建议, 怎么用, 什么意思, 分享, 汇总, 资源汇总, 卖号指南, 账号评估, 估价, 电子合同, 正规平台, 维权, 价值, 情怀, 筛选标准]
+    min_keyword_hits: 2
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: x_account_trade_search
+    source_type: IM
+    platform: x
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Ax.com%20%E5%8D%96%E5%8F%B7%20%E8%B4%A6%E5%8F%B7
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:x.com", "账号"]
+    query_themes: [账号交易]
+    query_term_limit: 3
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [卖号, 收号, 账号交易, 账号买卖, 实名号, 老号, 白号]
+    include_themes: [账号交易]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣, 推荐, 教程, 指南, 攻略, 评测, 解析, 精选, 合集, 收藏, 实用, 使用指南, 选择建议, 怎么用, 什么意思, 分享, 汇总, 资源汇总, 卖号指南, 账号评估, 估价, 电子合同, 正规平台, 维权, 筛选标准]
+    min_keyword_hits: 2
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: telegram_task_fraud_search
+    source_type: IM
+    platform: telegram
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3At.me%2Fs%20%E5%88%B7%E5%8D%95%20%E7%BE%A4
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:t.me/s"]
+    query_global_terms: [卡单, 手工单]
+    query_themes: [刷单作弊]
+    query_term_limit: 5
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [刷单, 刷单作弊, 返佣, 高佣, 日结, 点赞任务, 关注任务, 连单, 卡单, 手工单, 垫付单, 做单]
+    include_themes: [刷单作弊]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣, 推荐, 教程, 指南, 攻略, 评测, 解析, 精选, 合集, 收藏, 实用, 使用指南, 选择建议, 怎么用, 什么意思, 目录, 交流群, 频道目录]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: tieba_fraud_traffic_search
+    source_type: Social
+    platform: tieba
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E7%A7%81%E5%9F%9F%E5%AF%BC%E6%B5%81
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:tieba.baidu.com/p"]
+    query_global_terms: [私域导流, 加v]
+    query_themes: [诈骗引流]
+    query_term_limit: 4
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [诈骗引流, 私域导流, 加v, 拉群, 高佣, 引流, 拉新]
+    include_themes: [诈骗引流]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣, 普法, 推荐, 教程, 指南, 攻略, 评测, 解析, 精选, 合集, 收藏, 实用, 使用指南, 选择建议, 怎么用, 什么意思]
+    min_keyword_hits: 2
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: telegram_fraud_traffic_search
+    source_type: IM
+    platform: telegram
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3At.me%2Fs%20%E7%A7%81%E5%9F%9F%E5%AF%BC%E6%B5%81
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:t.me/s"]
+    query_global_terms: [私域导流, 加v, 拉群]
+    query_themes: [诈骗引流]
+    query_term_limit: 4
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [诈骗引流, 私域导流, 加v, 拉群, 高佣, 引流, 拉新]
+    include_themes: [诈骗引流]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣, 推荐, 教程, 指南, 攻略, 评测, 解析, 精选, 合集, 收藏, 实用, 使用指南, 选择建议, 怎么用, 什么意思, 目录, 交流群, 频道目录]
+    min_keyword_hits: 2
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: crowdsourcing_task_blackgray_search
+    source_type: Vertical
+    platform: crowdsourcing
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.freelancer.com%2Fjobs%20userbot%20automation
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:www.freelancer.com/jobs"]
+    query_global_terms: [userbot, automation, 采集群成员, 拉人]
+    query_themes: [众包任务]
+    query_term_limit: 5
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [userbot, telethon, pyrogram, automation, 自动化脚本, 群发, 采集群成员, 拉人, bulk, scraper, dm, crowdsourcing, outsourcing, 众包任务, 接单, 真人众包]
+    include_themes: [众包任务]
+    exclude_keywords: [news, research, anti-spam, prevent, legitimate, moderation, tutorial, open-source]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true

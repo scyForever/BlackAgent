@@ -2,6 +2,7 @@
 
 from .audit_repo import AuditRepo, InMemoryAuditRepo
 from .cleaned_repo import CleanedTextRepo, InMemoryCleanedTextRepo
+from .clue_repo import ClueRepo, InMemoryClueRepo
 from .entity_repo import EntityRepo, InMemoryEntityRepo
 from .graph_repo import GraphEdge, GraphNode, GraphRepo, InMemoryGraphRepo
 from .raw_repo import InMemoryRawIntelligenceRepo, RawIntelligenceRepo
@@ -26,6 +27,7 @@ __all__ = [
     "AuditRepo",
     "BudgetConsumed",
     "ClassificationResult",
+    "ClueRepo",
     "CleanedText",
     "CleanedTextRepo",
     "EntityExtractionResult",
@@ -37,6 +39,7 @@ __all__ = [
     "HypothesisType",
     "InMemoryAuditRepo",
     "InMemoryCleanedTextRepo",
+    "InMemoryClueRepo",
     "InMemoryEntityRepo",
     "InMemoryGraphRepo",
     "InMemoryRawIntelligenceRepo",

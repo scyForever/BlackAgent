@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import math
 import re
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
-from src.cleaner.text_filter import calculate_noise_score, normalize_text, text_similarity
+from src.cleaner.text_filter import calculate_noise_score, normalize_text, shannon_entropy, text_similarity
 from src.classifier.nlp_rule_matcher import (
     ACCOUNT_TRADING,
     CLICK_FARMING,
+    CROWD_SERVICE,
     FRAUD_TRAFFIC,
     NORMAL_NOISE,
     TOOL_TRADING,
@@ -132,26 +132,141 @@ class FineGrainedIntentClassifier:
         FRAUD_TRAFFIC: {
             "返利引流": ("返利", "高佣", "拉新"),
             "跑分代付": ("跑分", "代付", "刷流水"),
-            "私域导流": ("私聊", "进群", "开户链接", "引流"),
+            "私域导流": ("私聊", "进群", "开户链接", "引流", "导流", "私域", "加v", "加微", "落地页"),
+            "拉群语义": ("拉群", "群聊", "群里", "交流群", "邀请", "扣1"),
+            "打粉引流": ("打粉", "全品类粉", "粉价", "超链", "分流链接", "回复情况"),
         },
         ACCOUNT_TRADING: {
-            "接码注册": ("接码", "验证码", "批量注册"),
-            "实名账号买卖": ("实名号", "卖号", "收号", "老号", "白号"),
-            "账号养号": ("养号", "权重号", "资料号"),
+            "接码注册": ("接码", "验证码", "短信验证码", "批量注册", "虚拟号码", "云短信", "实卡"),
+            "实名账号买卖": ("实名号", "卖号", "收号", "老号", "白号", "成品号", "出号", "号商", "实名认证", "verified account", "二要素"),
+            "账号养号": ("养号", "权重号", "资料号", "飞机号", "电报号"),
         },
         TOOL_TRADING: {
-            "群控脚本": ("群控", "脚本", "协议号", "自动化工具"),
+            "群控脚本": (
+                "群控",
+                "云控",
+                "脚本",
+                "协议号",
+                "自动化工具",
+                "软件",
+                "机器人",
+                "系统",
+                "功能",
+                "更新",
+                "教程",
+                "版本",
+                "拉群端",
+                "开控",
+                "配置",
+                "后台",
+                "session",
+                "自动注册",
+                "官方软件",
+                "启动",
+                "分流链接",
+                "粉丝列表",
+            ),
             "改机外挂": ("改机", "外挂", "设备指纹"),
             "卡密交易": ("卡密", "授权码", "激活码"),
+        },
+        CROWD_SERVICE: {
+            "拉群获客": (
+                "拉人",
+                "拉群",
+                "进群",
+                "入群",
+                "指定群",
+                "拉满",
+                "保开群",
+                "偷人",
+                "邀请",
+                "成群",
+                "手机号拉人",
+                "批量邀请",
+                "加群",
+                "机房",
+                "秒出",
+                "普群",
+            ),
+            "打粉卖量": (
+                "打粉",
+                "活粉",
+                "活人粉",
+                "僵尸粉",
+                "克隆粉",
+                "粉价",
+                "全品类粉",
+                "爆粉",
+                "秒罐",
+                "卖量",
+                "刷阅读量",
+                "指定群活人",
+                "进群人数",
+                "筛活",
+                "接粉",
+            ),
+            "代投服务": (
+                "群发",
+                "私信",
+                "代发",
+                "广告",
+                "投放",
+                "代投",
+                "seo",
+                "排名",
+                "首页展示",
+                "直通车",
+                "推广",
+                "引流",
+                "导流",
+                "关键词监听",
+                "监控关键词",
+                "采集群成员",
+                "群成员采集",
+                "回执",
+                "成功率",
+                "订单",
+                "按钮",
+                "图文",
+                "文案",
+                "链接",
+                "接单",
+                "业务",
+                "客户",
+                "对接",
+                "担保",
+                "包量",
+            ),
+            "代运营": ("代运营", "矩阵", "运营", "托管", "分成", "转化", "涨粉", "获客"),
+            "代投放": ("代投", "投放", "seo", "排名", "首页展示", "直通车", "广告", "群广告", "推广"),
         },
         CLICK_FARMING: {
             "刷单返佣": ("刷单", "补单", "返佣"),
             "点赞关注任务": ("点赞任务", "关注任务", "做任务"),
             "垫付兼职": ("垫付", "日结", "兼职"),
+            "订单卡单": ("卡单", "支付失败", "支付通道", "下单", "订单", "发货", "补发", "退款", "售后", "订单号"),
+            "卡单玩法": ("卡单", "游戏", "单人局", "战局", "卖金", "文件", "paypal", "steam", "模组", "封号"),
+            "手工做单": ("手工单", "做单", "平台单", "线下订单", "打单"),
         },
     }
 
     CATEGORY_KEYWORDS = RuleFastTrackClassifier.CATEGORY_KEYWORDS
+    THEME_PRIORS = RuleFastTrackClassifier.THEME_PRIORS
+    REVIEW_ONLY_CATEGORIES = {CROWD_SERVICE}
+    REVIEW_ONLY_SECONDARY_LABELS = {"拉群语义", "打粉引流", "订单卡单", "卡单玩法", "手工做单"}
+    CROWD_PROMOTION_MARKERS = ("业务联系", "长期合作", "老板", "对接", "担保", "测试联系", "低价", "价格", "售后", "方案", "客服", "咨询", "量大", "包量", "优惠")
+    TOOL_PROMOTION_MARKERS = ("拉群端", "开控", "配置", "后台", "session", "自动注册", "官方软件", "启动", "更新内容", "粉丝列表")
+    TOOL_UPDATE_MARKERS = ("更新", "版本", "功能", "教程", "软件", "下载", "新增", "修复", "操作", "文档", "演示视频", "停用")
+    CLICK_PROMOTION_MARKERS = ("卡单", "支付失败", "支付通道", "下单", "订单", "发货", "补发", "退款", "售后", "手工单", "做单")
+    CLICK_CORE_MARKERS = ("刷单", "补单", "垫付", "返佣", "做单", "手工单", "卡单")
+    CATEGORY_PRIORITY = {
+        CROWD_SERVICE: 5,
+        TOOL_TRADING: 4,
+        ACCOUNT_TRADING: 3,
+        FRAUD_TRAFFIC: 2,
+        CLICK_FARMING: 1,
+        UNKNOWN: 0,
+    }
 
     def __init__(self) -> None:
         self.fast_classifier = RuleFastTrackClassifier()
@@ -159,29 +274,45 @@ class FineGrainedIntentClassifier:
     def classify(self, record: Mapping[str, Any] | Any) -> FineClassificationResult:
         text = _text(record)
         trace_id = str(get_record_field(record, "source_trace_id") or get_record_field(record, "trace_id") or "unknown")
+        matched_keywords = self._signal_terms(record, "matched_keywords")
+        matched_themes = self._signal_terms(record, "matched_themes")
         fast = self.fast_classifier.classify(record)
         fast_data = fast.model_dump() if hasattr(fast, "model_dump") else dict(fast)
-        category_scores: dict[str, int] = {}
-        for category, keywords in self.CATEGORY_KEYWORDS.items():
-            hits = [keyword for keyword in keywords if keyword in text]
-            if hits:
-                category_scores[category] = len(hits)
+        category_scores, category_evidence, theme_only_scores = self._category_scores(text, matched_keywords, matched_themes)
 
         if not category_scores:
             return FineClassificationResult(trace_id, UNKNOWN, "待研判", 0.35, True, "UNKNOWN", [], [])
 
-        ordered = sorted(category_scores.items(), key=lambda item: (-item[1], item[0]))
+        ordered = sorted(
+            category_scores.items(),
+            key=lambda item: (-item[1], -self.CATEGORY_PRIORITY.get(item[0], 0), item[0]),
+        )
         top_category, top_score = ordered[0]
         conflicts = [category for category, score in ordered[1:] if score == top_score or (top_score - score <= 1 and score >= 2)]
         conflict_status = "RESOLVED"
+        secondary_label, secondary_evidence = self._secondary_label(top_category, text, matched_keywords)
+        supporting_evidence = self._ordered_unique((*category_evidence.get(top_category, []), *secondary_evidence))
+
+        confidence = max(
+            float(fast_data.get("confidence", 0.0) or 0.0),
+            min(0.96, 0.56 + top_score * 0.07 + len(secondary_evidence) * 0.03),
+        )
         review_required = bool(fast_data.get("review_required", False))
-        confidence = float(fast_data.get("confidence", 0.65) or 0.65)
+        if top_category in self.REVIEW_ONLY_CATEGORIES:
+            review_required = True
+        if theme_only_scores.get(top_category, False):
+            review_required = True
+            confidence = min(confidence, 0.72)
+        if secondary_label in {"未细分", "待研判"}:
+            review_required = True
+        if secondary_label in self.REVIEW_ONLY_SECONDARY_LABELS:
+            review_required = True
+            confidence = min(confidence, 0.78)
         if conflicts:
             conflict_status = "CONFLICT_REVIEW"
             review_required = True
             confidence = min(confidence, 0.74)
 
-        secondary_label, evidence = self._secondary_label(top_category, text)
         return FineClassificationResult(
             source_trace_id=trace_id,
             risk_category=top_category,
@@ -190,19 +321,124 @@ class FineGrainedIntentClassifier:
             review_required=review_required,
             conflict_status=conflict_status,
             conflict_categories=conflicts,
-            evidence=evidence,
+            evidence=supporting_evidence,
         )
 
-    def _secondary_label(self, category: str, text: str) -> tuple[str, list[str]]:
+    def _signal_terms(self, record: Mapping[str, Any] | Any, field_name: str) -> tuple[str, ...]:
+        values = get_record_field(record, field_name) or ()
+        if isinstance(values, str):
+            values = [values]
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in values if isinstance(values, Iterable) and not isinstance(values, (str, bytes)) else ():
+            value = normalize_text(str(raw))
+            if not value:
+                continue
+            lowered = value.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            normalized.append(value)
+        return tuple(normalized)
+
+    def _category_scores(
+        self,
+        text: str,
+        matched_keywords: tuple[str, ...],
+        matched_themes: tuple[str, ...],
+    ) -> tuple[dict[str, int], dict[str, list[str]], dict[str, bool]]:
+        score_map: dict[str, int] = {}
+        evidence_map: dict[str, list[str]] = defaultdict(list)
+        matched_keyword_set = {value.lower() for value in matched_keywords}
+
+        for category, keywords in self.CATEGORY_KEYWORDS.items():
+            hits = [
+                keyword
+                for keyword in keywords
+                if keyword.lower() in text.lower() or normalize_text(keyword).lower() in matched_keyword_set
+            ]
+            if not hits:
+                continue
+            unique_hits = self._ordered_unique(hits)
+            score_map[category] = score_map.get(category, 0) + len(unique_hits)
+            evidence_map[category].extend(unique_hits)
+
+        for theme in matched_themes:
+            mapped = self.THEME_PRIORS.get(theme)
+            if mapped is None:
+                continue
+            category, bonus = mapped
+            score_map[category] = score_map.get(category, 0) + bonus
+            evidence_map[category].append(f"theme:{theme}")
+
+        crowd_markers = self._marker_hits(text, self.CROWD_PROMOTION_MARKERS)
+        if crowd_markers and self._matches_any(text, matched_keyword_set, self.SECONDARY_RULES[CROWD_SERVICE]["拉群获客"]):
+            score_map[CROWD_SERVICE] = score_map.get(CROWD_SERVICE, 0) + min(2, len(crowd_markers))
+            evidence_map[CROWD_SERVICE].extend(f"service:{marker}" for marker in crowd_markers[:2])
+
+        tool_markers = self._marker_hits(text, self.TOOL_PROMOTION_MARKERS)
+        if tool_markers:
+            score_map[TOOL_TRADING] = score_map.get(TOOL_TRADING, 0) + min(3, len(tool_markers))
+            evidence_map[TOOL_TRADING].extend(f"tool:{marker}" for marker in tool_markers[:3])
+
+        tool_update_markers = self._marker_hits(text, self.TOOL_UPDATE_MARKERS)
+        if len(tool_update_markers) >= 2:
+            score_map[TOOL_TRADING] = score_map.get(TOOL_TRADING, 0) + 2
+            evidence_map[TOOL_TRADING].extend(f"tool_update:{marker}" for marker in tool_update_markers[:2])
+
+        click_markers = self._marker_hits(text, self.CLICK_PROMOTION_MARKERS)
+        if click_markers and ("卡单" in text or "手工单" in text or "做单" in text):
+            score_map[CLICK_FARMING] = score_map.get(CLICK_FARMING, 0) + min(2, len(click_markers))
+            evidence_map[CLICK_FARMING].extend(f"order:{marker}" for marker in click_markers[:2])
+
+        click_core_markers = self._marker_hits(text, self.CLICK_CORE_MARKERS)
+        if click_core_markers:
+            score_map[CLICK_FARMING] = score_map.get(CLICK_FARMING, 0) + min(2, len(click_core_markers))
+            evidence_map[CLICK_FARMING].extend(f"click:{marker}" for marker in click_core_markers[:2])
+
+        theme_only_scores = {
+            category: all(item.startswith("theme:") for item in evidence_map.get(category, []))
+            for category in score_map
+        }
+        return score_map, {key: self._ordered_unique(value) for key, value in evidence_map.items()}, theme_only_scores
+
+    def _secondary_label(self, category: str, text: str, matched_keywords: tuple[str, ...]) -> tuple[str, list[str]]:
         candidates = []
+        matched_keyword_set = {value.lower() for value in matched_keywords}
         for label, keywords in self.SECONDARY_RULES.get(category, {}).items():
-            hits = [keyword for keyword in keywords if keyword in text]
+            hits = [
+                keyword
+                for keyword in keywords
+                if keyword.lower() in text.lower() or normalize_text(keyword).lower() in matched_keyword_set
+            ]
             if hits:
                 candidates.append((label, hits))
         if not candidates:
             return "未细分", []
         label, hits = max(candidates, key=lambda item: len(item[1]))
-        return label, hits
+        return label, self._ordered_unique(hits)
+
+    def _marker_hits(self, text: str, markers: Iterable[str]) -> list[str]:
+        lowered_text = text.lower()
+        return [marker for marker in markers if marker.lower() in lowered_text]
+
+    def _matches_any(self, text: str, matched_keyword_set: set[str], keywords: Iterable[str]) -> bool:
+        lowered_text = text.lower()
+        return any(keyword.lower() in lowered_text or normalize_text(keyword).lower() in matched_keyword_set for keyword in keywords)
+
+    def _ordered_unique(self, values: Iterable[str]) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for value in values:
+            normalized = normalize_text(str(value))
+            if not normalized:
+                continue
+            lowered = normalized.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            ordered.append(normalized)
+        return ordered
 
 
 @dataclass(frozen=True)
@@ -226,13 +462,27 @@ class SlangDictionary:
 
     DEFAULT = {
         "音符": "抖音",
+        "🎵": "抖音",
         "抖": "抖音",
         "dy": "抖音",
         "飞机": "Telegram",
+        "纸飞机": "Telegram",
+        "小飞机": "Telegram",
+        "✈": "Telegram",
+        "✈️": "Telegram",
+        "🛩": "Telegram",
+        "🛩️": "Telegram",
+        "企鹅": "QQ",
+        "🐧": "QQ",
         "料子": "账号资料",
         "车队": "任务团伙",
         "上车": "加入任务",
         "水房": "洗钱结算",
+        "加薇": "加v",
+        "加威": "加v",
+        "加围": "加v",
+        "➕v": "加v",
+        "➕V": "加v",
     }
 
     def __init__(self, initial_terms: Mapping[str, str] | None = None) -> None:
@@ -312,18 +562,6 @@ class AdvancedEntityExtractor:
                 add(entity_type, value, start, start + len(value), method=method, confidence=0.82)
         return sorted(entities, key=lambda item: (item.source_trace_id, item.start_offset, item.entity_type))
 
-
-def shannon_entropy(text: str) -> float:
-    normalized = normalize_text(text)
-    if not normalized:
-        return 0.0
-    counts = Counter(char for char in normalized if not char.isspace())
-    total = sum(counts.values())
-    if total == 0:
-        return 0.0
-    return round(-sum((count / total) * math.log2(count / total) for count in counts.values()), 4)
-
-
 def context_relevance(text: str, start: int, end: int) -> float:
     window = text[max(0, start - 18) : min(len(text), end + 18)]
     markers = ("出售", "招募", "接码", "群控", "跑分", "引流", "刷单", "代付", "暗号", "联系", "上车")
@@ -335,6 +573,12 @@ def _normalize_obfuscation(value: str) -> str:
     normalized = normalize_text(value)
     normalized = normalized.replace("hxxp://", "http://").replace("hxxps://", "https://")
     normalized = normalized.replace("[.]", ".").replace("【.】", ".").replace("(.)", ".")
+    normalized = normalized.replace("➕", "加").replace("＋", "加").replace("✈️", "飞机").replace("✈", "飞机")
+    normalized = normalized.replace("🛩️", "飞机").replace("🛩", "飞机").replace("🛰️", "飞机").replace("🛰", "飞机")
+    normalized = normalized.replace("🎵", "音符").replace("🐧", "QQ").replace("纸飞机", "飞机").replace("小飞机", "飞机")
+    normalized = re.sub(r"(?i)\bv\s*x\b", "vx", normalized)
+    normalized = re.sub(r"(?i)(加|联系|咨询|客服|对接)\s*[vV薇微威围]\b", r"\1v", normalized)
+    normalized = normalized.replace("进裙", "进群").replace("拉裙", "拉群")
     normalized = re.sub(r"\s+", "", normalized) if "[.]" in value or "【.】" in value else normalized
     return normalized.strip(" ,，。;；")
 

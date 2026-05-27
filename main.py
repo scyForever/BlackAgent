@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.config_loader import PROJECT_ROOT, Settings, get_settings, resolve_project_path
+from storage import InMemoryClueRepo
 
 
 class HealthResponse(BaseModel):
@@ -132,6 +133,76 @@ class AdvancedPipelineResponse(BaseModel):
     strategy_count: int
 
 
+class InvestigationRunRequest(BaseModel):
+    """User-query-driven end-to-end investigation request."""
+
+    model_config = ConfigDict(extra="allow")
+
+    query: str = Field(min_length=1)
+    fixture_items: list[dict[str, Any]] = Field(default_factory=list)
+    fixture_path: str | None = None
+    source_config_path: str | None = None
+    sources: list[dict[str, Any]] = Field(default_factory=list)
+    max_sources: int = Field(default=5, ge=1, le=20)
+    time_range_hours: int | None = Field(default=None, ge=1)
+    source_types: list[str] = Field(default_factory=list)
+    risk_types: list[str] = Field(default_factory=list)
+    min_quality_score: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class OfflineClueBuildRequest(BaseModel):
+    """Offline candidate clue build request."""
+
+    model_config = ConfigDict(extra="allow")
+
+    fixture_items: list[dict[str, Any]] = Field(default_factory=list)
+    fixture_path: str | None = None
+    prompt_text: str | None = None
+    source_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    quality_profile: str = "balanced"
+    require_cross_source: bool = False
+    require_evidence_chain: bool = True
+
+    @model_validator(mode="after")
+    def require_items(self) -> "OfflineClueBuildRequest":
+        if not self.fixture_items and not self.fixture_path:
+            raise ValueError("Provide fixture_items or fixture_path")
+        return self
+
+
+class OfflineClueBuildResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    status: str
+    input_count: int
+    saved_clue_count: int
+    high_quality_count: int
+    candidate_count: int
+    execution_summary: dict[str, Any]
+    clues: list[dict[str, Any]]
+
+
+class InvestigationRunResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    status: str
+    mode: str
+    query: str
+    input_count: int
+    fetched_count: int
+    selected_source_count: int
+    high_quality_count: int
+    candidate_count: int
+    intent: dict[str, Any]
+    investigation_plan: dict[str, Any]
+    llm_traces: list[dict[str, Any]]
+    selected_sources: list[dict[str, Any]]
+    collection_runs: list[dict[str, Any]]
+    execution_summary: dict[str, Any]
+    high_quality_clues: list[dict[str, Any]]
+    candidate_clues: list[dict[str, Any]]
+
+
 class TaskSubmitResponse(BaseModel):
     status: str
     task_id: str
@@ -199,6 +270,21 @@ class SourceCollectRequest(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     allowed_domains: list[str] = Field(default_factory=list)
     text_fields: list[str] = Field(default_factory=list)
+    include_keywords: list[str] = Field(default_factory=list)
+    exclude_keywords: list[str] = Field(default_factory=list)
+    include_themes: list[str] = Field(default_factory=list)
+    exclude_themes: list[str] = Field(default_factory=list)
+    search_query: str | None = None
+    query_theme: str | None = None
+    query_term: str | None = None
+    query_term_stage: str | None = None
+    query_variant_index: int | None = None
+    min_keyword_hits: int = Field(default=1, ge=1)
+    rate_limit_per_minute: int | None = Field(default=None, ge=0)
+    retry_attempts: int | None = Field(default=None, ge=0)
+    retry_backoff_seconds: float | None = Field(default=None, ge=0.0)
+    retry_backoff_multiplier: float | None = Field(default=None, ge=1.0)
+    retry_statuses: list[int] = Field(default_factory=list)
     persist_raw: bool = True
     run_pipeline: bool = False
 
@@ -498,6 +584,9 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     app.state.orchestrator = None
     app.state.orchestrator_reason = None
     app.state.phase_engine = None
+    app.state.investigation_orchestrator = None
+    app.state.clue_repo = InMemoryClueRepo()
+    app.state.offline_clue_builder = None
     app.state.task_backend = None
     app.state.llm_gateway = None
     app.state.sql_backend = None
@@ -517,6 +606,27 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
 
             app.state.phase_engine = PhaseTwoThreeEngine()
         return app.state.phase_engine
+
+    def get_investigation_orchestrator() -> Any:
+        if app.state.investigation_orchestrator is None:
+            from src.agent import InvestigationOrchestrator
+
+            app.state.investigation_orchestrator = InvestigationOrchestrator(
+                llm_gateway=get_llm_gateway(),
+                phase_engine=get_phase_engine(),
+                clue_repo=app.state.clue_repo,
+            )
+        return app.state.investigation_orchestrator
+
+    def get_offline_clue_builder() -> Any:
+        if app.state.offline_clue_builder is None:
+            from src.pipeline import OfflineClueBuilder
+
+            app.state.offline_clue_builder = OfflineClueBuilder(
+                phase_engine=get_phase_engine(),
+                clue_repo=app.state.clue_repo,
+            )
+        return app.state.offline_clue_builder
 
     def get_task_backend() -> Any:
         if app.state.task_backend is None:
@@ -562,13 +672,17 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
             sql_backend.save_task(payload, task_type=payload.get("name"), status=payload.get("status"))
 
     def persist_advanced_result(items: list[dict[str, Any]], result: Any, *, persist_raw_items: bool = True) -> None:
+        if persist_raw_items:
+            sql_backend = get_sql_backend()
+            if sql_backend is not None:
+                for item in items:
+                    sql_backend.save_raw(_raw_payload_for_storage(item))
+        result_payload = result.model_dump() if hasattr(result, "model_dump") else dict(result)
+        for clue in result_payload.get("risk_clues", []):
+            app.state.clue_repo.save(clue)
         sql_backend = get_sql_backend()
         if sql_backend is None:
             return
-        if persist_raw_items:
-            for item in items:
-                sql_backend.save_raw(_raw_payload_for_storage(item))
-        result_payload = result.model_dump() if hasattr(result, "model_dump") else dict(result)
         for entity in result_payload.get("entities", []):
             sql_backend.save_entity(entity)
         for strategy in result_payload.get("strategies", []):
@@ -581,6 +695,8 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
                     "payload": strategy,
                 }
             )
+        for clue in result_payload.get("risk_clues", []):
+            sql_backend.save_clue(clue)
 
     def collect_source_records(request: SourceCollectRequest) -> list[dict[str, Any]]:
         from src.collector import HTTPFeedCollector, HTTPFeedConfig
@@ -602,6 +718,35 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
                 user_agent=settings.network.user_agent,
                 allowed_domains=tuple(request.allowed_domains or settings.network.allowed_domains),
                 headers=request.headers,
+                include_keywords=tuple(request.include_keywords),
+                exclude_keywords=tuple(request.exclude_keywords),
+                include_themes=tuple(request.include_themes),
+                exclude_themes=tuple(request.exclude_themes),
+                search_query=request.search_query,
+                query_theme=request.query_theme,
+                query_term=request.query_term,
+                query_term_stage=request.query_term_stage,
+                query_variant_index=request.query_variant_index,
+                min_keyword_hits=request.min_keyword_hits,
+                rate_limit_per_minute=(
+                    request.rate_limit_per_minute
+                    if request.rate_limit_per_minute is not None
+                    else settings.network.rate_limit_per_minute
+                ),
+                retry_attempts=(
+                    request.retry_attempts if request.retry_attempts is not None else settings.network.retry_attempts
+                ),
+                retry_backoff_seconds=(
+                    request.retry_backoff_seconds
+                    if request.retry_backoff_seconds is not None
+                    else settings.network.retry_backoff_seconds
+                ),
+                retry_backoff_multiplier=(
+                    request.retry_backoff_multiplier
+                    if request.retry_backoff_multiplier is not None
+                    else settings.network.retry_backoff_multiplier
+                ),
+                retry_statuses=tuple(request.retry_statuses or settings.network.retry_statuses),
                 text_fields=tuple(request.text_fields) if request.text_fields else HTTPFeedConfig.text_fields,
                 network_enabled=settings.network.enabled,
             )
@@ -994,6 +1139,108 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
             },
             handler=run_task,
             metadata={"api": f"{settings.api.prefix}/tasks/pipeline/advanced"},
+        )
+        persist_task(task)
+        return TaskSubmitResponse(status="accepted", task_id=task.task_id, task_status=task.status.value)
+
+    @app.post(f"{settings.api.prefix}/investigations/run", response_model=InvestigationRunResponse)
+    async def run_investigation(request: InvestigationRunRequest) -> InvestigationRunResponse:
+        available_sources: list[dict[str, Any]] = []
+        if request.source_config_path or request.sources:
+            batch_request = SourceBatchCollectRequest(
+                source_config_path=request.source_config_path,
+                sources=request.sources,
+                persist_raw=False,
+                run_pipeline=False,
+                continue_on_error=False,
+            )
+            source_requests = load_batch_source_requests(batch_request)
+            available_sources = [item.model_dump(mode="json") for item in source_requests]
+        fixture_items = list(request.fixture_items)
+        if request.fixture_path:
+            fixture_items.extend(_read_fixture_items(request.fixture_path))
+
+        def collect_for_investigation(source_payload: dict[str, Any]) -> list[dict[str, Any]]:
+            source_request = SourceCollectRequest.model_validate(
+                {
+                    **source_payload,
+                    "persist_raw": False,
+                    "run_pipeline": False,
+                }
+            )
+            return collect_source_records(source_request)
+
+        result = get_investigation_orchestrator().run(
+            request.query,
+            records=fixture_items,
+            available_sources=available_sources,
+            collect_source_records=(collect_for_investigation if available_sources else None),
+            max_sources=request.max_sources,
+            retrieval_filters={
+                "time_range_hours": request.time_range_hours,
+                "source_types": request.source_types,
+                "risk_types": request.risk_types,
+                "min_quality_score": request.min_quality_score,
+            },
+        )
+        for clue in result.high_quality_clues:
+            app.state.clue_repo.save(clue)
+        for clue in result.candidate_clues:
+            app.state.clue_repo.save(clue)
+        return InvestigationRunResponse(**result.model_dump())
+
+    @app.post(f"{settings.api.prefix}/clues/build", response_model=OfflineClueBuildResponse)
+    async def build_clues(request: OfflineClueBuildRequest) -> OfflineClueBuildResponse:
+        items = list(request.fixture_items)
+        if request.fixture_path:
+            items.extend(_read_fixture_items(request.fixture_path))
+        result = get_offline_clue_builder().build(
+            items,
+            prompt_text=request.prompt_text,
+            source_candidates=request.source_candidates,
+            quality_profile=request.quality_profile,
+            require_cross_source=request.require_cross_source,
+            require_evidence_chain=request.require_evidence_chain,
+        )
+        sql_backend = get_sql_backend()
+        if sql_backend is not None:
+            for clue in result.clues:
+                sql_backend.save_clue(clue)
+        return OfflineClueBuildResponse(**result.model_dump())
+
+    @app.post(f"{settings.api.prefix}/tasks/clues/build", response_model=TaskSubmitResponse)
+    async def submit_build_clues_task(request: OfflineClueBuildRequest) -> TaskSubmitResponse:
+        items = list(request.fixture_items)
+        if request.fixture_path:
+            items.extend(_read_fixture_items(request.fixture_path))
+
+        def run_task(payload: dict[str, Any]) -> dict[str, Any]:
+            result = get_offline_clue_builder().build(
+                payload["items"],
+                prompt_text=payload.get("prompt_text"),
+                source_candidates=payload.get("source_candidates") or (),
+                quality_profile=payload.get("quality_profile") or "balanced",
+                require_cross_source=bool(payload.get("require_cross_source", False)),
+                require_evidence_chain=bool(payload.get("require_evidence_chain", True)),
+            )
+            sql_backend = get_sql_backend()
+            if sql_backend is not None:
+                for clue in result.clues:
+                    sql_backend.save_clue(clue)
+            return result.model_dump()
+
+        task = get_task_backend().submit(
+            "offline_clue_build",
+            {
+                "items": items,
+                "prompt_text": request.prompt_text,
+                "source_candidates": request.source_candidates,
+                "quality_profile": request.quality_profile,
+                "require_cross_source": request.require_cross_source,
+                "require_evidence_chain": request.require_evidence_chain,
+            },
+            handler=run_task,
+            metadata={"api": f"{settings.api.prefix}/tasks/clues/build"},
         )
         persist_task(task)
         return TaskSubmitResponse(status="accepted", task_id=task.task_id, task_status=task.status.value)

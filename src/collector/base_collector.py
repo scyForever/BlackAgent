@@ -112,12 +112,20 @@ def build_raw_intelligence(record: Mapping[str, Any]) -> Any:
         "publish_time": record.get("publish_time") or record.get("crawl_time") or now,
         "content_text": content_text,
     }
+    extras = {key: value for key, value in record.items() if key not in payload}
 
     schema_model = _load_raw_schema_model()
     try:
-        return schema_model(**payload)  # type: ignore[misc,operator]
+        built = schema_model(**payload)  # type: ignore[misc,operator]
+        if extras:
+            return {
+                **built.model_dump(mode="json"),
+                **extras,
+            }
+        return built
     except Exception:
         # If the shared schema is stricter than this worker's fallback, keep
         # collector tests deterministic rather than mutating storage contracts.
+        if extras:
+            return {**payload, **extras}
         return _FallbackRawIntelligence(**payload)
-

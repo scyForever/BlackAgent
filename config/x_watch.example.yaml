@@ -1,0 +1,65 @@
+x:
+  bearer_token: ${BLACKAGENT_X_BEARER_TOKEN}
+  db: data/blackagent_x.db
+  legal_basis: AUTHORIZED_PARTNER
+  source_name_prefix: x_recent_search
+  watch:
+    queries:
+      - "(接码 OR 跑分 OR 刷单 OR 引流 OR 拉新 OR 高佣) lang:zh"
+      - "(卖号 OR 收号 OR 账号交易 OR 帐号买卖 OR 实名号 OR 号商 OR 账号) lang:zh"
+      - "(群控 OR 协议号 OR 养号 OR 众包 OR 接单) lang:zh"
+  collection:
+    max_results_per_query: 20
+    include_themes:
+      - 诈骗引流
+      - 刷单作弊
+      - 账号交易
+      - 众包任务
+      - 接码
+    include_keywords:
+      - 诈骗引流
+      - 接码
+      - 跑分
+      - 刷单
+      - 引流
+      - 拉新
+      - 高佣
+      - 卖号
+      - 收号
+      - 账号交易
+      - 帐号买卖
+      - 实名号
+      - 老号
+      - 白号
+      - 众包任务
+      - 众包
+      - 接单
+      - 群控
+      - 协议号
+    exclude_keywords:
+      - 警方通报
+      - 反诈
+      - 安全通告
+      - 曝光
+      - 推荐
+      - 教程
+      - 指南
+      - 攻略
+      - 评测
+      - 解析
+      - 精选
+      - 合集
+      - 收藏
+      - 实用
+      - 使用指南
+      - 选择建议
+      - 怎么用
+      - 什么意思
+      - 卖号指南
+      - 账号评估
+      - 估价
+      - 电子合同
+      - 正规平台
+      - 维权
+    min_keyword_hits: 2
+    save_jsonl_path: data/x_raw.jsonl

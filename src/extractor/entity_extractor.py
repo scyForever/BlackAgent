@@ -77,9 +77,9 @@ class BasicEntityExtractor:
     )
     EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
     PHONE_RE = re.compile(r"(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)")
-    QQ_RE = re.compile(r"(?i)(?:QQ|企鹅)[:：\s]*([1-9]\d{4,11})")
-    WECHAT_RE = re.compile(r"(?i)(?:微信|VX|V信|wechat)[:：\s]*([a-zA-Z][-_a-zA-Z0-9]{5,19})")
-    TELEGRAM_RE = re.compile(r"(?i)(?:Telegram|TG|飞机|电报)[:：\s@]*([a-zA-Z][a-zA-Z0-9_]{4,31})|(?<!\w)@([A-Za-z][A-Za-z0-9_]{4,31})")
+    QQ_RE = re.compile(r"(?i)(?:QQ|企鹅|🐧)[:：\s]*([1-9]\d{4,11})")
+    WECHAT_RE = re.compile(r"(?i)(?:微信|VX|V\s*X|V信|微(?:信)?|薇(?:信)?|围信|威信|wechat|wx)[:：\s]*([a-zA-Z][-_a-zA-Z0-9]{5,19})")
+    TELEGRAM_RE = re.compile(r"(?i)(?:Telegram|TG|TG号|飞机|纸飞机|小飞机|电报|✈️?|🛩️?)[:：\s@]*([a-zA-Z][a-zA-Z0-9_]{4,31})|(?<!\w)@([A-Za-z][A-Za-z0-9_]{4,31})")
     ACCOUNT_RE = re.compile(r"(?i)(?:账号|账户|UID|用户ID|群号|ID)[:：\s#]*([A-Za-z0-9_-]{4,32})")
     TOOL_TERMS = (
         "群控",
@@ -152,4 +152,3 @@ __all__ = [
     "FallbackEntityExtractionResult",
     "build_entity_result",
 ]
-

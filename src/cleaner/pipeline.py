@@ -13,8 +13,10 @@ from .text_filter import (
     DedupIndex,
     DroppedRecord,
     build_cleaned_text,
+    calculate_quality_score,
     calculate_noise_score,
-    is_blank_or_garbled,
+    detect_noise_reason,
+    detect_risk_signal_profile,
     normalize_text,
 )
 
@@ -35,9 +37,13 @@ class CleanerPipeline:
         max_chars: int = MAX_CLEAN_TEXT_CHARS,
         near_duplicate_threshold: float = 0.92,
         keep_duplicates: bool = False,
+        min_entropy: float = 1.0,
+        max_noise_score: float = 0.82,
     ) -> None:
         self.max_chars = max_chars
         self.keep_duplicates = keep_duplicates
+        self.min_entropy = min_entropy
+        self.max_noise_score = max_noise_score
         self._dedup_index = DedupIndex(threshold=near_duplicate_threshold)
 
     def clean(self, raw_items: Iterable[Any]) -> CleanerBatchResult:
@@ -59,12 +65,31 @@ class CleanerPipeline:
             )
             normalized = normalize_text(content_text)
             noise_score = calculate_noise_score(normalized)
-
-            if is_blank_or_garbled(normalized):
+            matched_keywords = get_record_field(raw, "matched_keywords")
+            matched_themes = get_record_field(raw, "matched_themes")
+            extra_terms = [
+                *(
+                    value
+                    for value in (matched_keywords if isinstance(matched_keywords, (list, tuple)) else ())
+                ),
+                *(
+                    value
+                    for value in (matched_themes if isinstance(matched_themes, (list, tuple)) else ())
+                ),
+            ]
+            risk_profile = detect_risk_signal_profile(normalized, extra_terms=extra_terms)
+            noise_reason = detect_noise_reason(
+                normalized,
+                noise_score=noise_score,
+                risk_score=risk_profile.risk_score,
+                min_entropy=self.min_entropy,
+                max_noise_score=self.max_noise_score,
+            )
+            if noise_reason is not None:
                 result.dropped.append(
                     DroppedRecord(
                         source_trace_id=source_trace_id,
-                        reason="blank_or_garbled",
+                        reason=noise_reason,
                         noise_score=noise_score,
                     )
                 )
@@ -85,12 +110,24 @@ class CleanerPipeline:
                 continue
 
             truncated = normalized[: self.max_chars]
+            quality_score = calculate_quality_score(
+                truncated,
+                noise_score=noise_score,
+                risk_score=risk_profile.risk_score,
+                entropy=risk_profile.text_entropy,
+            )
             result.cleaned.append(
                 build_cleaned_text(
                     source_trace_id=source_trace_id,
                     clean_text=truncated,
                     noise_score=noise_score,
                     dedup_group_id=dedup_group_id,
+                    quality_score=quality_score,
+                    risk_score=risk_profile.risk_score,
+                    risk_level=risk_profile.risk_level,
+                    risk_categories=list(risk_profile.risk_categories),
+                    risk_markers=list(risk_profile.risk_markers),
+                    text_entropy=risk_profile.text_entropy,
                 )
             )
 
@@ -105,4 +142,3 @@ class CleanerPipeline:
 
 
 __all__ = ["CleanerBatchResult", "CleanerPipeline"]
-

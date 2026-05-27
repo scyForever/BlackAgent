@@ -18,6 +18,10 @@ from src.config_loader import PROJECT_ROOT as APP_PROJECT_ROOT, Settings, resolv
 from storage.sql_backend import connect
 
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect raw intelligence from a batch source catalog.")
     parser.add_argument(
@@ -32,6 +36,30 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--timeout-seconds", type=float, default=25.0, help="Network timeout per source request")
     parser.add_argument("--max-records", type=int, default=20, help="Max records fetched per source")
+    parser.add_argument(
+        "--rate-limit-per-minute",
+        type=int,
+        default=8,
+        help="Per-host request budget for batch public search collection (default: 8)",
+    )
+    parser.add_argument(
+        "--retry-attempts",
+        type=int,
+        default=3,
+        help="Retry count for retryable HTTP statuses like 429 (default: 3)",
+    )
+    parser.add_argument(
+        "--retry-backoff-seconds",
+        type=float,
+        default=8.0,
+        help="Initial backoff seconds before retrying a throttled source (default: 8)",
+    )
+    parser.add_argument(
+        "--retry-backoff-multiplier",
+        type=float,
+        default=2.0,
+        help="Exponential multiplier for retry backoff (default: 2.0)",
+    )
     parser.add_argument("--run-pipeline", action="store_true", help="Also run the Phase II/III pipeline after raw collection")
     parser.add_argument("--fresh", action="store_true", help="Delete the target SQLite file before collecting")
     return parser.parse_args()
@@ -50,6 +78,10 @@ def main() -> int:
             "enabled": True,
             "timeout_seconds": args.timeout_seconds,
             "max_records_per_fetch": args.max_records,
+            "rate_limit_per_minute": args.rate_limit_per_minute,
+            "retry_attempts": args.retry_attempts,
+            "retry_backoff_seconds": args.retry_backoff_seconds,
+            "retry_backoff_multiplier": args.retry_backoff_multiplier,
         },
         storage={
             "backend": "sql",
@@ -96,6 +128,7 @@ def main() -> int:
                 "fetched_count": item.get("fetched_count"),
                 "error": item.get("error"),
                 "sample": (item.get("raw_records") or [{}])[0].get("content_text", "")[:240],
+                "matched_keywords": (item.get("raw_records") or [{}])[0].get("matched_keywords", []),
             }
             for item in payload.get("results", [])
         ],

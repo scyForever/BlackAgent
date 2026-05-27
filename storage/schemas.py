@@ -86,6 +86,12 @@ class CleanedText(SchemaModel):
     clean_text: str = Field(min_length=1, max_length=4000)
     noise_score: float = Field(ge=0.0, le=1.0)
     dedup_group_id: str | None = None
+    quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    risk_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    risk_level: str = Field(default="NONE", min_length=1)
+    risk_categories: list[str] = Field(default_factory=list)
+    risk_markers: list[str] = Field(default_factory=list)
+    text_entropy: float = Field(default=0.0, ge=0.0)
     cleaning_version: str = Field(default="cleaner_v1", min_length=1)
     created_at: datetime = Field(default_factory=utc_now)
 

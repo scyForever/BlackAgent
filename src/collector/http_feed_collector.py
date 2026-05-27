@@ -11,13 +11,23 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
+import threading
+import time
 from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from typing import Any, Callable, Iterable, Mapping
+from urllib import error as urllib_error
 from urllib import request as urllib_request
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .base_collector import build_raw_intelligence, model_dump
+from .relevance import decide_text_relevance
+
+
+_HOST_NEXT_ALLOWED_AT: dict[str, float] = {}
+_HOST_RATE_LIMIT_LOCK = threading.Lock()
 
 
 class NetworkCollectionDisabled(RuntimeError):
@@ -42,6 +52,21 @@ class HTTPFeedConfig:
     user_agent: str = "BlackAgent-HTTPFeedCollector/0.1"
     allowed_domains: tuple[str, ...] = ()
     headers: Mapping[str, str] = field(default_factory=dict)
+    include_keywords: tuple[str, ...] = ()
+    exclude_keywords: tuple[str, ...] = ()
+    include_themes: tuple[str, ...] = ()
+    exclude_themes: tuple[str, ...] = ()
+    search_query: str | None = None
+    query_theme: str | None = None
+    query_term: str | None = None
+    query_term_stage: str | None = None
+    query_variant_index: int | None = None
+    min_keyword_hits: int = 1
+    rate_limit_per_minute: int = 0
+    retry_attempts: int = 0
+    retry_backoff_seconds: float = 0.0
+    retry_backoff_multiplier: float = 2.0
+    retry_statuses: tuple[int, ...] = (429, 500, 502, 503, 504)
     text_fields: tuple[str, ...] = (
         "content_text",
         "text",
@@ -79,15 +104,27 @@ class HTTPFeedCollector:
         "未授权",
         "越权",
     )
+    DUCKDUCKGO_BLOCK_MARKERS = (
+        "Unfortunately, bots use DuckDuckGo too",
+        "Unfortunately, bots use DuckDuckGo",
+        "automated requests",
+    )
+    DUCKDUCKGO_RESULT_RE = re.compile(
+        r"## \[(?P<title>.+?)\]\((?P<link>https?://[^)]+)\)(?P<body>.*?)(?=(?:## \[)|$)"
+    )
 
     def __init__(
         self,
         config: HTTPFeedConfig,
         *,
         opener: Callable[..., Any] | None = None,
+        sleep: Callable[[float], Any] | None = None,
+        monotonic: Callable[[], float] | None = None,
     ) -> None:
         self.config = config
         self.opener = opener or urllib_request.urlopen
+        self._sleep = sleep or time.sleep
+        self._monotonic = monotonic or time.monotonic
 
     def stream(self) -> Iterable[Any]:
         for row in self.fetch_rows():
@@ -108,7 +145,8 @@ class HTTPFeedCollector:
         self._validate_fetch_allowed()
         body, content_type = self._fetch_text()
         rows = self._parse_body(body, content_type)
-        return [self._normalize_row(row, index) for index, row in enumerate(rows[: self.config.max_records], start=1)]
+        normalized = [self._normalize_row(row, index) for index, row in enumerate(rows[: self.config.max_records], start=1)]
+        return [row for row in (self._apply_relevance_filter(item) for item in normalized) if row is not None]
 
     def _validate_fetch_allowed(self) -> None:
         if not self.config.network_enabled:
@@ -117,6 +155,16 @@ class HTTPFeedCollector:
             raise ValueError("max_records must be positive")
         if self.config.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        if self.config.min_keyword_hits <= 0:
+            raise ValueError("min_keyword_hits must be positive")
+        if self.config.rate_limit_per_minute < 0:
+            raise ValueError("rate_limit_per_minute must be non-negative")
+        if self.config.retry_attempts < 0:
+            raise ValueError("retry_attempts must be non-negative")
+        if self.config.retry_backoff_seconds < 0:
+            raise ValueError("retry_backoff_seconds must be non-negative")
+        if self.config.retry_backoff_multiplier < 1:
+            raise ValueError("retry_backoff_multiplier must be at least 1")
 
         parsed = urlparse(self.config.source_url)
         if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
@@ -143,16 +191,60 @@ class HTTPFeedCollector:
         headers = {"User-Agent": self.config.user_agent, "Accept": "application/json,text/csv,text/plain,*/*"}
         headers.update({str(key): str(value) for key, value in self.config.headers.items()})
         req = urllib_request.Request(self.config.source_url, headers=headers, method="GET")
-        with self.opener(req, timeout=self.config.timeout_seconds) as response:  # noqa: S310 - explicit authorized URL only
-            raw_body = response.read()
-            content_type = ""
-            headers_obj = getattr(response, "headers", None)
-            if headers_obj is not None:
-                content_type = str(headers_obj.get("Content-Type", ""))
-            charset = "utf-8"
-            if "charset=" in content_type:
-                charset = content_type.rsplit("charset=", 1)[-1].split(";", 1)[0].strip() or "utf-8"
-            return raw_body.decode(charset, errors="replace"), content_type
+        retries_used = 0
+        while True:
+            self._throttle_request_host()
+            try:
+                with self.opener(req, timeout=self.config.timeout_seconds) as response:  # noqa: S310 - explicit authorized URL only
+                    raw_body = response.read()
+                    content_type = ""
+                    headers_obj = getattr(response, "headers", None)
+                    if headers_obj is not None:
+                        content_type = str(headers_obj.get("Content-Type", ""))
+                    charset = "utf-8"
+                    if "charset=" in content_type:
+                        charset = content_type.rsplit("charset=", 1)[-1].split(";", 1)[0].strip() or "utf-8"
+                    return raw_body.decode(charset, errors="replace"), content_type
+            except urllib_error.HTTPError as exc:
+                if not self._should_retry_http_error(exc, retries_used):
+                    raise
+                delay_seconds = self._retry_delay_seconds(exc, retries_used)
+                retries_used += 1
+                if delay_seconds > 0:
+                    self._sleep(delay_seconds)
+
+    def _throttle_request_host(self) -> None:
+        if self.config.rate_limit_per_minute <= 0:
+            return
+        hostname = (urlparse(self.config.source_url).hostname or "").lower().strip(".")
+        if not hostname:
+            return
+        interval_seconds = 60.0 / float(self.config.rate_limit_per_minute)
+        if interval_seconds <= 0:
+            return
+
+        sleep_for = 0.0
+        with _HOST_RATE_LIMIT_LOCK:
+            now = self._monotonic()
+            next_allowed_at = _HOST_NEXT_ALLOWED_AT.get(hostname, 0.0)
+            if next_allowed_at > now:
+                sleep_for = next_allowed_at - now
+                scheduled_at = next_allowed_at
+            else:
+                scheduled_at = now
+            _HOST_NEXT_ALLOWED_AT[hostname] = scheduled_at + interval_seconds
+        if sleep_for > 0:
+            self._sleep(sleep_for)
+
+    def _should_retry_http_error(self, exc: urllib_error.HTTPError, retries_used: int) -> bool:
+        return retries_used < self.config.retry_attempts and exc.code in self.config.retry_statuses
+
+    def _retry_delay_seconds(self, exc: urllib_error.HTTPError, retries_used: int) -> float:
+        retry_after = exc.headers.get("Retry-After") if getattr(exc, "headers", None) is not None else None
+        parsed_retry_after = _parse_retry_after_seconds(retry_after)
+        if parsed_retry_after is not None:
+            return parsed_retry_after
+        return self.config.retry_backoff_seconds * (self.config.retry_backoff_multiplier ** retries_used)
 
     def _parse_body(self, body: str, content_type: str) -> list[Mapping[str, Any] | str]:
         feed_format = self._resolve_format(body, content_type)
@@ -223,6 +315,12 @@ class HTTPFeedCollector:
         parser.feed(body)
         snapshot_text = parser.snapshot_text()
         if snapshot_text:
+            if "DuckDuckGo" in snapshot_text and any(marker in snapshot_text for marker in self.DUCKDUCKGO_BLOCK_MARKERS):
+                return []
+            duckduckgo_rows = list(self._duckduckgo_search_rows(snapshot_text))
+            if duckduckgo_rows:
+                yield from duckduckgo_rows
+                return
             yield {"content_text": snapshot_text}
 
     def _normalize_row(self, row: Mapping[str, Any] | str, index: int) -> dict[str, Any]:
@@ -244,6 +342,16 @@ class HTTPFeedCollector:
             "content_text": content_text,
             "feed_row_index": index,
         }
+        if self.config.search_query:
+            payload["search_query"] = self.config.search_query
+        if self.config.query_theme:
+            payload["query_theme"] = self.config.query_theme
+        if self.config.query_term:
+            payload["query_term"] = self.config.query_term
+        if self.config.query_term_stage:
+            payload["query_term_stage"] = self.config.query_term_stage
+        if self.config.query_variant_index is not None:
+            payload["query_variant_index"] = self.config.query_variant_index
         return payload
 
     def _content_text_from_mapping(self, data: Mapping[str, Any]) -> str:
@@ -252,6 +360,62 @@ class HTTPFeedCollector:
             if value not in (None, ""):
                 return str(value)
         return json.dumps(model_dump(data), ensure_ascii=False, sort_keys=True)
+
+    def _apply_relevance_filter(self, row: dict[str, Any]) -> dict[str, Any] | None:
+        if not (
+            self.config.include_keywords
+            or self.config.exclude_keywords
+            or self.config.include_themes
+            or self.config.exclude_themes
+        ):
+            return row
+
+        decision = decide_text_relevance(
+            row.get("content_text"),
+            include_keywords=self.config.include_keywords,
+            exclude_keywords=self.config.exclude_keywords,
+            include_themes=self.config.include_themes,
+            exclude_themes=self.config.exclude_themes,
+            min_keyword_hits=self.config.min_keyword_hits,
+        )
+        if not decision.relevant:
+            return None
+        row["matched_keywords"] = list(decision.matched_keywords)
+        row["excluded_keywords"] = list(decision.excluded_keywords)
+        row["matched_themes"] = list(decision.matched_themes)
+        row["excluded_themes"] = list(decision.excluded_themes)
+        row["keyword_hit_count"] = decision.hit_count
+        row["relevance_version"] = decision.policy_version
+        return row
+
+    def _duckduckgo_search_rows(self, snapshot_text: str) -> Iterable[dict[str, Any]]:
+        if "DuckDuckGo" not in snapshot_text or "## [" not in snapshot_text:
+            return []
+
+        rows: list[dict[str, Any]] = []
+        for rank, match in enumerate(self.DUCKDUCKGO_RESULT_RE.finditer(snapshot_text), start=1):
+            title = _collapse_ws(match.group("title"))
+            redirect_url = match.group("link")
+            body = _collapse_ws(_markdown_visible_text(match.group("body")))
+            target_url = _decode_duckduckgo_target(redirect_url)
+            content_text = _collapse_ws(" ".join(part for part in (title, body) if part))
+            if not content_text:
+                continue
+            rows.append(
+                {
+                    "source_url": target_url,
+                    "search_query_url": self.config.source_url,
+                    "search_query": self.config.search_query,
+                    "query_theme": self.config.query_theme,
+                    "query_term": self.config.query_term,
+                    "query_term_stage": self.config.query_term_stage,
+                    "query_variant_index": self.config.query_variant_index,
+                    "result_title": title,
+                    "result_rank": rank,
+                    "content_text": content_text,
+                }
+            )
+        return rows
 
 
 def _data_line(line: str) -> bool:
@@ -337,6 +501,38 @@ class _HTMLSnapshotParser(HTMLParser):
 
 def _collapse_ws(value: str) -> str:
     return " ".join(value.split())
+
+
+def _markdown_visible_text(value: str) -> str:
+    without_images = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", value)
+    without_links = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", without_images)
+    return _collapse_ws(without_links)
+
+
+def _decode_duckduckgo_target(link: str) -> str:
+    parsed = urlparse(link)
+    query_target = parse_qs(parsed.query).get("uddg")
+    if query_target:
+        return unquote(query_target[0])
+    return link
+
+
+def _parse_retry_after_seconds(value: str | None) -> float | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        seconds = float(text)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(text)
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
+        now = time.time()
+        return max(0.0, retry_at.timestamp() - now)
+    return max(0.0, seconds)
 
 
 __all__ = [
