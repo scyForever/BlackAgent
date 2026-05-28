@@ -104,6 +104,24 @@ python scripts/collect_blackgray_all.py --fresh
 
 也就是说，一个 source 不必只写死一个 query；系统会基于主题词典自动改写出多组近义搜索词，再批量抓搜索结果。
 
+## investigation 在线链路：外部 LLM 先改写 query，再抓取
+
+当前在线 investigation 回退抓取链路新增了一层 **外部 LLM query rewrite**：
+
+- 位置：`src/agent/query_rewriter.py`
+- 接入点：`src/agent/investigation_orchestrator.py`
+- 触发时机：clue 池未命中，并进入 source collection 回退路径时
+
+执行顺序现在是：
+
+`用户 query -> LLM intent -> LLM plan -> 选 source -> LLM 改写 search_query -> 按改写后的 URL 抓取`
+
+边界保持保守：
+
+- 只对带 `query_url_template` 的 source 做改写
+- LLM 返回非 JSON、缺少 `search_query`、或者供应商兼容性不好时，会自动回退到 source 现有 `search_query`
+- 所以 catalog 里的静态 query 仍是保底链路，但在线 investigation 会优先尝试让外部 LLM 把 query 改得更贴近当前用户任务
+
 现在 query 展开分成两层：
 
 1. **core 首轮词**：高精度主词，例如 `私域导流 / 加v / 拉群 / 高佣`

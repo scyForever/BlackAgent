@@ -58,11 +58,13 @@ flowchart TD
 
 - `src/collector/http_feed_collector.py`
 - `src/collector/source_config.py`
+- `src/agent/query_rewriter.py`
 - `src/enhancement/source_intake.py`
 
 职责：
 
 - 合规 source gating
+- 外部 LLM query rewrite（抓取前）
 - query variant 展开
 - 频控 / 重试
 - 原始 payload 规范化
@@ -218,7 +220,8 @@ flowchart LR
 2. LLM plan
 3. 检索 clue pool
 4. 命中则直接做 quality gate / summarize
-5. 未命中再回退直接处理 raw/source
+5. 未命中时，对选中的授权 source 先做 LLM query rewrite
+6. 再回退直接处理 raw/source
 
 ### 阶段 C：再补 LLM 精判器
 

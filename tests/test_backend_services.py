@@ -154,3 +154,153 @@ def test_llm_gateway_builds_openai_compatible_urllib_request(monkeypatch):
     assert response.ok is True
     assert response.network_attempted is True
     assert response.parsed_json == {"answer": "ok"}
+
+
+def test_llm_gateway_supports_provider_specific_headers_and_payload(monkeypatch):
+    captured = {}
+
+    class FakeHTTPResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "id": "chatcmpl-provider-test",
+                    "model": "mimo-v2.5-pro",
+                    "choices": [{"message": {"role": "assistant", "content": json.dumps({"pong": True})}}],
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = dict(request.header_items())
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeHTTPResponse()
+
+    monkeypatch.setattr(llm_gateway.urllib_request, "urlopen", fake_urlopen)
+
+    gateway = LLMGateway(
+        base_url="https://api.xiaomimimo.com/v1",
+        api_key="mimo-test",
+        model="mimo-v2.5-pro",
+        dry_run=False,
+        auth_header="api-key",
+        max_tokens_param="max_completion_tokens",
+        extra_body={"thinking": {"type": "disabled"}},
+    )
+
+    response = gateway.chat([{"role": "user", "content": "ping"}], max_tokens=32)
+
+    assert captured["url"] == "https://api.xiaomimimo.com/v1/chat/completions"
+    assert captured["headers"]["Api-key"] == "mimo-test"
+    assert "Authorization" not in captured["headers"]
+    assert captured["body"]["max_completion_tokens"] == 32
+    assert "max_tokens" not in captured["body"]
+    assert captured["body"]["thinking"] == {"type": "disabled"}
+    assert response.ok is True
+    assert response.parsed_json == {"pong": True}
+
+
+def test_llm_gateway_can_omit_response_format_for_unsupported_models(monkeypatch):
+    captured = {}
+
+    class FakeHTTPResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "id": "chatcmpl-no-response-format",
+                    "model": "provider-model",
+                    "choices": [{"message": {"role": "assistant", "content": json.dumps({"ok": True})}}],
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeHTTPResponse()
+
+    monkeypatch.setattr(llm_gateway.urllib_request, "urlopen", fake_urlopen)
+
+    gateway = LLMGateway(
+        base_url="https://llm.example/v1",
+        api_key="sk-test",
+        model="provider-model",
+        dry_run=False,
+        response_format_supported=False,
+    )
+
+    response = gateway.chat([{"role": "user", "content": "return json"}], response_format={"type": "json_object"})
+
+    assert "response_format" not in captured["body"]
+    assert response.ok is True
+    assert response.parsed_json == {"ok": True}
+
+
+def test_llm_gateway_extracts_json_from_fenced_response(monkeypatch):
+    class FakeHTTPResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "id": "chatcmpl-fenced-json",
+                    "model": "provider-model",
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "```json\n{\"search_query\":\"site:t.me/s 接码 群控\"}\n```",
+                            }
+                        }
+                    ],
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(llm_gateway.urllib_request, "urlopen", lambda request, timeout: FakeHTTPResponse())
+
+    gateway = LLMGateway(
+        base_url="https://llm.example/v1",
+        api_key="sk-test",
+        model="provider-model",
+        dry_run=False,
+        response_format_supported=False,
+    )
+
+    response = gateway.chat([{"role": "user", "content": "rewrite query"}], response_format={"type": "json_object"})
+
+    assert response.ok is True
+    assert response.parsed_json == {"search_query": "site:t.me/s 接码 群控"}
+
+
+def test_llm_gateway_timeout_returns_normalized_error(monkeypatch):
+    def fake_urlopen(*_args, **_kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(llm_gateway.urllib_request, "urlopen", fake_urlopen)
+
+    gateway = LLMGateway(base_url="https://llm.example/v1", api_key="sk-test", model="adapter-model", dry_run=False)
+    response = gateway.chat([{"role": "user", "content": "hello"}])
+
+    assert response.ok is False
+    assert response.network_attempted is True
+    assert response.error.startswith("timeout:")

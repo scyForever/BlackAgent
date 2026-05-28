@@ -1,13 +1,13 @@
-"""FastAPI entrypoint for the BlackAgent MVP.
+"""FastAPI entrypoint for the BlackAgent investigation service.
 
-This module intentionally keeps orchestration dependencies behind delayed imports
-so Worker A's API shell remains importable while other workers build schemas,
-storage repositories, and the AgentOrchestrator in parallel.
+The public API is centered on the current user-query-driven
+``InvestigationOrchestrator`` so the exposed agent flow stays singular:
+request understanding, authorized data intake, local intelligence processing,
+clue refinement, and human-reviewable outputs.
 """
 
 from __future__ import annotations
 
-import inspect
 import json
 from contextlib import asynccontextmanager
 from hashlib import sha256
@@ -29,11 +29,11 @@ class HealthResponse(BaseModel):
 
 
 class PipelineRunRequest(BaseModel):
-    """Input accepted by the MVP pipeline trigger.
+    """Input accepted by local processing and clue-build triggers.
 
     The endpoint accepts either a single text sample, inline fixture items, or a
-    project-local JSON/JSONL fixture path. Extra fields are preserved for the
-    future orchestrator instead of being rejected by Worker A's thin API layer.
+    project-local JSON/JSONL fixture path. Extra fields are preserved for
+    downstream processing instead of being rejected by the API layer.
     """
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
@@ -58,63 +58,6 @@ class PipelineRunRequest(BaseModel):
         if not self.content_text and not self.fixture_items and not self.fixture_path:
             raise ValueError("Provide content_text/text, fixture_items/items, or fixture_path/fixture.")
         return self
-
-
-class PipelineRunResponse(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    status: str
-    mode: str
-    input_count: int
-    standard_count: int = 0
-    review_count: int = 0
-    orchestrator_available: bool = False
-    details: dict[str, Any] = Field(default_factory=dict)
-
-
-class ReviewTasksResponse(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    status: str
-    count: int
-    tasks: list[dict[str, Any]]
-    source: str = "api_stub"
-
-
-class ReviewDecisionRequest(BaseModel):
-    """Human review workbench decision payload."""
-
-    decision: str = Field(description="approved, misreport, uncertain, or escalate")
-    reviewer: str = Field(default="system", min_length=1)
-    notes: str | None = None
-    edited_risk_type: str | None = None
-    secondary_label: str | None = None
-    corrected_entities: list[dict[str, Any]] = Field(default_factory=list)
-    add_to_wordlist: bool = False
-
-    @field_validator("decision")
-    @classmethod
-    def normalize_decision_text(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("decision must not be empty")
-        return value
-
-
-class ReviewDecisionResponse(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    status: str
-    hypothesis_id: str
-    decision: str
-    review_state: dict[str, Any]
-    audit_event: dict[str, Any]
-
-
-class AuditEventsResponse(BaseModel):
-    status: str
-    count: int
-    events: list[dict[str, Any]]
 
 
 class AdvancedPipelineResponse(BaseModel):
@@ -143,7 +86,7 @@ class InvestigationRunRequest(BaseModel):
     fixture_path: str | None = None
     source_config_path: str | None = None
     sources: list[dict[str, Any]] = Field(default_factory=list)
-    max_sources: int = Field(default=5, ge=1, le=20)
+    max_sources: int | None = Field(default=None, ge=1)
     time_range_hours: int | None = Field(default=None, ge=1)
     source_types: list[str] = Field(default_factory=list)
     risk_types: list[str] = Field(default_factory=list)
@@ -475,96 +418,6 @@ def _materialize_items(request: PipelineRunRequest) -> list[dict[str, Any]]:
     return items
 
 
-def _load_orchestrator(settings: Settings) -> tuple[Any | None, str | None]:
-    """Create the future AgentOrchestrator if another worker has provided it."""
-
-    try:
-        from src.agent.agent_orchestrator import AgentOrchestrator  # type: ignore
-    except ModuleNotFoundError as exc:
-        if exc.name and exc.name.startswith("src.agent"):
-            return None, f"orchestrator module unavailable: {exc.name}"
-        return None, f"orchestrator import dependency unavailable: {exc.name}"
-    except Exception as exc:  # Keep API import/use stable during parallel development.
-        return None, f"orchestrator import failed: {exc.__class__.__name__}: {exc}"
-
-    for kwargs in ({"settings": settings}, {"config": settings}, {}):
-        try:
-            return AgentOrchestrator(**kwargs), None
-        except TypeError:
-            continue
-        except Exception as exc:
-            return None, f"orchestrator initialization failed: {exc.__class__.__name__}: {exc}"
-    return None, "orchestrator initialization signature is unsupported"
-
-
-async def _maybe_await(value: Any) -> Any:
-    if inspect.isawaitable(value):
-        return await value
-    return value
-
-
-async def _invoke_orchestrator(orchestrator: Any, payload: dict[str, Any]) -> Any:
-    """Call a likely orchestrator entrypoint without fixing Worker D's API yet."""
-
-    for method_name in ("run_pipeline", "run", "process_batch", "process", "execute"):
-        method = getattr(orchestrator, method_name, None)
-        if not callable(method):
-            continue
-        if isinstance(payload.get("items"), list):
-            try:
-                return await _maybe_await(method(payload["items"]))
-            except TypeError:
-                pass
-        try:
-            return await _maybe_await(method(payload))
-        except TypeError:
-            continue
-    raise HTTPException(status_code=501, detail="AgentOrchestrator has no supported run method")
-
-
-def _normalize_pipeline_result(result: Any, input_count: int) -> PipelineRunResponse:
-    if isinstance(result, BaseModel):
-        result = result.model_dump(mode="json")
-    elif hasattr(result, "model_dump"):
-        result = result.model_dump()
-    elif is_dataclass(result):
-        result = asdict(result)
-    if not isinstance(result, dict):
-        return PipelineRunResponse(
-            status="completed",
-            mode="orchestrator",
-            input_count=input_count,
-            orchestrator_available=True,
-            details={"result": result},
-        )
-
-    return PipelineRunResponse(
-        status=str(result.get("status", "completed")),
-        mode=str(result.get("mode", "orchestrator")),
-        input_count=int(result.get("input_count", input_count)),
-        standard_count=int(result.get("standard_count", result.get("entity_count", 0) or 0)),
-        review_count=int(result.get("review_count", result.get("review_required_count", 0) or 0)),
-        orchestrator_available=True,
-        details={key: value for key, value in result.items() if key not in {"status", "mode", "input_count", "standard_count", "entity_count", "review_count", "review_required_count"}},
-    )
-
-
-def _stub_pipeline_response(items: list[dict[str, Any]], settings: Settings, reason: str | None) -> PipelineRunResponse:
-    return PipelineRunResponse(
-        status="accepted",
-        mode=settings.app.mode,
-        input_count=len(items),
-        standard_count=0,
-        review_count=0,
-        orchestrator_available=False,
-        details={
-            "message": "Pipeline request accepted by API shell; AgentOrchestrator is not wired yet.",
-            "reason": reason,
-            "dry_run": True,
-        },
-    )
-
-
 def _coerce_task(task: Any) -> dict[str, Any]:
     if isinstance(task, BaseModel):
         return task.model_dump(mode="json")
@@ -575,46 +428,6 @@ def _coerce_task(task: Any) -> dict[str, Any]:
     if isinstance(task, dict):
         return task
     return {"value": task}
-
-
-async def _load_review_tasks(settings: Settings, status: str | None = "PENDING") -> tuple[list[dict[str, Any]], str]:
-    """Best-effort delayed wiring for future review repository/orchestrator APIs."""
-
-    orchestrator, reason = _load_orchestrator(settings)
-    if orchestrator is not None:
-        for method_name in ("list_review_tasks", "get_review_tasks", "review_tasks"):
-            method = getattr(orchestrator, method_name, None)
-            if callable(method):
-                try:
-                    result = await _maybe_await(method(status=status))
-                except TypeError:
-                    result = await _maybe_await(method())
-                if isinstance(result, dict) and "tasks" in result:
-                    result = result["tasks"]
-                if isinstance(result, list):
-                    return [_coerce_task(task) for task in result], "orchestrator"
-        repo = getattr(orchestrator, "review_repo", None)
-        if repo is not None:
-            for method_name in ("list", "list_tasks", "all"):
-                method = getattr(repo, method_name, None)
-                if callable(method):
-                    try:
-                        result = await _maybe_await(method(status=status))
-                    except TypeError:
-                        result = await _maybe_await(method())
-                    if isinstance(result, list):
-                        return [_coerce_task(task) for task in result], "orchestrator.review_repo"
-
-    return [], reason or "api_stub"
-
-
-def _normalize_status_filter(status: str | None) -> str | None:
-    if status is None:
-        return "PENDING"
-    normalized = status.strip().upper()
-    if normalized in {"", "ALL", "*"}:
-        return None
-    return normalized
 
 
 def create_app(settings_override: Settings | None = None) -> FastAPI:
@@ -637,12 +450,9 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     app = FastAPI(
         title=settings.app.name,
         version="0.1.0",
-        description="BlackAgent MVP API shell with controlled-exploration wiring.",
+        description="BlackAgent user-query-driven investigation API.",
         lifespan=lifespan,
     )
-    app.state.orchestrator_initialized = False
-    app.state.orchestrator = None
-    app.state.orchestrator_reason = None
     app.state.phase_engine = None
     app.state.investigation_orchestrator = None
     app.state.clue_repo = InMemoryClueRepo()
@@ -654,14 +464,6 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     app.state.scheduler_backend = None
     app.state.scheduler_backend_initialized = False
     app.state.collection_scheduler = None
-
-    def get_orchestrator() -> tuple[Any | None, str | None]:
-        if not app.state.orchestrator_initialized:
-            orchestrator, reason = _load_orchestrator(settings)
-            app.state.orchestrator = orchestrator
-            app.state.orchestrator_reason = reason
-            app.state.orchestrator_initialized = True
-        return app.state.orchestrator, app.state.orchestrator_reason
 
     def get_phase_engine() -> Any:
         if app.state.phase_engine is None:
@@ -710,6 +512,10 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
                 dry_run=(settings.llm.dry_run or not settings.llm.enabled),
                 mock=settings.llm.provider.lower() == "mock",
                 timeout_seconds=settings.llm.timeout_seconds,
+                auth_header=settings.llm.auth_header,
+                max_tokens_param=settings.llm.max_tokens_param,
+                response_format_supported=settings.llm.response_format_supported,
+                extra_body=settings.llm.extra_body,
             )
         return app.state.llm_gateway
 
@@ -1109,94 +915,6 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
             )
         return EnforcementExecuteResponse(status="ok", result_count=len(result_payloads), results=result_payloads)
 
-    @app.post(f"{settings.api.prefix}/pipeline/run", response_model=PipelineRunResponse)
-    async def run_pipeline(request: PipelineRunRequest) -> PipelineRunResponse:
-        items = _materialize_items(request)
-        if not items:
-            raise HTTPException(status_code=400, detail="No input items were provided.")
-
-        payload = {
-            "items": items,
-            "source_type": request.source_type,
-            "source_name": request.source_name,
-            "source_url": request.source_url,
-            "legal_basis": request.legal_basis or settings.pipeline.default_legal_basis,
-            "dry_run": request.dry_run,
-            "config": settings.model_dump(mode="json"),
-        }
-
-        orchestrator, reason = get_orchestrator()
-        if orchestrator is None:
-            return _stub_pipeline_response(items, settings, reason)
-
-        result = await _invoke_orchestrator(orchestrator, payload)
-        return _normalize_pipeline_result(result, len(items))
-
-    @app.get(f"{settings.api.prefix}/review/tasks", response_model=ReviewTasksResponse)
-    async def review_tasks(status: str | None = "PENDING") -> ReviewTasksResponse:
-        status_filter = _normalize_status_filter(status)
-        orchestrator, reason = get_orchestrator()
-        if orchestrator is not None:
-            for method_name in ("list_review_tasks", "get_review_tasks", "review_tasks"):
-                method = getattr(orchestrator, method_name, None)
-                if callable(method):
-                    try:
-                        result = await _maybe_await(method(status=status_filter))
-                    except TypeError:
-                        result = await _maybe_await(method())
-                    if isinstance(result, dict) and "tasks" in result:
-                        result = result["tasks"]
-                    if isinstance(result, list):
-                        return ReviewTasksResponse(status="ok", count=len(result), tasks=[_coerce_task(task) for task in result], source="orchestrator")
-        tasks, source = await _load_review_tasks(settings, status=status_filter)
-        if source == "api_stub" and reason:
-            source = reason
-        return ReviewTasksResponse(status="ok", count=len(tasks), tasks=tasks, source=source)
-
-    @app.post(f"{settings.api.prefix}/review/tasks/{{hypothesis_id}}/decision", response_model=ReviewDecisionResponse)
-    async def review_decision(hypothesis_id: str, request: ReviewDecisionRequest) -> ReviewDecisionResponse:
-        orchestrator, reason = get_orchestrator()
-        if orchestrator is None or not hasattr(orchestrator, "record_review_decision"):
-            raise HTTPException(status_code=501, detail=reason or "review decision workflow is not wired")
-        try:
-            result = await _maybe_await(
-                orchestrator.record_review_decision(
-                    hypothesis_id,
-                    decision=request.decision,
-                    reviewer=request.reviewer,
-                    notes=request.notes,
-                    edited_risk_type=request.edited_risk_type,
-                    secondary_label=request.secondary_label,
-                    corrected_entities=request.corrected_entities,
-                    add_to_wordlist=request.add_to_wordlist,
-                )
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except TypeError as exc:
-            raise HTTPException(status_code=501, detail=str(exc)) from exc
-
-        review_state = _coerce_task(result.get("review_state", {}))
-        audit_event = _coerce_task(result.get("audit_event", {}))
-        decision = str(review_state.get("decision") or request.decision).upper()
-        return ReviewDecisionResponse(
-            status="ok",
-            hypothesis_id=hypothesis_id,
-            decision=decision,
-            review_state=review_state,
-            audit_event=audit_event,
-        )
-
-    @app.get(f"{settings.api.prefix}/review/audit", response_model=AuditEventsResponse)
-    async def review_audit(event_type: str | None = None) -> AuditEventsResponse:
-        orchestrator, reason = get_orchestrator()
-        if orchestrator is None or not hasattr(orchestrator, "list_audit_events"):
-            raise HTTPException(status_code=501, detail=reason or "audit repository is not wired")
-        events = await _maybe_await(orchestrator.list_audit_events(event_type=event_type))
-        return AuditEventsResponse(status="ok", count=len(events), events=[_coerce_task(event) for event in events])
-
     @app.post(f"{settings.api.prefix}/pipeline/advanced/run", response_model=AdvancedPipelineResponse)
     async def run_advanced_pipeline(request: PipelineRunRequest) -> AdvancedPipelineResponse:
         items = _materialize_items(request)
@@ -1279,6 +997,7 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
                 "risk_types": request.risk_types,
                 "min_quality_score": request.min_quality_score,
             },
+            max_concurrent_sources=settings.network.max_concurrent_sources,
         )
         for clue in result.high_quality_clues:
             app.state.clue_repo.save(clue)

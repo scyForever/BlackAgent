@@ -9,6 +9,7 @@
 - `config/config.yaml`
   - 应用主配置
   - 包含 API、storage、network、llm、enforcement 等运行开关
+  - LLM 真实联调可通过仓库根目录 `.env` 或 shell 环境变量覆盖；最小验证脚本为 `scripts/smoke_llm_real.py`
 
 ### 标签与主题
 
@@ -65,6 +66,20 @@
 
 ```powershell
 python scripts/collect_public_sources.py --catalog config/intel_sources.public.yaml --db data/public_collect.db --fresh
+```
+
+### 外部 LLM API 真实联调
+
+```powershell
+D:\Anaconda\python.exe scripts\smoke_llm_real.py --force-real
+D:\Anaconda\python.exe scripts\smoke_llm_real.py --force-real --include-investigation
+```
+
+### Agent CLI 输入
+
+```powershell
+D:\Anaconda\python.exe scripts\run_agent_cli.py --force-real --demo-sample
+D:\Anaconda\python.exe scripts\run_agent_cli.py --force-real --query "找接码和群控相关线索" --fixture-path data\my_raw_items.jsonl --show clues
 ```
 
 ### 黑灰产主链采集

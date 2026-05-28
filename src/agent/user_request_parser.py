@@ -95,7 +95,7 @@ class LLMUserRequestParser:
 
     def _intent_from_payload(self, payload: Mapping[str, Any], *, query: str) -> UserIntent:
         return UserIntent(
-            goal=str(payload.get("goal") or "collect_high_quality_risk_clues"),
+            goal=_normalize_goal(payload.get("goal")),
             risk_types=_string_list(payload.get("risk_types")) or _fallback_intent(query).risk_types,
             source_preferences=_string_list(payload.get("source_preferences")),
             include_keywords=_string_list(payload.get("include_keywords")),
@@ -179,7 +179,11 @@ class LLMInvestigationPlanner:
                     action = str(item.get("action") or "").strip()
                     if agent and action:
                         agent_steps.append({"agent": agent, "action": action})
-        if not agent_steps:
+        # Real LLMs often paraphrase agent names. Keep the API contract stable:
+        # the displayed high-level plan always starts with the canonical
+        # deterministic pipeline stages while the raw LLM plan remains available
+        # in llm_traces[*].parsed_json for inspection.
+        if not agent_steps or agent_steps[0].get("agent") != "intent_planner":
             agent_steps = _fallback_plan(intent).agent_steps
 
         source_selection_strategy = payload.get("source_selection_strategy")
@@ -292,7 +296,7 @@ def _fallback_plan(intent: UserIntent) -> InvestigationPlan:
             "require_evidence_chain": intent.require_evidence_chain,
         },
         budget={
-            "max_sources": 5,
+            "max_sources": 0,
             "max_raw_records": 5000,
             "max_candidate_clues": 100,
             "max_llm_refine_clues": 20,
@@ -358,6 +362,18 @@ def _normalize_quality_profile(value: Any) -> str:
     return "balanced"
 
 
+def _normalize_goal(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return "collect_high_quality_risk_clues"
+    # Keep the public API stable even when a real LLM paraphrases the goal in
+    # Chinese or free text. Downstream orchestration currently has one supported
+    # investigation goal: collect and gate risk clues.
+    if text == "collect_high_quality_risk_clues":
+        return "collect_high_quality_risk_clues"
+    return "collect_high_quality_risk_clues"
+
+
 def _intent_payload_usable(payload: Mapping[str, Any]) -> bool:
     return bool(payload.get("goal") or payload.get("risk_types") or payload.get("source_preferences"))
 
@@ -368,7 +384,7 @@ def _plan_payload_usable(payload: Mapping[str, Any]) -> bool:
 
 def _normalize_budget(budget: Mapping[str, Any]) -> dict[str, int]:
     defaults = {
-        "max_sources": 5,
+        "max_sources": 0,
         "max_raw_records": 5000,
         "max_candidate_clues": 100,
         "max_llm_refine_clues": 20,
@@ -376,6 +392,13 @@ def _normalize_budget(budget: Mapping[str, Any]) -> dict[str, int]:
     }
     normalized = dict(defaults)
     for key, default in defaults.items():
+        if key == "max_sources":
+            try:
+                parsed = int(budget.get(key))
+            except (TypeError, ValueError):
+                parsed = default
+            normalized[key] = parsed if parsed >= 0 else default
+            continue
         normalized[key] = _coerce_positive_int(budget.get(key), default=default)
     return normalized
 

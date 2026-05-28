@@ -214,14 +214,12 @@ class HTTPFeedCollector:
                     self._sleep(delay_seconds)
 
     def _throttle_request_host(self) -> None:
-        if self.config.rate_limit_per_minute <= 0:
-            return
         hostname = (urlparse(self.config.source_url).hostname or "").lower().strip(".")
         if not hostname:
             return
-        interval_seconds = 60.0 / float(self.config.rate_limit_per_minute)
-        if interval_seconds <= 0:
-            return
+        interval_seconds = 0.0
+        if self.config.rate_limit_per_minute > 0:
+            interval_seconds = 60.0 / float(self.config.rate_limit_per_minute)
 
         sleep_for = 0.0
         with _HOST_RATE_LIMIT_LOCK:
@@ -232,7 +230,8 @@ class HTTPFeedCollector:
                 scheduled_at = next_allowed_at
             else:
                 scheduled_at = now
-            _HOST_NEXT_ALLOWED_AT[hostname] = scheduled_at + interval_seconds
+            if interval_seconds > 0:
+                _HOST_NEXT_ALLOWED_AT[hostname] = scheduled_at + interval_seconds
         if sleep_for > 0:
             self._sleep(sleep_for)
 
@@ -242,9 +241,23 @@ class HTTPFeedCollector:
     def _retry_delay_seconds(self, exc: urllib_error.HTTPError, retries_used: int) -> float:
         retry_after = exc.headers.get("Retry-After") if getattr(exc, "headers", None) is not None else None
         parsed_retry_after = _parse_retry_after_seconds(retry_after)
+        hostname = (urlparse(self.config.source_url).hostname or "").lower().strip(".")
         if parsed_retry_after is not None:
+            self._register_host_backoff(hostname, parsed_retry_after)
             return parsed_retry_after
-        return self.config.retry_backoff_seconds * (self.config.retry_backoff_multiplier ** retries_used)
+        delay_seconds = self.config.retry_backoff_seconds * (self.config.retry_backoff_multiplier ** retries_used)
+        if exc.code == 429 and delay_seconds > 0:
+            self._register_host_backoff(hostname, delay_seconds)
+        return delay_seconds
+
+    def _register_host_backoff(self, hostname: str, delay_seconds: float) -> None:
+        if not hostname or delay_seconds <= 0:
+            return
+        with _HOST_RATE_LIMIT_LOCK:
+            now = self._monotonic()
+            next_allowed_at = _HOST_NEXT_ALLOWED_AT.get(hostname, 0.0)
+            base_at = next_allowed_at if next_allowed_at > now else now
+            _HOST_NEXT_ALLOWED_AT[hostname] = base_at + delay_seconds
 
     def _parse_body(self, body: str, content_type: str) -> list[Mapping[str, Any] | str]:
         feed_format = self._resolve_format(body, content_type)

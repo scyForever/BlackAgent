@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Iterable, Mapping
+from urllib.parse import urlparse
 
 from src.backend import LLMGateway
 from src.enhancement.clue_quality import ClueQualityEvaluator
@@ -11,8 +13,13 @@ from src.enhancement.engine import PhaseTwoThreeEngine
 from src.enhancement.llm_clue_refiner import LLMClueRefiner
 from src.pipeline import OfflineClueBuilder
 from src.retrieval import ClueRetriever
+from src.scheduling.layered_collection import (
+    group_sources_by_collection_layer,
+    prioritize_sources_for_investigation,
+)
 from storage import ClueRepo, InMemoryClueRepo
 
+from .query_rewriter import LLMSourceQueryRewriter
 from .user_request_parser import LLMInvestigationPlanner, LLMUserRequestParser
 
 
@@ -60,6 +67,7 @@ class InvestigationOrchestrator:
         self.clue_repo = clue_repo if clue_repo is not None else InMemoryClueRepo()
         self.clue_retriever = clue_retriever or ClueRetriever()
         self.clue_refiner = LLMClueRefiner(llm_gateway)
+        self.query_rewriter = LLMSourceQueryRewriter(llm_gateway)
         self.offline_builder = OfflineClueBuilder(
             phase_engine=self.phase_engine,
             quality_evaluator=self.quality_evaluator,
@@ -75,15 +83,25 @@ class InvestigationOrchestrator:
         records: Iterable[Mapping[str, Any] | Any] = (),
         available_sources: Iterable[Mapping[str, Any]] = (),
         collect_source_records: SourceCollector | None = None,
-        max_sources: int = 5,
+        max_sources: int | None = None,
         retrieval_filters: Mapping[str, Any] | None = None,
+        max_concurrent_sources: int = 1,
     ) -> InvestigationRunResult:
         intent, intent_trace = self.intent_parser.parse(query)
         available_sources_list = [dict(source) for source in available_sources]
         plan, plan_trace = self.planner.plan(query, intent, available_sources=available_sources_list)
-        budget = self._resolve_budget(plan.model_dump(), explicit_max_sources=max_sources)
+        budget = self._resolve_budget(
+            plan.model_dump(),
+            explicit_max_sources=max_sources,
+            available_source_count=len(available_sources_list),
+        )
         retrieval_filters = dict(retrieval_filters or {})
-        selected_sources = self._select_sources(plan.model_dump(), available_sources_list, max_sources=budget["max_sources"])
+        selected_sources = self._select_sources(
+            plan.model_dump(),
+            available_sources_list,
+            max_sources=budget["max_sources"],
+            risk_types=intent.risk_types,
+        )
         retrieved_clues = self.clue_retriever.retrieve(
             self.clue_repo.list(),
             query=query,
@@ -131,23 +149,20 @@ class InvestigationOrchestrator:
         if len(collected_records) > budget["max_raw_records"]:
             collected_records = collected_records[: budget["max_raw_records"]]
         collection_runs: list[dict[str, Any]] = []
+        rewrite_traces: list[dict[str, Any]] = []
         if not collected_records and collect_source_records is not None:
-            for source in selected_sources:
-                fetched = collect_source_records(source)
-                remaining = budget["max_raw_records"] - len(collected_records)
-                if remaining <= 0:
-                    break
-                trimmed = fetched[:remaining]
-                collected_records.extend(trimmed)
-                collection_runs.append(
-                    {
-                        "source_name": source.get("source_name"),
-                        "source_type": source.get("source_type"),
-                        "fetched_count": len(trimmed),
-                    }
-                )
-                if len(collected_records) >= budget["max_raw_records"]:
-                    break
+            selected_sources, rewrite_traces = self._rewrite_selected_sources(
+                selected_sources,
+                query=query,
+                intent=intent.model_dump(),
+                plan=plan.model_dump(),
+            )
+            collected_records, collection_runs = self._collect_records_from_sources(
+                selected_sources,
+                collect_source_records=collect_source_records,
+                max_raw_records=budget["max_raw_records"],
+                max_concurrent_sources=max_concurrent_sources,
+            )
 
         if collected_records:
             build_result = self.offline_builder.build(
@@ -158,12 +173,12 @@ class InvestigationOrchestrator:
                 require_cross_source=intent.require_cross_source,
                 require_evidence_chain=intent.require_evidence_chain,
             )
-            phase_payload = build_result.execution_summary
+            phase_payload = _as_investigation_processing_summary(build_result.execution_summary)
             built_clues = build_result.clues
         else:
             phase_payload = {
                 "status": "completed",
-                "mode": "phase2_phase3_enhancement",
+                "mode": "investigation_processing",
                 "input_count": 0,
                 "accepted_count": 0,
                 "dropped_count": 0,
@@ -198,12 +213,20 @@ class InvestigationOrchestrator:
             candidate_count=len(candidate_clues),
             intent=intent.model_dump(),
             investigation_plan=plan.model_dump(),
-            llm_traces=[intent_trace.model_dump(), plan_trace.model_dump(), *refine_traces],
+            llm_traces=[intent_trace.model_dump(), plan_trace.model_dump(), *rewrite_traces, *refine_traces],
             selected_sources=selected_sources,
             collection_runs=collection_runs,
             execution_summary={
                 key: value
-                for key, value in {**phase_payload, "budget": budget, "refined_clue_count": min(len(built_clues), budget["max_llm_refine_clues"])}.items()
+                for key, value in {
+                    **phase_payload,
+                    "budget": budget,
+                    "refined_clue_count": min(len(built_clues), budget["max_llm_refine_clues"]),
+                    "query_rewrite_count": sum(1 for item in selected_sources if item.get("query_rewrite_applied")),
+                    "query_rewrite_fallback_count": sum(
+                        1 for item in selected_sources if item.get("query_rewrite_used_fallback")
+                    ),
+                }.items()
                 if key
                 in {
                     "status",
@@ -219,6 +242,8 @@ class InvestigationOrchestrator:
                     "strategy_count",
                     "budget",
                     "refined_clue_count",
+                    "query_rewrite_count",
+                    "query_rewrite_fallback_count",
                 }
             },
             high_quality_clues=high_quality_clues,
@@ -230,7 +255,8 @@ class InvestigationOrchestrator:
         plan: Mapping[str, Any],
         available_sources: list[dict[str, Any]],
         *,
-        max_sources: int,
+        max_sources: int | None,
+        risk_types: Iterable[str] = (),
     ) -> list[dict[str, Any]]:
         if not available_sources:
             return []
@@ -259,25 +285,216 @@ class InvestigationOrchestrator:
             scored.append((score, source))
 
         scored.sort(key=lambda item: (item[0], str(item[1].get("source_name") or "")), reverse=True)
-        chosen = [dict(source) for score, source in scored if score > 0][:max_sources]
-        if chosen:
-            return chosen
-        return [dict(source) for _, source in scored[:max_sources]]
+        fallback = [dict(source) for _, source in scored]
+        if max_sources is None or max_sources >= len(fallback):
+            selected = fallback
+        else:
+            chosen = [dict(source) for score, source in scored if score > 0][:max_sources]
+            if chosen:
+                selected = chosen
+            else:
+                selected = fallback[:max_sources] if max_sources is not None and max_sources > 0 else fallback
+        return prioritize_sources_for_investigation(
+            selected,
+            risk_types=risk_types,
+            preferred_source_types=preferred_types,
+            selected_source_names=selected_names,
+        )
 
-    def _resolve_budget(self, plan: Mapping[str, Any], *, explicit_max_sources: int) -> dict[str, int]:
+    def _resolve_budget(
+        self,
+        plan: Mapping[str, Any],
+        *,
+        explicit_max_sources: int | None,
+        available_source_count: int = 0,
+    ) -> dict[str, int | None]:
         raw = plan.get("budget") or {}
         if not isinstance(raw, Mapping):
             raw = {}
+        explicit_limit = explicit_max_sources if explicit_max_sources and explicit_max_sources > 0 else None
+        resolved_max_sources = self._resolve_max_sources(
+            raw.get("max_sources"),
+            explicit_max_sources=explicit_limit,
+            available_source_count=available_source_count,
+        )
+        candidate_budget_default = max(20, (resolved_max_sources or max(available_source_count, 1)) * 10)
         budget = {
-            "max_sources": self._positive_int(raw.get("max_sources"), explicit_max_sources),
+            "max_sources": resolved_max_sources,
             "max_raw_records": self._positive_int(raw.get("max_raw_records"), 5000),
-            "max_candidate_clues": self._positive_int(raw.get("max_candidate_clues"), max(20, explicit_max_sources * 10)),
+            "max_candidate_clues": self._positive_int(raw.get("max_candidate_clues"), candidate_budget_default),
             "max_llm_refine_clues": self._positive_int(raw.get("max_llm_refine_clues"), 20),
             "max_elapsed_seconds": self._positive_int(raw.get("max_elapsed_seconds"), 20),
         }
-        budget["max_sources"] = min(budget["max_sources"], explicit_max_sources) if explicit_max_sources > 0 else budget["max_sources"]
+        if budget["max_sources"] is not None and available_source_count > 0:
+            budget["max_sources"] = min(budget["max_sources"], available_source_count)
+        if budget["max_sources"] is not None and explicit_limit is not None:
+            budget["max_sources"] = min(budget["max_sources"], explicit_limit)
         budget["max_llm_refine_clues"] = min(budget["max_llm_refine_clues"], budget["max_candidate_clues"])
         return budget
+
+    def _collect_records_from_sources(
+        self,
+        selected_sources: list[dict[str, Any]],
+        *,
+        collect_source_records: SourceCollector,
+        max_raw_records: int,
+        max_concurrent_sources: int,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        collection_runs: list[dict[str, Any]] = []
+        collected_records: list[dict[str, Any]] = []
+        if not selected_sources or max_raw_records <= 0:
+            return collected_records, collection_runs
+
+        grouped_sources = group_sources_by_collection_layer(selected_sources)
+        worker_count = max(1, int(max_concurrent_sources or 1))
+
+        for layer_name, layer_sources in grouped_sources:
+            if len(collected_records) >= max_raw_records:
+                break
+            layer_records, layer_runs = self._collect_layer_records(
+                layer_name,
+                layer_sources,
+                collect_source_records=collect_source_records,
+                remaining_budget=max_raw_records - len(collected_records),
+                max_concurrent_sources=worker_count,
+            )
+            collected_records.extend(layer_records)
+            collection_runs.extend(layer_runs)
+            if len(collected_records) >= max_raw_records:
+                break
+            if self._should_stop_after_layer(layer_name, layer_records=layer_records, total_records=collected_records):
+                break
+        return collected_records, collection_runs
+
+    def _collect_layer_records(
+        self,
+        layer_name: str,
+        layer_sources: list[dict[str, Any]],
+        *,
+        collect_source_records: SourceCollector,
+        remaining_budget: int,
+        max_concurrent_sources: int,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        collection_runs: list[dict[str, Any]] = []
+        collected_records: list[dict[str, Any]] = []
+        if remaining_budget <= 0 or not layer_sources:
+            return collected_records, collection_runs
+
+        pending_sources = list(layer_sources)
+        with ThreadPoolExecutor(max_workers=max(1, min(max_concurrent_sources, len(layer_sources)))) as executor:
+            future_to_source: dict[Any, dict[str, Any]] = {}
+            active_hosts: set[str] = set()
+
+            def submit_next() -> bool:
+                if not pending_sources or len(collected_records) >= remaining_budget:
+                    return False
+                next_index = None
+                for index, candidate in enumerate(pending_sources):
+                    hostname = self._source_hostname(candidate)
+                    if not hostname or hostname not in active_hosts:
+                        next_index = index
+                        break
+                if next_index is None:
+                    return False
+                source = pending_sources.pop(next_index)
+                future = executor.submit(collect_source_records, source)
+                future_to_source[future] = source
+                hostname = self._source_hostname(source)
+                if hostname:
+                    active_hosts.add(hostname)
+                return True
+
+            while len(future_to_source) < max_concurrent_sources and submit_next():
+                pass
+
+            while future_to_source:
+                done, _pending = wait(tuple(future_to_source.keys()), return_when=FIRST_COMPLETED)
+                if not done:
+                    for future in future_to_source:
+                        future.cancel()
+                    break
+                for future in done:
+                    source = future_to_source.pop(future)
+                    hostname = self._source_hostname(source)
+                    if hostname:
+                        active_hosts.discard(hostname)
+                    run_payload = {
+                        "source_name": source.get("source_name"),
+                        "source_type": source.get("source_type"),
+                        "collection_layer": source.get("collection_layer") or layer_name,
+                    }
+                    try:
+                        fetched = future.result()
+                    except Exception as exc:  # noqa: BLE001 - keep multi-source investigation resilient
+                        collection_runs.append({**run_payload, "fetched_count": 0, "error": str(exc)})
+                    else:
+                        if len(collected_records) < remaining_budget:
+                            allowed = remaining_budget - len(collected_records)
+                            trimmed = [dict(item) if isinstance(item, Mapping) else item for item in fetched[:allowed]]
+                            collected_records.extend(trimmed)
+                            collection_runs.append({**run_payload, "fetched_count": len(trimmed)})
+                        else:
+                            collection_runs.append({**run_payload, "fetched_count": 0, "skipped_reason": "raw_record_budget_exhausted"})
+                    while len(future_to_source) < max_concurrent_sources and len(collected_records) < remaining_budget and submit_next():
+                        pass
+        return collected_records, collection_runs
+
+    def _should_stop_after_layer(
+        self,
+        layer_name: str,
+        *,
+        layer_records: list[dict[str, Any]],
+        total_records: list[dict[str, Any]],
+    ) -> bool:
+        if len(total_records) >= 200:
+            return True
+        if layer_name in {"named_priority", "theme_core"} and len(layer_records) >= 25:
+            return True
+        return False
+
+    @staticmethod
+    def _source_hostname(source: Mapping[str, Any]) -> str:
+        return (urlparse(str(source.get("source_url") or "")).hostname or "").strip().lower()
+
+    def _resolve_max_sources(
+        self,
+        value: Any,
+        *,
+        explicit_max_sources: int | None,
+        available_source_count: int,
+    ) -> int | None:
+        if explicit_max_sources is not None:
+            return explicit_max_sources
+        if available_source_count > 0:
+            return available_source_count
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = None
+        if parsed is not None and parsed > 0:
+            return parsed
+        return None
+
+    def _rewrite_selected_sources(
+        self,
+        selected_sources: list[dict[str, Any]],
+        *,
+        query: str,
+        intent: Mapping[str, Any],
+        plan: Mapping[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        rewritten_sources: list[dict[str, Any]] = []
+        traces: list[dict[str, Any]] = []
+        for source in selected_sources:
+            rewritten_source, trace = self.query_rewriter.rewrite(
+                source,
+                query=query,
+                intent=intent,
+                plan=plan,
+            )
+            rewritten_sources.append(rewritten_source)
+            traces.append(trace.model_dump())
+        return rewritten_sources, traces
 
     def _refine_retrieved_clues(
         self,
@@ -338,6 +555,14 @@ def _normalize_source_pref(value: Any) -> str:
     if text in {"im", "chat", "群", "私聊"}:
         return "im"
     return text
+
+
+def _as_investigation_processing_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Expose local processing as one integrated step in the investigation flow."""
+
+    normalized = dict(payload)
+    normalized["mode"] = "investigation_processing"
+    return normalized
 
 
 __all__ = ["InvestigationOrchestrator", "InvestigationRunResult"]

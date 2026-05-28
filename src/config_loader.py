@@ -20,6 +20,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
 ENV_PLACEHOLDER_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+ENV_OVERRIDE_MAP: dict[str, tuple[str, ...]] = {
+    "BLACKAGENT_LLM_PROVIDER": ("llm", "provider"),
+    "BLACKAGENT_LLM_ENABLED": ("llm", "enabled"),
+    "BLACKAGENT_LLM_BASE_URL": ("llm", "base_url"),
+    "BLACKAGENT_LLM_API_KEY": ("llm", "api_key"),
+    "BLACKAGENT_LLM_MODEL": ("llm", "model"),
+    "BLACKAGENT_LLM_SERVICE_TIER": ("llm", "service_tier"),
+    "BLACKAGENT_LLM_TIMEOUT_SECONDS": ("llm", "timeout_seconds"),
+    "BLACKAGENT_LLM_DRY_RUN": ("llm", "dry_run"),
+    "BLACKAGENT_LLM_AUTH_HEADER": ("llm", "auth_header"),
+    "BLACKAGENT_LLM_MAX_TOKENS_PARAM": ("llm", "max_tokens_param"),
+    "BLACKAGENT_LLM_RESPONSE_FORMAT_SUPPORTED": ("llm", "response_format_supported"),
+}
 
 
 class AppConfig(BaseModel):
@@ -28,7 +41,7 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: str = "BlackAgent"
-    mode: str = "controlled_exploration"
+    mode: str = "llm_driven_investigation"
     year: int = 2026
     environment: str = "local"
 
@@ -48,7 +61,7 @@ class ApiConfig(BaseModel):
 
 
 class PipelineConfig(BaseModel):
-    """Backbone pipeline knobs shared by API wiring and the orchestrator."""
+    """Local intelligence-processing knobs shared by API wiring."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -58,7 +71,7 @@ class PipelineConfig(BaseModel):
 
 
 class SandboxConfig(BaseModel):
-    """Controlled exploration sandbox budget defaults."""
+    """Bounded analysis budget defaults for local safety utilities."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -122,9 +135,10 @@ class NetworkConfig(BaseModel):
     timeout_seconds: float = Field(default=15.0, gt=0)
     max_records_per_fetch: int = Field(default=100, ge=1)
     user_agent: str = "BlackAgent-HTTPFeedCollector/0.1"
+    max_concurrent_sources: int = Field(default=2, ge=1)
     rate_limit_per_minute: int = Field(default=0, ge=0)
-    retry_attempts: int = Field(default=0, ge=0)
-    retry_backoff_seconds: float = Field(default=0.0, ge=0.0)
+    retry_attempts: int = Field(default=2, ge=0)
+    retry_backoff_seconds: float = Field(default=1.0, ge=0.0)
     retry_backoff_multiplier: float = Field(default=2.0, ge=1.0)
     retry_statuses: list[int] = Field(default_factory=lambda: [429, 500, 502, 503, 504])
 
@@ -163,6 +177,28 @@ class LLMConfig(BaseModel):
     service_tier: str | None = None
     timeout_seconds: float = Field(default=30.0, gt=0)
     dry_run: bool = True
+    auth_header: str = "authorization"
+    max_tokens_param: str = "max_tokens"
+    response_format_supported: bool = True
+    extra_body: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("auth_header")
+    @classmethod
+    def normalize_auth_header(cls, value: str) -> str:
+        normalized = value.strip().lower().replace("_", "-")
+        if normalized in {"bearer", "authorization"}:
+            return "authorization"
+        if normalized == "api-key":
+            return "api-key"
+        raise ValueError("auth_header must be one of authorization, bearer, api-key")
+
+    @field_validator("max_tokens_param")
+    @classmethod
+    def normalize_max_tokens_param(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized not in {"max_tokens", "max_completion_tokens"}:
+            raise ValueError("max_tokens_param must be max_tokens or max_completion_tokens")
+        return normalized
 
 
 class LabelConfig(BaseModel):
@@ -220,6 +256,68 @@ def _expand_env(value: Any) -> Any:
     return value
 
 
+def load_project_env_file(path: str | Path | None = None) -> None:
+    """Load project ``.env`` values into ``os.environ`` without overriding live env.
+
+    The project intentionally avoids adding a hard dependency on python-dotenv.
+    This tiny loader supports the simple ``KEY=value`` form used by local
+    integration credentials and keeps existing shell-provided values authoritative.
+    """
+
+    env_path = resolve_project_path(path or PROJECT_ROOT / ".env")
+    if not env_path.exists():
+        return
+
+    with env_path.open("r", encoding="utf-8") as file_obj:
+        for raw_line in file_obj:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.lower().startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            os.environ[key] = value
+
+
+def _set_nested(raw: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
+    cursor = raw
+    for key in path[:-1]:
+        nested = cursor.get(key)
+        if not isinstance(nested, dict):
+            nested = {}
+            cursor[key] = nested
+        cursor = nested
+    cursor[path[-1]] = value
+
+
+def _apply_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
+    """Apply direct runtime env overrides for settings that are often secret-bound."""
+
+    for env_name, config_path in ENV_OVERRIDE_MAP.items():
+        value = os.getenv(env_name)
+        if value is not None:
+            _set_nested(raw, config_path, value)
+
+    extra_body = os.getenv("BLACKAGENT_LLM_EXTRA_BODY")
+    if extra_body:
+        try:
+            parsed_extra_body = json.loads(extra_body)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"BLACKAGENT_LLM_EXTRA_BODY must be valid JSON: {exc}") from exc
+        if not isinstance(parsed_extra_body, dict):
+            raise ValueError("BLACKAGENT_LLM_EXTRA_BODY must be a JSON object")
+        _set_nested(raw, ("llm", "extra_body"), parsed_extra_body)
+    return raw
+
+
 def resolve_project_path(path: str | Path, *, root: Path = PROJECT_ROOT) -> Path:
     """Resolve a project-relative path without changing the caller's CWD."""
 
@@ -232,6 +330,7 @@ def resolve_project_path(path: str | Path, *, root: Path = PROJECT_ROOT) -> Path
 def load_yaml_file(path: str | Path) -> dict[str, Any]:
     """Read a YAML mapping and expand environment-variable placeholders."""
 
+    load_project_env_file()
     config_path = resolve_project_path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -249,6 +348,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     """Load and validate project settings from YAML."""
 
     raw = load_yaml_file(config_path or DEFAULT_CONFIG_PATH)
+    raw = _apply_env_overrides(raw)
     return Settings.model_validate(raw)
 
 

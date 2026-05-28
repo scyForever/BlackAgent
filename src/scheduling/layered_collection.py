@@ -14,6 +14,19 @@ LAYER_SLOW = "slow"
 LAYER_CLUE_BUILD = "clue_build"
 LAYER_ORDER = (LAYER_FAST, LAYER_SLOW, LAYER_CLUE_BUILD)
 
+INVESTIGATION_LAYER_NAMED = "named_priority"
+INVESTIGATION_LAYER_THEME_CORE = "theme_core"
+INVESTIGATION_LAYER_THEME_VARIANT = "theme_variant"
+INVESTIGATION_LAYER_GLOBAL_CORE = "global_core"
+INVESTIGATION_LAYER_GENERAL = "general"
+INVESTIGATION_LAYER_ORDER = (
+    INVESTIGATION_LAYER_NAMED,
+    INVESTIGATION_LAYER_THEME_CORE,
+    INVESTIGATION_LAYER_THEME_VARIANT,
+    INVESTIGATION_LAYER_GLOBAL_CORE,
+    INVESTIGATION_LAYER_GENERAL,
+)
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -152,11 +165,84 @@ def build_candidate_clues_from_raw_rows(
     )
 
 
+def prioritize_sources_for_investigation(
+    sources: Iterable[Mapping[str, Any] | Any],
+    *,
+    risk_types: Iterable[str] = (),
+    preferred_source_types: Iterable[str] = (),
+    selected_source_names: Iterable[str] = (),
+) -> list[dict[str, Any]]:
+    """Sort selected investigation sources into theme-priority layers.
+
+    The input order is treated as the already-scored fallback order from the
+    planner. This helper only performs a stable regrouping so exact-theme/core
+    queries execute before broader variants and generic sources.
+    """
+
+    target_themes = {_normalize_text(item) for item in risk_types if _normalize_text(item)}
+    preferred_types = {_normalize_source_type(item) for item in preferred_source_types if _normalize_source_type(item)}
+    named_sources = {_normalize_text(item) for item in selected_source_names if _normalize_text(item)}
+    ordered: list[tuple[int, int, int, dict[str, Any]]] = []
+    for position, source in enumerate(sources):
+        item = _normalize_row(source)
+        layer = _classify_investigation_layer(item, target_themes=target_themes, named_sources=named_sources)
+        source_type = _normalize_source_type(item.get("source_type"))
+        item["collection_layer"] = layer
+        item["collection_priority"] = INVESTIGATION_LAYER_ORDER.index(layer) + 1
+        ordered.append(
+            (
+                INVESTIGATION_LAYER_ORDER.index(layer),
+                0 if source_type in preferred_types else 1,
+                position,
+                item,
+            )
+        )
+    ordered.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [item[-1] for item in ordered]
+
+
+def group_sources_by_collection_layer(
+    sources: Iterable[Mapping[str, Any] | Any],
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    grouped: list[tuple[str, list[dict[str, Any]]]] = []
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for source in sources:
+        item = _normalize_row(source)
+        layer = str(item.get("collection_layer") or INVESTIGATION_LAYER_GENERAL)
+        if layer not in buckets:
+            buckets[layer] = []
+            grouped.append((layer, buckets[layer]))
+        buckets[layer].append(item)
+    return grouped
+
+
 def _normalize_layer(layer: str) -> str:
     normalized = str(layer or "").strip().lower()
     if normalized not in LAYER_ORDER:
         raise KeyError(f"unknown layer: {layer}")
     return normalized
+
+
+def _classify_investigation_layer(
+    source: Mapping[str, Any],
+    *,
+    target_themes: set[str],
+    named_sources: set[str],
+) -> str:
+    source_name = _normalize_text(source.get("source_name"))
+    if source_name and source_name in named_sources:
+        return INVESTIGATION_LAYER_NAMED
+
+    theme = _normalize_text(source.get("query_theme"))
+    raw_stage = source.get("query_term_stage")
+    stage = _normalize_text(raw_stage) or "core"
+    if theme and theme in target_themes:
+        if stage == "variant":
+            return INVESTIGATION_LAYER_THEME_VARIANT
+        return INVESTIGATION_LAYER_THEME_CORE
+    if not theme and raw_stage not in (None, "") and stage == "core":
+        return INVESTIGATION_LAYER_GLOBAL_CORE
+    return INVESTIGATION_LAYER_GENERAL
 
 
 def _normalize_row(value: Mapping[str, Any] | Any) -> dict[str, Any]:
@@ -177,7 +263,28 @@ def _positive_int(value: Any, *, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_source_type(value: Any) -> str:
+    text = _normalize_text(value)
+    if text in {"telegram", "tg", "电报"}:
+        return "telegram"
+    if text in {"forum", "论坛", "贴吧"}:
+        return "forum"
+    if text in {"im", "chat", "群", "私聊"}:
+        return "im"
+    return text
+
+
 __all__ = [
+    "INVESTIGATION_LAYER_GENERAL",
+    "INVESTIGATION_LAYER_GLOBAL_CORE",
+    "INVESTIGATION_LAYER_NAMED",
+    "INVESTIGATION_LAYER_ORDER",
+    "INVESTIGATION_LAYER_THEME_CORE",
+    "INVESTIGATION_LAYER_THEME_VARIANT",
     "LAYER_CLUE_BUILD",
     "LAYER_FAST",
     "LAYER_ORDER",
@@ -186,6 +293,8 @@ __all__ = [
     "LayeredRunPlanner",
     "PendingClueBatch",
     "build_candidate_clues_from_raw_rows",
+    "group_sources_by_collection_layer",
+    "prioritize_sources_for_investigation",
     "should_run_clue_build",
     "source_candidates_from_rows",
     "utc_now",

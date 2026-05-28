@@ -1,29 +1,25 @@
-"""Controlled exploration agent components for BlackAgent MVP."""
+"""Current investigation-agent components for BlackAgent."""
 
-from .agent_orchestrator import AgentOrchestrator, PipelineItemResult, PipelineRunResult
 from .budget_manager import BudgetExceeded, BudgetManager, BudgetSnapshot
-from .exploration_agent import ExplorationAgent, ExplorationHypothesis
 from .investigation_orchestrator import InvestigationOrchestrator, InvestigationRunResult
 from .policy_guard import PolicyGuard, SafetyPolicyViolation
+from .query_rewriter import LLMSourceQueryRewriter, QueryRewriteTrace
 from .tool_registry import ToolRegistry, ToolRegistryViolation
 from .user_request_parser import InvestigationPlan, LLMDecisionTrace, LLMInvestigationPlanner, LLMUserRequestParser, UserIntent
 
 __all__ = [
-    "AgentOrchestrator",
     "BudgetExceeded",
     "BudgetManager",
     "BudgetSnapshot",
-    "ExplorationAgent",
-    "ExplorationHypothesis",
     "InvestigationOrchestrator",
     "InvestigationPlan",
     "InvestigationRunResult",
     "LLMDecisionTrace",
     "LLMInvestigationPlanner",
+    "LLMSourceQueryRewriter",
     "LLMUserRequestParser",
-    "PipelineItemResult",
-    "PipelineRunResult",
     "PolicyGuard",
+    "QueryRewriteTrace",
     "SafetyPolicyViolation",
     "ToolRegistry",
     "ToolRegistryViolation",

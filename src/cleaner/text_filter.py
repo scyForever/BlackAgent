@@ -22,8 +22,12 @@ BLACKGRAY_CONTEXT_VARIANT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bv\s*[xX]\b"), "vx"),
     (re.compile(r"(?i)\bw\s*[xX]\b"), "vx"),
     (re.compile(r"(?i)\bd\s*y\b"), "dy"),
-    (re.compile(r"进裙"), "进群"),
-    (re.compile(r"拉裙"), "拉群"),
+    (re.compile(r"(?i)音\s*符"), "音符"),
+    (re.compile(r"(?i)纸\s*飞\s*机"), "纸飞机"),
+    (re.compile(r"(?i)小\s*飞\s*机"), "小飞机"),
+    (re.compile(r"(?i)加\s*[vV薇微威围]"), "加v"),
+    (re.compile(r"进\s*裙"), "进群"),
+    (re.compile(r"拉\s*裙"), "拉群"),
 )
 BLACKGRAY_LITERAL_VARIANT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("➕", "加"),

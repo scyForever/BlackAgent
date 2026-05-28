@@ -7,6 +7,7 @@ from src.cleaner.pipeline import CleanerPipeline
 from src.cleaner.text_filter import (
     MAX_CLEAN_TEXT_CHARS,
     is_blank_or_garbled,
+    normalize_intel_text,
     normalize_text,
     text_similarity,
 )
@@ -258,6 +259,27 @@ class TextFilterPipelineTest(unittest.TestCase):
         self.assertIn("加v", tuple(keyword.lower() for keyword in decision.matched_keywords))
         self.assertIn("拉群", decision.matched_keywords)
 
+    def test_spaced_ocr_like_variants_are_normalized_for_matching(self) -> None:
+        normalized = normalize_intel_text("图里写着 加 微进 裙，纸 飞 机和音 符暗号联系。")
+
+        self.assertIn("加v", normalized.lower())
+        self.assertIn("进群", normalized)
+        self.assertIn("纸飞机", normalized)
+        self.assertIn("音符", normalized)
+
+        decision = decide_text_relevance(
+            "图里写着 加 微进 裙，纸 飞 机和音 符暗号联系。",
+            include_themes=("诈骗引流",),
+            exclude_keywords=("警方通报", "反诈"),
+            min_keyword_hits=3,
+        )
+
+        self.assertTrue(decision.relevant)
+        self.assertEqual(("诈骗引流",), decision.matched_themes)
+        lowered_keywords = tuple(keyword.lower() for keyword in decision.matched_keywords)
+        self.assertIn("加v", lowered_keywords)
+        self.assertIn("进裙", decision.matched_keywords)
+
     def test_low_value_guides_and_recommendations_can_be_excluded(self) -> None:
         decision = decide_text_relevance(
             "分享2025年8个实用的接码平台使用指南，推荐收藏，帮助你快速注册和选择建议。",
@@ -287,6 +309,15 @@ class TextFilterPipelineTest(unittest.TestCase):
         self.assertEqual("core", variants[0]["stage"])
         self.assertEqual("加薇", variants[4]["term"])
         self.assertEqual("variant", variants[4]["stage"])
+
+    def test_theme_search_variants_cover_black_slang_emoji_and_ocr_friendly_terms(self) -> None:
+        variants = get_theme_search_variants("诈骗引流", limit=20)
+        terms = tuple(item["term"] for item in variants)
+
+        self.assertIn("进裙", terms)
+        self.assertIn("纸飞机", terms)
+        self.assertIn("音符", terms)
+
 
     def test_telegram_theme_has_been_removed_from_external_synonym_config(self) -> None:
         registry = load_theme_synonym_registry()

@@ -66,14 +66,67 @@ API：
 - 使用标准库 `urllib`，不新增必装依赖。
 - 默认 `mock/dry_run`，不会联网。
 - 配置真实 `base_url + api_key` 且关闭 dry-run 后，按 OpenAI-compatible `/chat/completions` 请求发送。
+- 项目会自动读取仓库根目录 `.env`，但不会覆盖当前 shell 已设置的同名环境变量。
+- MiMo 默认配置采用 `api-key` 鉴权、`max_completion_tokens` token 字段，并在 `extra_body` 中关闭 thinking，避免最小联调请求长时间等待。
 
 环境变量：
 
 ```powershell
-$env:BLACKAGENT_LLM_BASE_URL='https://api.openai.com/v1'
+$env:BLACKAGENT_LLM_BASE_URL='https://api.xiaomimimo.com/v1'
 $env:BLACKAGENT_LLM_API_KEY='...'
-$env:BLACKAGENT_LLM_MODEL='gpt-5.5'
+$env:BLACKAGENT_LLM_MODEL='mimo-v2.5'
 $env:BLACKAGENT_LLM_DRY_RUN='false'
+$env:BLACKAGENT_LLM_AUTH_HEADER='api-key'
+$env:BLACKAGENT_LLM_MAX_TOKENS_PARAM='max_completion_tokens'
+$env:BLACKAGENT_LLM_RESPONSE_FORMAT_SUPPORTED='false'
+$env:BLACKAGENT_LLM_EXTRA_BODY='{"thinking":{"type":"disabled"}}'
+```
+
+最小真实链路联调：
+
+```powershell
+D:\Anaconda\python.exe scripts\smoke_llm_real.py --force-real
+```
+
+如果要连同 `investigations/run` 的真实 LLM 规划、意图解析、线索精炼一起验证：
+
+```powershell
+D:\Anaconda\python.exe scripts\smoke_llm_real.py --force-real --include-investigation
+```
+
+联调通过时应看到 `DIRECT` 和 `API` 输出中的 `ok=true`、`network_attempted=true`；全链路模式还应看到 `INVESTIGATION.llm_trace_summary` 里 `intent_parse`、`investigation_plan`、`source_query_rewrite`、`clue_refine` 等阶段 `llm_ok=true`。
+
+如果后续要切回更强的 `mimo-v2.5-pro`，只需把 `BLACKAGENT_LLM_MODEL` 或 `config/config.yaml` 中的 `llm.model` 改成 `mimo-v2.5-pro`；真实联调时若出现超时，先用 `mimo-v2.5` 验证链路，再检查套餐、区域网络和模型侧响应耗时。
+
+如果供应商模型不支持 OpenAI 的 `response_format={"type":"json_object"}`，设置 `response_format_supported: false` 或环境变量 `BLACKAGENT_LLM_RESPONSE_FORMAT_SUPPORTED=false`；BlackAgent 仍会在 prompt 中要求只返回 JSON，并在本地解析返回内容。现在本地解析除了直接 JSON 外，还会额外尝试 fenced JSON 和包裹文本中的首个 JSON 片段，以降低 query rewrite / plan / refine 的失败率。
+
+### 3.1 Agent CLI 输入形式
+
+不启动 uvicorn，也可以直接从命令行输入调查需求：
+
+```powershell
+D:\Anaconda\python.exe scripts\run_agent_cli.py --force-real --demo-sample
+```
+
+指定 query：
+
+```powershell
+D:\Anaconda\python.exe scripts\run_agent_cli.py `
+  --force-real `
+  --query "请复核最近24小时接码、群控脚本相关的高质量黑灰产线索，输出可复核证据链。" `
+  --demo-sample `
+  --show clues
+```
+
+传入自己的 JSONL 原始情报：
+
+```powershell
+D:\Anaconda\python.exe scripts\run_agent_cli.py `
+  --force-real `
+  --query "找接码和群控相关线索" `
+  --fixture-path data\my_raw_items.jsonl `
+  --output data\agent_result.json `
+  --show clues
 ```
 
 ### 4. 系统状态检查

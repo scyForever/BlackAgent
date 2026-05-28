@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from main import create_app
+from src.collector import load_source_catalog
 from src.config_loader import Settings
 
 
@@ -12,129 +13,17 @@ def test_health_endpoint_returns_prd_mode():
     assert response.status_code == 200
     assert response.json() == {
         "status": "healthy",
-        "mode": "controlled_exploration",
+        "mode": "llm_driven_investigation",
         "year": 2026,
     }
 
 
-def test_pipeline_endpoint_uses_real_orchestrator_and_persists_review_queue():
+def test_legacy_agent_orchestrator_routes_are_not_exposed():
     client = TestClient(create_app())
 
-    response = client.post(
-        "/api/v1/pipeline/run",
-        json={
-            "fixture_items": [
-                {
-                    "trace_id": "api-high-1",
-                    "content_text": "出售接码平台 https://risk.example 联系 tg_api001",
-                },
-                {
-                    "trace_id": "api-low-1",
-                    "content_text": "音符暗号新变体，具体含义待研判",
-                },
-            ]
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["orchestrator_available"] is True
-    assert payload["input_count"] == 2
-    assert payload["standard_count"] == 1
-    assert payload["review_count"] == 1
-
-    review_response = client.get("/api/v1/review/tasks")
-
-    assert review_response.status_code == 200
-    review_payload = review_response.json()
-    assert review_payload["count"] == 1
-    assert review_payload["tasks"][0]["source_trace_id"] == "api-low-1"
-    assert review_payload["tasks"][0]["requires_human_review"] is True
-    assert review_payload["tasks"][0]["review_state"]["status"] == "PENDING"
-    assert "priority_score" in review_payload["tasks"][0]
-
-
-def test_review_workbench_ranks_decides_and_audits_without_entity_promotion():
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/v1/pipeline/run",
-        json={
-            "fixture_items": [
-                {
-                    "trace_id": "review-medium-1",
-                    "content_text": "音符暗号新变体，具体含义待研判",
-                },
-                {
-                    "trace_id": "review-high-1",
-                    "content_text": "群控脚本里出现音符暗号，需要人工研判",
-                },
-            ]
-        },
-    )
-    assert response.status_code == 200
-    assert response.json()["review_count"] == 2
-    assert response.json()["standard_count"] == 0
-
-    queue_response = client.get("/api/v1/review/tasks")
-    assert queue_response.status_code == 200
-    queue_payload = queue_response.json()
-    assert queue_payload["count"] == 2
-    assert queue_payload["tasks"][0]["source_trace_id"] == "review-high-1"
-    assert queue_payload["tasks"][0]["priority_features"]["risk_level"] == "HIGH"
-
-    hypothesis_id = queue_payload["tasks"][0]["hypothesis_id"]
-    decision_response = client.post(
-        f"/api/v1/review/tasks/{hypothesis_id}/decision",
-        json={
-            "decision": "approved",
-            "reviewer": "analyst_a",
-            "notes": "确认新黑话候选，先进入候选池，不直写正式实体库。",
-            "edited_risk_type": "tool_trade",
-            "secondary_label": "群控脚本",
-            "corrected_entities": [{"entity_type": "tool_or_keyword", "entity_value": "群控脚本"}],
-            "add_to_wordlist": True,
-        },
-    )
-
-    assert decision_response.status_code == 200
-    decision_payload = decision_response.json()
-    assert decision_payload["decision"] == "APPROVED"
-    assert decision_payload["review_state"]["status"] == "REVIEWED"
-    assert decision_payload["review_state"]["edited_risk_type"] == "tool_trade"
-    assert decision_payload["audit_event"]["event_type"] == "review_decision_recorded"
-    assert decision_payload["audit_event"]["payload"]["sandbox_hypothesis_kept_review_only"] is True
-    assert "dynamic_wordlist_candidate_pool" in decision_payload["audit_event"]["payload"]["feedback_targets"]
-
-    pending_after_decision = client.get("/api/v1/review/tasks")
-    assert pending_after_decision.status_code == 200
-    assert pending_after_decision.json()["count"] == 1
-    assert pending_after_decision.json()["tasks"][0]["source_trace_id"] == "review-medium-1"
-
-    all_tasks = client.get("/api/v1/review/tasks", params={"status": "all"}).json()["tasks"]
-    reviewed_task = next(task for task in all_tasks if task["hypothesis_id"] == hypothesis_id)
-    assert reviewed_task["requires_human_review"] is True
-    assert reviewed_task["review_state"]["decision"] == "APPROVED"
-
-    audit_response = client.get("/api/v1/review/audit", params={"event_type": "review_decision_recorded"})
-    assert audit_response.status_code == 200
-    assert audit_response.json()["count"] == 1
-
-
-def test_review_decision_rejects_unknown_decision():
-    client = TestClient(create_app())
-    client.post(
-        "/api/v1/pipeline/run",
-        json={"content_text": "音符暗号新变体，具体含义待研判", "source_name": "api-test"},
-    )
-    hypothesis_id = client.get("/api/v1/review/tasks").json()["tasks"][0]["hypothesis_id"]
-
-    response = client.post(
-        f"/api/v1/review/tasks/{hypothesis_id}/decision",
-        json={"decision": "auto_ban", "reviewer": "analyst_a"},
-    )
-
-    assert response.status_code == 400
+    assert client.post("/api/v1/pipeline/run", json={"content_text": "legacy"}).status_code == 404
+    assert client.get("/api/v1/review/tasks").status_code == 404
+    assert client.get("/api/v1/review/audit").status_code == 404
 
 
 def test_investigation_endpoint_uses_llm_driven_plan_and_returns_high_quality_clues():
@@ -181,6 +70,7 @@ def test_investigation_endpoint_uses_llm_driven_plan_and_returns_high_quality_cl
     assert len(payload["llm_traces"]) >= 2
     assert payload["input_count"] == 3
     assert payload["high_quality_count"] >= 1
+    assert payload["execution_summary"]["mode"] == "investigation_processing"
     assert payload["execution_summary"]["risk_clue_count"] >= 2
     assert payload["execution_summary"]["refined_clue_count"] >= 1
     assert payload["execution_summary"]["budget"]["max_llm_refine_clues"] >= 1
@@ -353,3 +243,150 @@ def test_scheduler_bootstrap_tick_and_status_endpoints(tmp_path):
     payload = status_response.json()
     assert payload["schedule_count"] >= 5
     assert payload["pending_jobs"] >= 5
+
+
+def test_investigation_endpoint_defaults_to_all_authorized_sources(monkeypatch, tmp_path):
+    catalog_path = tmp_path / "intel_sources.test.yaml"
+    catalog_path.write_text(
+        """
+sources:
+  - source_name: fraud-feed
+    query_url_template: https://feed.example/search?q={query}
+    query_seed_terms: [site:test]
+    query_themes: [诈骗引流]
+    query_term_limit: 6
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    allowed_domain: feed.example
+    include_themes: [诈骗引流]
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    bodies: dict[str, tuple[str, str]] = {
+        "https://feed.example/search?q=site%3Atest%20%E7%A7%81%E5%9F%9F%E5%AF%BC%E6%B5%81": (
+            '<html><body><p>私域导流 TG:traffic01 https://risk.example/1</p></body></html>',
+            "text/html; charset=utf-8",
+        ),
+        "https://feed.example/search?q=site%3Atest%20%E5%8A%A0v": (
+            '<html><body><p>加v 拉群 TG:traffic02 https://risk.example/2</p></body></html>',
+            "text/html; charset=utf-8",
+        ),
+        "https://feed.example/search?q=site%3Atest%20%E6%8B%89%E7%BE%A4": (
+            '<html><body><p>拉群 高佣 TG:traffic03 https://risk.example/3</p></body></html>',
+            "text/html; charset=utf-8",
+        ),
+        "https://feed.example/search?q=site%3Atest%20%E9%AB%98%E4%BD%A3": (
+            '<html><body><p>高佣 引流 TG:traffic04 https://risk.example/4</p></body></html>',
+            "text/html; charset=utf-8",
+        ),
+        "https://feed.example/search?q=site%3Atest%20%E5%8A%A0%E8%96%87": (
+            '<html><body><p>加薇 进裙 TG:traffic05 https://risk.example/5</p></body></html>',
+            "text/html; charset=utf-8",
+        ),
+        "https://feed.example/search?q=site%3Atest%20%E2%9E%95v": (
+            '<html><body><p>➕V 小飞机 TG:traffic06 https://risk.example/6</p></body></html>',
+            "text/html; charset=utf-8",
+        ),
+    }
+
+    class _FakeHTTPResponse:
+        def __init__(self, body: str, content_type: str = "text/html; charset=utf-8") -> None:
+            self._body = body.encode("utf-8")
+            self.headers = {"Content-Type": content_type}
+            self.status = 200
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def _open(request, timeout):
+        body, content_type = bodies[request.full_url]
+        return _FakeHTTPResponse(body, content_type)
+
+    monkeypatch.setattr("src.collector.http_feed_collector.urllib_request.urlopen", _open)
+    settings = Settings.model_validate({"network": {"enabled": True, "max_records_per_fetch": 1}})
+    client = TestClient(create_app(settings))
+    sources = load_source_catalog(catalog_path)
+
+    response = client.post(
+        "/api/v1/investigations/run",
+        json={
+            "query": "取一下当天诈骗引流相关的线索信息",
+            "sources": sources,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["selected_source_count"] == 6
+    assert payload["input_count"] == 6
+    assert payload["execution_summary"]["budget"]["max_sources"] == 6
+
+
+def test_investigation_endpoint_continues_when_one_source_fetch_fails(monkeypatch):
+    settings = Settings.model_validate({"network": {"enabled": True, "max_records_per_fetch": 1}})
+    client = TestClient(create_app(settings))
+
+    sources = [
+        {
+            "source_name": "good-feed",
+            "source_type": "IM",
+            "source_url": "https://feed.example/good",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "allowed_domains": ["feed.example"],
+            "include_themes": ["诈骗引流"],
+            "query_theme": "诈骗引流",
+            "search_query": "site:test 私域导流",
+        },
+        {
+            "source_name": "bad-feed",
+            "source_type": "IM",
+            "source_url": "https://feed.example/bad",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "allowed_domains": ["feed.example"],
+            "include_themes": ["诈骗引流"],
+            "query_theme": "诈骗引流",
+            "search_query": "site:test 加v",
+        },
+    ]
+
+    class _FakeHTTPResponse:
+        def __init__(self, body: str) -> None:
+            self._body = body.encode("utf-8")
+            self.headers = {"Content-Type": "text/html; charset=utf-8"}
+            self.status = 200
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def _open(request, timeout):
+        if request.full_url.endswith("/bad"):
+            raise RuntimeError("http_error:429")
+        return _FakeHTTPResponse('<html><body><p>私域导流 TG:traffic01 https://risk.example/1</p></body></html>')
+
+    monkeypatch.setattr("src.collector.http_feed_collector.urllib_request.urlopen", _open)
+
+    response = client.post(
+        "/api/v1/investigations/run",
+        json={
+            "query": "取一下当天诈骗引流相关的线索信息",
+            "sources": sources,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["selected_source_count"] == 2
+    assert payload["input_count"] == 1
+    assert any((item.get("error") or "").startswith("http_error:429") for item in payload["collection_runs"])

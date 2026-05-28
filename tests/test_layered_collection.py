@@ -1,6 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
 from src.scheduling.layered_collection import (
+    INVESTIGATION_LAYER_GENERAL,
+    INVESTIGATION_LAYER_GLOBAL_CORE,
+    INVESTIGATION_LAYER_NAMED,
+    INVESTIGATION_LAYER_THEME_CORE,
+    INVESTIGATION_LAYER_THEME_VARIANT,
     LAYER_CLUE_BUILD,
     LAYER_FAST,
     LAYER_SLOW,
@@ -8,6 +13,8 @@ from src.scheduling.layered_collection import (
     LayeredRunPlanner,
     PendingClueBatch,
     build_candidate_clues_from_raw_rows,
+    group_sources_by_collection_layer,
+    prioritize_sources_for_investigation,
     should_run_clue_build,
     source_candidates_from_rows,
 )
@@ -105,3 +112,42 @@ def test_should_run_clue_build_only_when_due_or_collection_ran_with_pending_rows
     assert should_run_clue_build(pending_count=2, collection_layer_ran=True, clue_layer_due=False) is True
     assert should_run_clue_build(pending_count=2, collection_layer_ran=False, clue_layer_due=True) is True
     assert should_run_clue_build(pending_count=2, collection_layer_ran=False, clue_layer_due=False) is False
+
+
+def test_prioritize_sources_for_investigation_layers_named_theme_variant_and_general():
+    ordered = prioritize_sources_for_investigation(
+        [
+            {"source_name": "variant-feed", "source_type": "IM", "query_theme": "诈骗引流", "query_term_stage": "variant"},
+            {"source_name": "general-feed", "source_type": "Forum"},
+            {"source_name": "core-feed", "source_type": "Forum", "query_theme": "诈骗引流", "query_term_stage": "core"},
+            {"source_name": "global-core-feed", "source_type": "Telegram", "query_term_stage": "core"},
+            {"source_name": "named-feed", "source_type": "Social", "query_theme": "诈骗引流", "query_term_stage": "variant"},
+        ],
+        risk_types=["诈骗引流"],
+        preferred_source_types=["telegram"],
+        selected_source_names=["named-feed"],
+    )
+
+    assert [item["source_name"] for item in ordered] == [
+        "named-feed",
+        "core-feed",
+        "variant-feed",
+        "global-core-feed",
+        "general-feed",
+    ]
+    assert [item["collection_layer"] for item in ordered] == [
+        INVESTIGATION_LAYER_NAMED,
+        INVESTIGATION_LAYER_THEME_CORE,
+        INVESTIGATION_LAYER_THEME_VARIANT,
+        INVESTIGATION_LAYER_GLOBAL_CORE,
+        INVESTIGATION_LAYER_GENERAL,
+    ]
+
+    grouped = group_sources_by_collection_layer(ordered)
+    assert [layer for layer, _items in grouped] == [
+        INVESTIGATION_LAYER_NAMED,
+        INVESTIGATION_LAYER_THEME_CORE,
+        INVESTIGATION_LAYER_THEME_VARIANT,
+        INVESTIGATION_LAYER_GLOBAL_CORE,
+        INVESTIGATION_LAYER_GENERAL,
+    ]

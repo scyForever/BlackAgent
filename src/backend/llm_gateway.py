@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import socket
 import urllib.error
 import urllib.request as urllib_request
 from dataclasses import dataclass, field
@@ -32,6 +34,10 @@ class LLMGatewayConfig:
     dry_run: bool = True
     mock: bool = False
     timeout_seconds: float = 30.0
+    auth_header: str = "authorization"
+    max_tokens_param: str = "max_tokens"
+    response_format_supported: bool = True
+    extra_body: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls) -> "LLMGatewayConfig":
@@ -45,6 +51,10 @@ class LLMGatewayConfig:
             dry_run=dry_run,
             mock=_env_bool("BLACKAGENT_LLM_MOCK", default=False),
             timeout_seconds=float(os.getenv("BLACKAGENT_LLM_TIMEOUT_SECONDS", "30")),
+            auth_header=_normalize_auth_header(os.getenv("BLACKAGENT_LLM_AUTH_HEADER") or "authorization"),
+            max_tokens_param=_normalize_max_tokens_param(os.getenv("BLACKAGENT_LLM_MAX_TOKENS_PARAM") or "max_tokens"),
+            response_format_supported=_env_bool("BLACKAGENT_LLM_RESPONSE_FORMAT_SUPPORTED", default=True),
+            extra_body=_env_json_object("BLACKAGENT_LLM_EXTRA_BODY"),
         )
 
 
@@ -88,10 +98,17 @@ class LLMGateway:
         dry_run: bool | None = None,
         mock: bool | None = None,
         timeout_seconds: float | None = None,
+        auth_header: str | None = None,
+        max_tokens_param: str | None = None,
+        response_format_supported: bool | None = None,
+        extra_body: Mapping[str, Any] | None = None,
     ) -> None:
         env_config = config or LLMGatewayConfig.from_env()
         resolved_api_key = api_key if api_key is not None else env_config.api_key
         resolved_dry_run = dry_run if dry_run is not None else (env_config.dry_run if config else not bool(resolved_api_key))
+        resolved_extra_body = dict(env_config.extra_body)
+        if extra_body is not None:
+            resolved_extra_body.update(dict(extra_body))
 
         self.config = LLMGatewayConfig(
             base_url=base_url or env_config.base_url,
@@ -101,6 +118,14 @@ class LLMGateway:
             dry_run=resolved_dry_run,
             mock=mock if mock is not None else env_config.mock,
             timeout_seconds=timeout_seconds if timeout_seconds is not None else env_config.timeout_seconds,
+            auth_header=_normalize_auth_header(auth_header if auth_header is not None else env_config.auth_header),
+            max_tokens_param=_normalize_max_tokens_param(
+                max_tokens_param if max_tokens_param is not None else env_config.max_tokens_param
+            ),
+            response_format_supported=(
+                response_format_supported if response_format_supported is not None else env_config.response_format_supported
+            ),
+            extra_body=resolved_extra_body,
         )
 
     @property
@@ -152,22 +177,37 @@ class LLMGateway:
             return self._blocked_response("missing_api_key", "api_key is required before a real LLM request")
 
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "BlackAgent-LLMGateway/0.1",
+        }
+        if self.config.auth_header == "api-key":
+            headers["api-key"] = self.config.api_key
+        else:
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
         request = urllib_request.Request(
             self.endpoint,
             data=data,
             method="POST",
-            headers={
-                "Authorization": f"Bearer {self.config.api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": "BlackAgent-LLMGateway/0.1",
-            },
+            headers=headers,
         )
 
         try:
             with urllib_request.urlopen(request, timeout=self.config.timeout_seconds) as response:  # noqa: S310
                 raw_body = response.read().decode("utf-8")
-                raw = json.loads(raw_body) if raw_body else {}
+                try:
+                    raw = json.loads(raw_body) if raw_body else {}
+                except json.JSONDecodeError as exc:
+                    return LLMGatewayResponse(
+                        ok=False,
+                        model=self.config.model,
+                        content=raw_body,
+                        raw={"raw_body": raw_body[:1000]},
+                        network_attempted=True,
+                        error=f"invalid_json_response:{exc.msg}",
+                        status_code=getattr(response, "status", None),
+                    )
                 status_code = getattr(response, "status", None)
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
@@ -188,6 +228,24 @@ class LLMGateway:
                 raw={},
                 network_attempted=True,
                 error=f"url_error:{exc.reason}",
+            )
+        except (TimeoutError, socket.timeout) as exc:
+            return LLMGatewayResponse(
+                ok=False,
+                model=self.config.model,
+                content="",
+                raw={},
+                network_attempted=True,
+                error=f"timeout:{exc}",
+            )
+        except OSError as exc:
+            return LLMGatewayResponse(
+                ok=False,
+                model=self.config.model,
+                content="",
+                raw={},
+                network_attempted=True,
+                error=f"os_error:{exc}",
             )
 
         content = _extract_message_content(raw)
@@ -225,11 +283,13 @@ class LLMGateway:
             "messages": normalized_messages,
             "temperature": temperature,
         }
+        if self.config.extra_body:
+            payload.update(dict(self.config.extra_body))
         if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
+            payload[self.config.max_tokens_param] = max_tokens
         if self.config.service_tier:
             payload["service_tier"] = self.config.service_tier
-        if response_format is not None:
+        if response_format is not None and self.config.response_format_supported:
             payload["response_format"] = dict(response_format)
         if extra_body:
             payload.update(dict(extra_body))
@@ -298,11 +358,64 @@ def _extract_message_content(raw: Mapping[str, Any]) -> str:
 
 
 def _try_parse_json(content: str) -> dict[str, Any] | None:
-    try:
-        parsed = json.loads(content)
-    except (TypeError, json.JSONDecodeError):
+    candidates = [content]
+    fenced = _strip_markdown_code_fence(content)
+    if fenced and fenced not in candidates:
+        candidates.append(fenced)
+    extracted = _extract_json_candidate(content)
+    if extracted and extracted not in candidates:
+        candidates.append(extracted)
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        return parsed if isinstance(parsed, dict) else {"value": parsed}
+    return None
+
+
+def _strip_markdown_code_fence(content: str) -> str | None:
+    if not isinstance(content, str):
         return None
-    return parsed if isinstance(parsed, dict) else {"value": parsed}
+    match = re.search(r"```(?:json)?\s*(.*?)\s*```", content, flags=re.DOTALL | re.IGNORECASE)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _extract_json_candidate(content: str) -> str | None:
+    if not isinstance(content, str):
+        return None
+    positions = [index for index in (content.find("{"), content.find("[")) if index >= 0]
+    if not positions:
+        return None
+    start = min(positions)
+    opening = content[start]
+    closing = "}" if opening == "{" else "]"
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(content)):
+        char = content[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == opening:
+            depth += 1
+        elif char == closing:
+            depth -= 1
+            if depth == 0:
+                return content[start : index + 1].strip()
+    return None
 
 
 def _env_bool(name: str, *, default: bool) -> bool:
@@ -310,6 +423,32 @@ def _env_bool(name: str, *, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_json_object(name: str) -> dict[str, Any]:
+    value = os.getenv(name)
+    if not value:
+        return {}
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{name} must be a JSON object")
+    return parsed
+
+
+def _normalize_auth_header(value: str) -> str:
+    normalized = str(value or "authorization").strip().lower().replace("_", "-")
+    if normalized in {"bearer", "authorization"}:
+        return "authorization"
+    if normalized == "api-key":
+        return "api-key"
+    raise ValueError("auth_header must be one of authorization, bearer, api-key")
+
+
+def _normalize_max_tokens_param(value: str) -> str:
+    normalized = str(value or "max_tokens").strip()
+    if normalized not in {"max_tokens", "max_completion_tokens"}:
+        raise ValueError("max_tokens_param must be max_tokens or max_completion_tokens")
+    return normalized
 
 
 __all__ = ["LLMGateway", "LLMGatewayConfig", "LLMGatewayResponse", "urllib_request"]

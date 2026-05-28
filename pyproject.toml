@@ -5,8 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "blackagent"
 version = "0.1.0"
-description = "BlackAgent MVP controlled-exploration intelligence pipeline"
-readme = "需求文档.md"
+description = "BlackAgent user-query-driven intelligence investigation pipeline"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110,<1.0",

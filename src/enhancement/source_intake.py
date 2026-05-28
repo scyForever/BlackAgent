@@ -74,7 +74,18 @@ class MultimodalTextExtractor:
     makes the pipeline contract ready for multimodal resources.
     """
 
-    TEXT_FIELDS = ("content_text", "text", "raw_text", "caption", "ocr_text", "alt_text", "image_ocr_text", "poster_text", "subtitle_text")
+    TEXT_FIELDS = (
+        "content_text",
+        "clean_text",
+        "text",
+        "raw_text",
+        "caption",
+        "ocr_text",
+        "alt_text",
+        "image_ocr_text",
+        "poster_text",
+        "subtitle_text",
+    )
     ATTACHMENT_TEXT_FIELDS = ("ocr_text", "alt_text", "caption", "description", "image_ocr_text", "poster_text", "subtitle_text", "text")
     NESTED_COLLECTION_FIELDS = ("attachments", "media", "images", "screenshots", "albums", "cards", "frames", "ocr_blocks", "text_blocks")
 

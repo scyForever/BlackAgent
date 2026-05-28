@@ -244,6 +244,14 @@ def test_http_feed_collector_drops_duckduckgo_block_page_instead_of_persisting_i
 def test_http_feed_collector_retries_http_429_before_succeeding():
     attempts = {"count": 0}
     sleeps: list[float] = []
+    now = {"value": 0.0}
+
+    def _sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now["value"] += seconds
+
+    def _clock() -> float:
+        return now["value"]
 
     def _open(request, timeout):
         attempts["count"] += 1
@@ -268,7 +276,8 @@ def test_http_feed_collector_retries_http_429_before_succeeding():
             retry_backoff_seconds=0.5,
         ),
         opener=_open,
-        sleep=lambda seconds: sleeps.append(seconds),
+        sleep=_sleep,
+        monotonic=_clock,
     )
 
     rows = [model_dump(item) for item in collector.collect()]
@@ -276,6 +285,54 @@ def test_http_feed_collector_retries_http_429_before_succeeding():
     assert len(rows) == 1
     assert attempts["count"] == 2
     assert sleeps == [1.0]
+
+
+def test_http_feed_collector_429_backoff_registers_host_delay_for_following_collectors():
+    http_feed_collector_module._HOST_NEXT_ALLOWED_AT.clear()
+    sleeps: list[float] = []
+    now = {"value": 0.0}
+
+    def _clock() -> float:
+        return now["value"]
+
+    collector_a = HTTPFeedCollector(
+        HTTPFeedConfig(
+            source_url="https://feed.example/a.json",
+            source_name="retry-a",
+            legal_basis="PUBLIC_COMPLIANT_DATA",
+            network_enabled=True,
+            allowed_domains=("feed.example",),
+            retry_attempts=2,
+            retry_backoff_seconds=0.5,
+        ),
+        monotonic=_clock,
+    )
+    collector_b = HTTPFeedCollector(
+        HTTPFeedConfig(
+            source_url="https://feed.example/b.json",
+            source_name="retry-b",
+            legal_basis="PUBLIC_COMPLIANT_DATA",
+            network_enabled=True,
+            allowed_domains=("feed.example",),
+        ),
+        sleep=lambda seconds: sleeps.append(seconds),
+        monotonic=_clock,
+    )
+
+    delay = collector_a._retry_delay_seconds(  # noqa: SLF001 - unit-test host backoff registration
+        HTTPError(
+            collector_a.config.source_url,
+            429,
+            "Too Many Requests",
+            {"Retry-After": "2"},
+            BytesIO(b""),
+        ),
+        0,
+    )
+    collector_b._throttle_request_host()  # noqa: SLF001 - unit-test shared host backoff behavior
+
+    assert delay == 2.0
+    assert sleeps == [2.0]
 
 
 def test_http_feed_collector_rate_limits_same_host_across_collectors():
@@ -488,7 +545,7 @@ sources:
     query_url_template: https://search.example/?q={query}
     query_seed_terms: [site:tieba.baidu.com/p]
     query_themes: [诈骗引流]
-    query_term_limit: 6
+    query_term_limit: 10
     legal_basis: PUBLIC_COMPLIANT_DATA
     allowed_domain: search.example
     include_themes: [诈骗引流]
@@ -498,13 +555,17 @@ sources:
 
     sources = load_source_catalog(catalog_path)
 
-    assert len(sources) == 6
+    assert len(sources) == 10
     assert sources[0]["query_term"] == "私域导流"
     assert sources[0]["query_term_stage"] == "core"
     assert sources[4]["query_term"] == "加薇"
     assert sources[4]["query_term_stage"] == "variant"
     assert sources[5]["query_term"] == "➕v"
     assert sources[5]["query_term_stage"] == "variant"
+    assert sources[6]["query_term"] == "拉裙"
+    assert sources[7]["query_term"] == "进裙"
+    assert sources[8]["query_term"] == "加微"
+    assert sources[9]["query_term"] == "加威"
 
 
 def test_batch_source_collect_api_aggregates_multi_platform_sources(monkeypatch, tmp_path):
