@@ -300,7 +300,18 @@ class InvestigationOrchestrator:
                         live_collection_reasons = ["semantic_local_high_quality_satisfied"]
         live_records: list[dict[str, Any]] = []
         if should_collect_live and collect_source_records is not None:
-            if self._deadline_exhausted(deadline_at):
+            collection_deadline_at = deadline_at
+            planning_exhausted_before_first_collection = (
+                self._deadline_exhausted(collection_deadline_at)
+                and not provided_records
+                and not semantic_local_records
+                and not retrieved_clues
+            )
+            if planning_exhausted_before_first_collection:
+                live_collection_reasons.append("elapsed_budget_reset_for_first_live_collection")
+                collection_deadline_at = self._deadline_at(time.perf_counter(), budget["max_elapsed_seconds"])
+
+            if self._deadline_exhausted(collection_deadline_at):
                 live_collection_reasons.append("elapsed_budget_exhausted_before_live_collection")
             else:
                 selected_sources = self._cap_live_sources(
@@ -308,8 +319,15 @@ class InvestigationOrchestrator:
                     retrieved_summary=retrieved_summary,
                     config=effective_config,
                 )
-                if plan_execution_controls.query_rewrite_policy == "off":
-                    rewrite_traces = self._query_rewrite_skipped_traces(selected_sources, reason="plan_query_rewrite_disabled")
+                if plan_execution_controls.query_rewrite_policy == "off" or planning_exhausted_before_first_collection:
+                    rewrite_traces = self._query_rewrite_skipped_traces(
+                        selected_sources,
+                        reason=(
+                            "elapsed_budget_exhausted_before_query_rewrite"
+                            if planning_exhausted_before_first_collection
+                            else "plan_query_rewrite_disabled"
+                        ),
+                    )
                 else:
                     selected_sources, rewrite_traces = self._rewrite_selected_sources(
                         selected_sources,
@@ -321,12 +339,20 @@ class InvestigationOrchestrator:
                             include_candidates=True,
                         ),
                     )
+                    if (
+                        self._deadline_exhausted(collection_deadline_at)
+                        and not provided_records
+                        and not semantic_local_records
+                        and not retrieved_clues
+                    ):
+                        live_collection_reasons.append("elapsed_budget_reset_after_query_rewrite_for_first_live_collection")
+                        collection_deadline_at = self._deadline_at(time.perf_counter(), budget["max_elapsed_seconds"])
                 live_records, collection_runs = self._collect_records_from_sources(
                     selected_sources,
                     collect_source_records=collect_source_records,
                     max_raw_records=budget["max_raw_records"],
                     max_concurrent_sources=max_concurrent_sources,
-                    deadline_at=deadline_at,
+                    deadline_at=collection_deadline_at,
                 )
         fresh_records = provided_records if provided_records else (live_records or semantic_local_records)
         built_clues: list[dict[str, Any]] = []

@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from src.agent import InvestigationOrchestrator
 from src.backend import LLMGateway
 from src.config_loader import InvestigationConfig, InvestigationPolicyOverride
@@ -5,6 +7,10 @@ from src.config_loader import InvestigationConfig, InvestigationPolicyOverride
 
 def _orchestrator() -> InvestigationOrchestrator:
     return InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
+
+
+def _utc_hours_ago(hours: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
 
 
 def test_investigation_orchestrator_collects_sources_by_priority_layer_before_general():
@@ -317,7 +323,7 @@ def test_investigation_orchestrator_can_use_semantic_local_evidence_before_live_
             "source_name": "tg-semantic-a",
             "source_type": "IM",
             "legal_basis": "AUTHORIZED_PARTNER",
-            "publish_time": "2026-05-28T01:00:00+00:00",
+            "publish_time": _utc_hours_ago(3),
             "content_text": "群控脚本接码上车，联系 TG:semantic01，落地 https://semantic.example/path 第一条",
         },
         {
@@ -325,7 +331,7 @@ def test_investigation_orchestrator_can_use_semantic_local_evidence_before_live_
             "source_name": "forum-semantic-b",
             "source_type": "Forum",
             "legal_basis": "PUBLIC_COMPLIANT_DATA",
-            "publish_time": "2026-05-28T02:00:00+00:00",
+            "publish_time": _utc_hours_ago(2),
             "content_text": "群控脚本接码上车，联系 TG:semantic01，落地 https://semantic.example/path 第二条",
         },
         {
@@ -333,7 +339,7 @@ def test_investigation_orchestrator_can_use_semantic_local_evidence_before_live_
             "source_name": "feed-semantic-c",
             "source_type": "THREAT_INTEL",
             "legal_basis": "THIRD_PARTY_AUTHORIZED_FEED",
-            "publish_time": "2026-05-28T03:00:00+00:00",
+            "publish_time": _utc_hours_ago(1),
             "content_text": "群控脚本接码上车，联系 TG:semantic01，落地 https://semantic.example/path 第三条",
         },
     ]
@@ -389,7 +395,7 @@ def test_investigation_orchestrator_uses_semantic_local_samples_before_live_coll
             "source_name": "tg-graph-a",
             "source_type": "IM",
             "legal_basis": "AUTHORIZED_PARTNER",
-            "publish_time": "2026-05-28T01:00:00+00:00",
+            "publish_time": _utc_hours_ago(3),
             "content_text": "群控脚本接码上车，联系 TG:graph01，落地 https://graph.example/path 第一条",
         },
         {
@@ -397,7 +403,7 @@ def test_investigation_orchestrator_uses_semantic_local_samples_before_live_coll
             "source_name": "forum-graph-b",
             "source_type": "Forum",
             "legal_basis": "PUBLIC_COMPLIANT_DATA",
-            "publish_time": "2026-05-28T02:00:00+00:00",
+            "publish_time": _utc_hours_ago(2),
             "content_text": "普通讨论文本，但联系 TG:graph01，落地 https://graph.example/path 第二条",
         },
         {
@@ -405,7 +411,7 @@ def test_investigation_orchestrator_uses_semantic_local_samples_before_live_coll
             "source_name": "feed-graph-c",
             "source_type": "THREAT_INTEL",
             "legal_basis": "THIRD_PARTY_AUTHORIZED_FEED",
-            "publish_time": "2026-05-28T03:00:00+00:00",
+            "publish_time": _utc_hours_ago(1),
             "content_text": "另一条普通讨论文本，也指向 https://graph.example/path 第三条",
         },
     ]
@@ -1693,7 +1699,7 @@ def test_llm_plan_can_use_semantic_local_before_live_collection():
                 "source_name": "tg-plan-semantic-a",
                 "source_type": "IM",
                 "legal_basis": "AUTHORIZED_PARTNER",
-                "publish_time": "2026-05-28T01:00:00+00:00",
+                "publish_time": _utc_hours_ago(3),
                 "content_text": "群控脚本接码上车，联系 TG:plansemantic01，落地 https://plansemantic.example/path 第一条",
             },
             {
@@ -1701,7 +1707,7 @@ def test_llm_plan_can_use_semantic_local_before_live_collection():
                 "source_name": "forum-plan-semantic-b",
                 "source_type": "Forum",
                 "legal_basis": "PUBLIC_COMPLIANT_DATA",
-                "publish_time": "2026-05-28T02:00:00+00:00",
+                "publish_time": _utc_hours_ago(2),
                 "content_text": "群控脚本接码上车，联系 TG:plansemantic01，落地 https://plansemantic.example/path 第二条",
             },
             {
@@ -1709,7 +1715,7 @@ def test_llm_plan_can_use_semantic_local_before_live_collection():
                 "source_name": "feed-plan-semantic-c",
                 "source_type": "THREAT_INTEL",
                 "legal_basis": "THIRD_PARTY_AUTHORIZED_FEED",
-                "publish_time": "2026-05-28T03:00:00+00:00",
+                "publish_time": _utc_hours_ago(1),
                 "content_text": "群控脚本接码上车，联系 TG:plansemantic01，落地 https://plansemantic.example/path 第三条",
             },
         ]
@@ -2395,3 +2401,63 @@ def test_elapsed_budget_can_stop_clue_refine_before_any_llm_refinement(monkeypat
     assert result.execution_summary["elapsed_budget_exhausted"] is True
     assert result.execution_summary["refined_clue_count"] == 0
     assert result.execution_summary["telemetry"]["elapsed_budget_exhausted"] is True
+
+
+def test_expired_planning_budget_does_not_skip_first_live_collection(monkeypatch):
+    orchestrator = InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
+    ticks = iter([0.0, 30.0, 30.0, 30.1, 30.1, 30.1, 30.1, 30.1, 31.2, 31.2])
+    monkeypatch.setattr(
+        "src.agent.investigation_orchestrator.time.perf_counter",
+        lambda: next(ticks, 31.0),
+    )
+    seen: list[str] = []
+
+    def collect_source(source: dict[str, object]) -> list[dict[str, object]]:
+        seen.append(str(source["source_name"]))
+        return [
+            {
+                "trace_id": "planning-budget-live-1",
+                "source_name": source["source_name"],
+                "source_type": source.get("source_type") or "IM",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "publish_time": "2026-05-23T01:00:00+00:00",
+                "content_text": "群控脚本接码上车，联系 TG:budgetlive01，落地 https://risk.example/live 第一条",
+            },
+            {
+                "trace_id": "planning-budget-live-2",
+                "source_name": source["source_name"],
+                "source_type": source.get("source_type") or "IM",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "publish_time": "2026-05-23T02:00:00+00:00",
+                "content_text": "群控脚本接码上车，联系 TG:budgetlive01，落地 https://risk.example/live 第二条",
+            },
+            {
+                "trace_id": "planning-budget-live-3",
+                "source_name": source["source_name"],
+                "source_type": source.get("source_type") or "IM",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "publish_time": "2026-05-23T03:00:00+00:00",
+                "content_text": "群控脚本接码上车，联系 TG:budgetlive01，落地 https://risk.example/live 第三条",
+            },
+        ]
+
+    result = orchestrator.run(
+        "找接码和群控相关线索",
+        available_sources=[
+            {
+                "source_name": "planning-budget-source",
+                "source_type": "IM",
+                "source_url": "https://feed.example/planning-budget",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "query_theme": "接码",
+                "query_term_stage": "core",
+            }
+        ],
+        collect_source_records=collect_source,
+        policy_override=InvestigationPolicyOverride(max_elapsed_seconds=1, max_llm_refine_clues=1),
+    )
+
+    assert seen == ["planning-budget-source"]
+    assert result.execution_summary["used_live_collection"] is True
+    assert result.execution_summary["orchestration_route"] == "live_collection_only"
+    assert "elapsed_budget_reset_for_first_live_collection" in result.execution_summary["live_collection_reasons"]

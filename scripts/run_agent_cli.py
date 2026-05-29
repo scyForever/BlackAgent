@@ -561,6 +561,21 @@ def print_summary(payload: dict[str, Any], *, show_clues: bool) -> None:
         ):
             if key in execution_summary:
                 print(f"{key}: {execution_summary[key]}")
+        if execution_summary.get("live_collection_reasons"):
+            print(f"live_collection_reasons: {execution_summary.get('live_collection_reasons')}")
+
+    collection_runs = payload.get("collection_runs") or []
+    if collection_runs:
+        print("\n--- collection_runs ---")
+        for item in collection_runs[:8]:
+            line = (
+                f"{item.get('source_name')}: "
+                f"layer={item.get('collection_layer')} "
+                f"fetched={item.get('fetched_count')}"
+            )
+            if item.get("error"):
+                line += f" error={item.get('error')}"
+            print(line)
 
     traces = payload.get("llm_traces") or []
     if traces:
