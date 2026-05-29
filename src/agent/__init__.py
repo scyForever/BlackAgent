@@ -1,6 +1,7 @@
 """Current investigation-agent components for BlackAgent."""
 
 from .budget_manager import BudgetExceeded, BudgetManager, BudgetSnapshot
+from .exploration_agent import ExplorationAgent
 from .investigation_orchestrator import InvestigationOrchestrator, InvestigationRunResult
 from .policy_guard import PolicyGuard, SafetyPolicyViolation
 from .query_rewriter import LLMSourceQueryRewriter, QueryRewriteTrace
@@ -11,6 +12,7 @@ __all__ = [
     "BudgetExceeded",
     "BudgetManager",
     "BudgetSnapshot",
+    "ExplorationAgent",
     "InvestigationOrchestrator",
     "InvestigationPlan",
     "InvestigationRunResult",

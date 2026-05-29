@@ -75,6 +75,7 @@ class ExplorationAgent:
                 similar_records=similar_records,
                 slang_candidates=slang_candidates,
                 budget_consumed=budget,
+                context=context,
             )
         except BudgetExceeded as exc:
             budget = exc.snapshot.consumed
@@ -102,6 +103,7 @@ class ExplorationAgent:
         similar_records: list[Any],
         slang_candidates: list[dict[str, Any]],
         budget_consumed: dict[str, int],
+        context: Mapping[str, Any] | None = None,
     ) -> ExplorationHypothesis:
         evidence_ids = [source_trace_id]
         for record in similar_records:
@@ -122,11 +124,30 @@ class ExplorationAgent:
             if entity_value:
                 entity_bits.append(f"{entity_type}:{entity_value}")
         evidence_note = f"；局部相似样本 {len(evidence_ids) - 1} 条" if len(evidence_ids) > 1 else ""
+        runtime_examples = [
+            item
+            for item in (context or {}).get("few_shot_examples", ())
+            if isinstance(item, Mapping) and str(item.get("term") or "").strip()
+        ]
+        example_note = ""
+        if runtime_examples:
+            labels = []
+            for item in runtime_examples[:2]:
+                label = str(item.get("label") or "").strip()
+                term = str(item.get("term") or "").strip()
+                labels.append(f"{term}->{label}" if label else term)
+            if labels:
+                example_note = f"；历史复核样本 {', '.join(labels)}"
         slang_note = f"；候选黑话“{top_slang['term']}”" if top_slang else ""
         entity_note = f"；实体线索 {', '.join(entity_bits)}" if entity_bits else ""
-        summary = f"样本进入受控探索：原分类={suggested_label}，疑似未知/低置信风险模式{slang_note}{evidence_note}{entity_note}。"
+        summary = f"样本进入受控探索：原分类={suggested_label}，疑似未知/低置信风险模式{slang_note}{example_note}{evidence_note}{entity_note}。"
 
-        normalized_term = {"raw": str(top_slang["term"]), "target": str(top_slang["term"])} if top_slang else None
+        normalized_term = None
+        if top_slang:
+            normalized_term = {
+                "raw": str(top_slang["term"]),
+                "target": str(top_slang.get("normalized_term") or top_slang["term"]),
+            }
         if source_trace_id not in evidence_ids:
             evidence_ids.insert(0, source_trace_id)
         hypothesis = ExplorationHypothesis(

@@ -17,9 +17,9 @@
 
 ```mermaid
 flowchart TD
-    U[User / Analyst Query] --> API[Investigation API]
-    API --> IP[LLM Intent Parser]
-    API --> PL[LLM Investigation Planner]
+    U[User / Analyst Query] --> LOCAL\[Local Runtime / CLI\]
+    LOCAL --> IP[LLM Intent Parser]
+    LOCAL --> PL[LLM Investigation Planner]
     IP --> ORCH[Investigation Orchestrator]
     PL --> ORCH
 
@@ -129,7 +129,8 @@ flowchart TD
 
 现有入口：
 
-- `POST /api/v1/investigations/run`
+- python scripts/run_agent_cli.py 
+- src.local_runtime.LocalAgentRuntime.run_investigation(...) 
 
 ---
 
@@ -256,3 +257,4 @@ BlackAgent 面向亿级数据的正确方向是：
 > **离线高吞吐 backbone 持续构建 candidate clue pool，在线 investigation 优先检索 clue pool，再用外部 LLM 对 top-N 高价值 clue 做精判与汇总。**
 
 这样才能把效果、成本、时延控制在同一个工程闭环里。
+

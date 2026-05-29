@@ -10,6 +10,7 @@ from .engine import PhaseTwoThreeEngine
 from .strategy import CountermeasureStrategy, CheatingPlaybook, RiskClue
 from .lifecycle import DynamicSlangLifecycleManager, PromptEvaluator
 from .source_intake import AuthorizedSourcePolicy, ComplianceSourceDiscovery, MultimodalTextExtractor
+from .text_intelligence import SlangDictionary
 
 __all__ = [
     "AuthorizedSourcePolicy",
@@ -21,4 +22,5 @@ __all__ = [
     "PhaseTwoThreeEngine",
     "PromptEvaluator",
     "RiskClue",
+    "SlangDictionary",
 ]

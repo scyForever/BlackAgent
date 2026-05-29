@@ -1,9 +1,4 @@
-"""Configuration loading utilities for the BlackAgent MVP.
-
-The MVP keeps runtime configuration externalized in ``config/config.yaml`` so the
-FastAPI entrypoint and future workers can share one typed contract without
-importing heavier pipeline modules at application import time.
-"""
+"""Configuration loading utilities for the BlackAgent local runtime."""
 
 from __future__ import annotations
 
@@ -46,22 +41,8 @@ class AppConfig(BaseModel):
     environment: str = "local"
 
 
-class ApiConfig(BaseModel):
-    """HTTP API route configuration."""
-
-    model_config = ConfigDict(extra="allow")
-
-    prefix: str = "/api/v1"
-
-    @field_validator("prefix")
-    @classmethod
-    def normalize_prefix(cls, value: str) -> str:
-        value = value.strip() or "/api/v1"
-        return value if value.startswith("/") else f"/{value}"
-
-
 class PipelineConfig(BaseModel):
-    """Local intelligence-processing knobs shared by API wiring."""
+    """Local intelligence-processing knobs."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -201,6 +182,46 @@ class LLMConfig(BaseModel):
         return normalized
 
 
+class InvestigationConfig(BaseModel):
+    """Hybrid investigation routing and observability policy."""
+
+    model_config = ConfigDict(extra="allow")
+
+    live_collection_enabled: bool = True
+    short_window_hours: int = Field(default=48, ge=1)
+    balanced_min_pool_high_quality_count: int = Field(default=1, ge=0)
+    high_precision_min_pool_high_quality_count: int = Field(default=2, ge=0)
+    evidence_chain_min_pool_high_quality_count: int = Field(default=1, ge=0)
+    min_cross_source_count: int = Field(default=2, ge=1)
+    max_live_sources_when_pool_hit: int = Field(default=2, ge=1)
+    retrieval_score_threshold_for_pool_merge: float = Field(default=0.0, ge=0.0)
+    telemetry_enabled: bool = True
+
+
+class InvestigationPolicyOverride(BaseModel):
+    """Request-scoped routing/budget overrides for one investigation run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    live_collection_enabled: bool | None = None
+    short_window_hours: int | None = Field(default=None, ge=1)
+    balanced_min_pool_high_quality_count: int | None = Field(default=None, ge=0)
+    high_precision_min_pool_high_quality_count: int | None = Field(default=None, ge=0)
+    evidence_chain_min_pool_high_quality_count: int | None = Field(default=None, ge=0)
+    min_cross_source_count: int | None = Field(default=None, ge=1)
+    max_live_sources_when_pool_hit: int | None = Field(default=None, ge=1)
+    retrieval_score_threshold_for_pool_merge: float | None = Field(default=None, ge=0.0)
+    telemetry_enabled: bool | None = None
+    minimum_quality_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    require_cross_source: bool | None = None
+    require_evidence_chain: bool | None = None
+    max_sources: int | None = Field(default=None, ge=1)
+    max_raw_records: int | None = Field(default=None, ge=1)
+    max_candidate_clues: int | None = Field(default=None, ge=1)
+    max_llm_refine_clues: int | None = Field(default=None, ge=1)
+    max_elapsed_seconds: int | None = Field(default=None, ge=1)
+
+
 class LabelConfig(BaseModel):
     """Location of the governed label schema."""
 
@@ -225,7 +246,6 @@ class Settings(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     app: AppConfig = Field(default_factory=AppConfig)
-    api: ApiConfig = Field(default_factory=ApiConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
@@ -234,6 +254,7 @@ class Settings(BaseModel):
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     enforcement: EnforcementConfig = Field(default_factory=EnforcementConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    investigation: InvestigationConfig = Field(default_factory=InvestigationConfig)
     labels: LabelConfig = Field(default_factory=LabelConfig)
     prompts: PromptConfig = Field(default_factory=PromptConfig)
 
@@ -354,7 +375,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
 
 @lru_cache(maxsize=8)
 def get_settings(config_path: str | None = None) -> Settings:
-    """Cached settings accessor for FastAPI dependencies."""
+    """Cached settings accessor for the local runtime."""
 
     return load_settings(config_path)
 

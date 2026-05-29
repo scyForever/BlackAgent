@@ -93,7 +93,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Add one raw intelligence text record. Can be passed multiple times.",
     )
     parser.add_argument("--demo-sample", action="store_true", help="Use built-in sample black/gray records.")
-    parser.add_argument("--source-config-path", help="Optional source catalog path for API-side source selection/collection.")
+    parser.add_argument("--source-config-path", help="Optional source catalog path for local source selection/collection.")
     parser.add_argument(
         "--enable-network",
         action="store_true",
@@ -104,6 +104,41 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
         help="Maximum sources selected by the planner. Omit to use all authorized sources by default.",
+    )
+    parser.add_argument(
+        "--routing-profile",
+        choices=["fast", "balanced", "high_recall"],
+        default=None,
+        help="Investigation tradeoff profile: fast favors latency, high_recall favors coverage.",
+    )
+    parser.add_argument(
+        "--max-raw-records",
+        type=int,
+        default=None,
+        help="Request-scoped cap for raw records processed by the investigation.",
+    )
+    parser.add_argument(
+        "--max-candidate-clues",
+        type=int,
+        default=None,
+        help="Request-scoped cap for candidate clue retrieval/merge.",
+    )
+    parser.add_argument(
+        "--max-llm-refine-clues",
+        type=int,
+        default=None,
+        help="Request-scoped cap for top clue cards sent to LLM refinement.",
+    )
+    parser.add_argument(
+        "--max-elapsed-seconds",
+        type=int,
+        default=None,
+        help="Soft request-scoped elapsed-time budget for live collection/refinement.",
+    )
+    parser.add_argument(
+        "--disable-live-collection",
+        action="store_true",
+        help="Disable live source collection for this request and use local/provided evidence only.",
     )
     parser.add_argument("--time-range-hours", type=int, default=None, help="Optional retrieval time-range filter.")
     parser.add_argument("--source-type", action="append", default=[], help="Optional source type filter; repeatable.")
@@ -219,7 +254,7 @@ def load_local_corpus_records(
     """Load recent, query-relevant records from the local delivery corpus.
 
     The CLI is often used interactively with only a natural-language query.
-    Without explicit ``fixture_items`` or a source catalog the API has no input
+    Without explicit ``fixture_items`` or a source catalog the agent has no input
     to process, so this function safely seeds the run from the already-collected
     local high-risk corpus instead of returning an empty investigation result.
     """
@@ -443,21 +478,46 @@ def apply_runtime_overrides(settings: Any, args: argparse.Namespace) -> None:
         settings.llm.model = args.model
 
 
+def policy_override_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    override: dict[str, Any] = {}
+    if args.disable_live_collection:
+        override["live_collection_enabled"] = False
+    for arg_name, payload_name in (
+        ("max_raw_records", "max_raw_records"),
+        ("max_candidate_clues", "max_candidate_clues"),
+        ("max_llm_refine_clues", "max_llm_refine_clues"),
+        ("max_elapsed_seconds", "max_elapsed_seconds"),
+    ):
+        value = getattr(args, arg_name)
+        if value is not None:
+            override[payload_name] = value
+    return override
+
+
 def run_agent(payload: dict[str, Any], settings: Any) -> tuple[int, dict[str, Any]]:
-    try:
-        from fastapi.testclient import TestClient
-    except ModuleNotFoundError as exc:
-        raise RuntimeError("FastAPI TestClient dependency is missing. Run: python -m pip install -e .[dev]") from exc
+    from src.local_runtime import LocalAgentRuntime
 
-    from main import create_app
-
-    client = TestClient(create_app(settings))
-    response = client.post(f"{settings.api.prefix}/investigations/run", json=payload)
+    runtime = LocalAgentRuntime(settings)
     try:
-        body = response.json()
-    except ValueError:
-        body = {"raw": response.text}
-    return response.status_code, body
+        body = runtime.run_investigation(
+            payload["query"],
+            fixture_items=payload.get("fixture_items") or (),
+            fixture_path=payload.get("fixture_path"),
+            source_config_path=payload.get("source_config_path"),
+            sources=payload.get("sources") or (),
+            max_sources=payload.get("max_sources"),
+            time_range_hours=payload.get("time_range_hours"),
+            source_types=payload.get("source_types") or (),
+            risk_types=payload.get("risk_types") or (),
+            min_quality_score=payload.get("min_quality_score"),
+            routing_profile=payload.get("routing_profile"),
+            policy_override=payload.get("policy_override"),
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI should surface normalized local failures.
+        return 1, {"status": "failed", "error": str(exc), "error_type": type(exc).__name__}
+    finally:
+        runtime.close()
+    return 200, body
 
 
 def print_summary(payload: dict[str, Any], *, show_clues: bool) -> None:
@@ -584,6 +644,11 @@ def main(argv: list[str] | None = None) -> int:
     }
     if args.max_sources is not None:
         payload["max_sources"] = args.max_sources
+    if args.routing_profile:
+        payload["routing_profile"] = args.routing_profile
+    policy_override = policy_override_from_args(args)
+    if policy_override:
+        payload["policy_override"] = policy_override
     if source_config_path:
         payload["source_config_path"] = source_config_path
     if args.time_range_hours is not None:
@@ -612,7 +677,7 @@ def main(argv: list[str] | None = None) -> int:
         print_summary(response_payload, show_clues=args.show == "clues")
 
     if status_code != 200:
-        print(f"ERROR: HTTP {status_code}", file=sys.stderr)
+        print(f"ERROR: local runtime status {status_code}", file=sys.stderr)
         return 1
     if response_payload.get("status") not in {"completed", "no_data"}:
         return 1

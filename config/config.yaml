@@ -4,9 +4,6 @@ app:
   year: 2026
   environment: local
 
-api:
-  prefix: /api/v1
-
 pipeline:
   confidence_threshold: 0.75
   max_input_chars: 4000
@@ -94,6 +91,17 @@ llm:
   # extra_body:
   #   thinking:
   #     type: disabled
+
+investigation:
+  live_collection_enabled: true
+  short_window_hours: 48
+  balanced_min_pool_high_quality_count: 1
+  high_precision_min_pool_high_quality_count: 2
+  evidence_chain_min_pool_high_quality_count: 1
+  min_cross_source_count: 2
+  max_live_sources_when_pool_hit: 2
+  retrieval_score_threshold_for_pool_merge: 0.0
+  telemetry_enabled: true
 
 labels:
   schema_path: config/label_schema.json

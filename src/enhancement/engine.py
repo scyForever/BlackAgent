@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Iterable, Mapping
 
@@ -16,6 +17,7 @@ from .text_intelligence import (
     AdvancedEntityExtractor,
     FineGrainedIntentClassifier,
     SimilarityClusterer,
+    SlangDictionary,
 )
 
 
@@ -87,6 +89,8 @@ class PhaseTwoThreeEngine:
         self.lifecycle_manager = lifecycle_manager or DynamicSlangLifecycleManager()
         self.prompt_evaluator = prompt_evaluator or PromptEvaluator()
         self.compliance_discovery = ComplianceSourceDiscovery()
+        self._record_cache: dict[str, dict[str, Any]] = {}
+        self._last_run_payload: dict[str, Any] | None = None
 
     def run(
         self,
@@ -96,6 +100,7 @@ class PhaseTwoThreeEngine:
         source_candidates: Iterable[Mapping[str, Any] | Any] | None = None,
     ) -> PhaseRunResult:
         raw_records = list(records)
+        self._refresh_runtime_slang_dictionary()
         accepted, compliance_decisions = self.source_policy.filter_records(raw_records)
         materialized = [self.multimodal_extractor.materialize(record) for record in accepted]
 
@@ -113,7 +118,21 @@ class PhaseTwoThreeEngine:
 
         for record in kept:
             trace_id = str(record.get("source_trace_id") or record.get("trace_id") or record.get("hash_id") or len(self.vector_repo.list()))
-            self.vector_repo.upsert(trace_id, str(record.get("content_text") or ""), {"source_name": record.get("source_name"), "source_type": record.get("source_type")})
+            cached_record = dict(record)
+            cached_record.setdefault("source_trace_id", trace_id)
+            self._record_cache[trace_id] = cached_record
+            self.vector_repo.upsert(
+                trace_id,
+                str(record.get("content_text") or ""),
+                {
+                    "trace_id": trace_id,
+                    "source_name": record.get("source_name"),
+                    "source_type": record.get("source_type"),
+                    "legal_basis": record.get("legal_basis"),
+                    "publish_time": record.get("publish_time"),
+                    "source_url": record.get("source_url"),
+                },
+            )
         risk_clues = self.clue_aggregator.aggregate(records=kept, classifications=classifications, entities=entities)
         playbooks = self.playbook_builder.build(risk_clues, kept)
         strategies = self.strategy_planner.plan(risk_clues, playbooks)
@@ -131,7 +150,7 @@ class PhaseTwoThreeEngine:
             for candidate in source_candidates:
                 compliance_decisions.append(self.compliance_discovery.evaluate(candidate))
 
-        return PhaseRunResult(
+        result = PhaseRunResult(
             status="completed",
             mode="phase2_phase3_enhancement",
             input_count=len(raw_records),
@@ -155,12 +174,93 @@ class PhaseTwoThreeEngine:
             vector_summary={"record_count": len(self.vector_repo.list())},
             prompt_eval=prompt_eval,
         )
+        self._last_run_payload = result.model_dump()
+        return result
 
     def semantic_search(self, query: str, *, top_k: int = 5) -> list[dict[str, Any]]:
         return [_dump(item) for item in self.vector_repo.search(query, top_k=top_k)]
 
     def graph_neighbors(self, node_id: str) -> list[dict[str, Any]]:
         return [_dump(item) for item in self.graph_repo.neighbors(node_id)]
+
+    def get_cached_record(self, trace_id: str) -> dict[str, Any] | None:
+        record = self._record_cache.get(str(trace_id))
+        return dict(record) if record is not None else None
+
+    def get_cached_records(self, trace_ids: Iterable[str]) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for trace_id in trace_ids:
+            normalized = str(trace_id).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            record = self.get_cached_record(normalized)
+            if record is not None:
+                records.append(record)
+        return records
+
+    def expand_related_trace_ids(self, trace_ids: Iterable[str], *, limit: int = 6) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        def add_trace(trace_id: str | None) -> None:
+            normalized = str(trace_id or "").strip()
+            if not normalized or normalized in seen or len(ordered) >= max(1, int(limit or 1)):
+                return
+            if self.get_cached_record(normalized) is None:
+                return
+            seen.add(normalized)
+            ordered.append(normalized)
+
+        def extract_trace_id(node: Mapping[str, Any]) -> str | None:
+            if str(node.get("node_type") or "").strip().lower() != "risk_sample":
+                return None
+            properties = node.get("properties") if isinstance(node.get("properties"), Mapping) else {}
+            return str(properties.get("source_trace_id") or "").strip() or None
+
+        for trace_id in trace_ids:
+            add_trace(str(trace_id))
+        direct_trace_ids = list(ordered)
+        for trace_id in direct_trace_ids:
+            if len(ordered) >= max(1, int(limit or 1)):
+                break
+            for neighbor in self.graph_neighbors(f"sample:{trace_id}"):
+                add_trace(extract_trace_id(neighbor))
+                if len(ordered) >= max(1, int(limit or 1)):
+                    break
+                node_id = str(neighbor.get("node_id") or "").strip()
+                if not node_id:
+                    continue
+                for second_hop in self.graph_neighbors(node_id):
+                    add_trace(extract_trace_id(second_hop))
+                    if len(ordered) >= max(1, int(limit or 1)):
+                        break
+                if len(ordered) >= max(1, int(limit or 1)):
+                    break
+        return ordered
+
+    def runtime_slang_terms(self, *, include_candidates: bool = False) -> tuple[str, ...]:
+        return tuple(self.lifecycle_manager.runtime_terms_mapping(include_candidates=include_candidates).keys())
+
+    def runtime_slang_mapping(self, *, include_candidates: bool = False) -> dict[str, str]:
+        return self.lifecycle_manager.runtime_terms_mapping(include_candidates=include_candidates)
+
+    def runtime_prompt_context(
+        self,
+        *,
+        label: str | None = None,
+        include_candidates: bool = False,
+    ) -> dict[str, Any]:
+        prompt_context = self.lifecycle_manager.prompt_context(label=label, include_candidates=include_candidates)
+        prompt_context["slang_terms_mapping"] = self.runtime_slang_mapping(include_candidates=include_candidates)
+        prompt_context["slang_term_values"] = list(prompt_context.get("slang_terms_mapping", {}).keys())
+        return prompt_context
+
+    def last_run_payload(self) -> dict[str, Any] | None:
+        if self._last_run_payload is None:
+            return None
+        return deepcopy(self._last_run_payload)
 
     def _index_graph(self, entities: Iterable[Any], clues: Iterable[Any], playbooks: Iterable[Any]) -> None:
         for entity in entities:
@@ -180,6 +280,15 @@ class PhaseTwoThreeEngine:
             self.graph_repo.upsert_node(playbook_id, "cheating_playbook", _dump(playbook))
             for clue_id in playbook.clue_ids:
                 self.graph_repo.add_edge(playbook_id, f"clue:{clue_id}", "COMPOSED_OF")
+
+    def _refresh_runtime_slang_dictionary(self) -> None:
+        mapping = self.lifecycle_manager.runtime_terms_mapping(include_candidates=False)
+        if not mapping:
+            if isinstance(getattr(self.entity_extractor, "slang_dictionary", None), SlangDictionary):
+                return
+            self.entity_extractor.slang_dictionary = SlangDictionary()
+            return
+        self.entity_extractor.slang_dictionary = SlangDictionary(mapping)
 
 
 def _dump(value: Any) -> dict[str, Any]:

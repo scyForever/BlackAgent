@@ -29,7 +29,17 @@ class LLMClueRefiner:
     def __init__(self, llm_gateway: LLMGateway) -> None:
         self.llm_gateway = llm_gateway
 
-    def refine(self, clue: Mapping[str, Any], *, query: str, intent: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    def refine(
+        self,
+        clue: Mapping[str, Any],
+        *,
+        query: str,
+        intent: Mapping[str, Any],
+        runtime_context: Mapping[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        runtime_context = dict(runtime_context or {})
+        few_shot_examples = runtime_context.get("few_shot_examples") if isinstance(runtime_context.get("few_shot_examples"), list) else []
+        slang_terms = runtime_context.get("slang_terms") if isinstance(runtime_context.get("slang_terms"), list) else []
         response = self.llm_gateway.chat(
             [
                 {
@@ -37,12 +47,19 @@ class LLMClueRefiner:
                     "content": (
                         "You are BlackAgent's clue refiner. Return only JSON with fields: "
                         "refined_summary, confidence_delta, review_required, refinement_reasons. "
-                        "Summarize why this clue matters for the current investigation request."
+                        "Summarize why this clue matters for the current investigation request. "
+                        "Use runtime slang normalization and approved review examples when they help explain the clue."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": f"query={query}\nintent={dict(intent)}\nclue={dict(clue)}",
+                    "content": (
+                        f"query={query}\n"
+                        f"intent={dict(intent)}\n"
+                        f"clue={dict(clue)}\n"
+                        f"runtime_slang_terms={slang_terms[:12]}\n"
+                        f"runtime_few_shot_examples={few_shot_examples[:4]}"
+                    ),
                 },
             ],
             temperature=0.0,
@@ -71,6 +88,8 @@ class LLMClueRefiner:
             "clue_id": refined.clue_id,
             "llm_ok": response.ok,
             "used_fallback": not usable,
+            "runtime_slang_term_count": len(slang_terms),
+            "runtime_few_shot_count": len(few_shot_examples),
             "parsed_json": parsed if parsed else None,
             "error": response.error,
         }

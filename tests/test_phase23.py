@@ -1,11 +1,10 @@
-from fastapi.testclient import TestClient
-
-from main import create_app
+from src.agent.exploration_agent import ExplorationAgent
 from src.enhancement.engine import PhaseTwoThreeEngine
 from src.enhancement.lifecycle import DynamicSlangLifecycleManager, PromptEvaluator
 from src.enhancement.source_intake import ComplianceSourceDiscovery, MultimodalTextExtractor
 from src.enhancement.text_intelligence import AdaptiveEntropyFilter, AdvancedEntityExtractor, FineGrainedIntentClassifier
 from src.classifier.nlp_rule_matcher import ACCOUNT_TRADING, CLICK_FARMING, CROWD_SERVICE, TOOL_TRADING
+from src.local_runtime import LocalAgentRuntime
 from storage import GraphRepo, VectorRepo
 
 
@@ -314,24 +313,143 @@ def test_vector_and_graph_repositories_are_adapter_shaped():
     assert graph_repo.neighbors("sample:a")[0].node_id == "entity:tg"
 
 
-def test_advanced_pipeline_api_smoke():
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/v1/pipeline/advanced/run",
-        json={
-            "fixture_items": phase_records(),
-            "prompt_text": "Return JSON with confidence evidence requires_human_review",
-        },
+def test_phase_engine_can_expand_related_trace_ids_from_graph_neighbors():
+    engine = PhaseTwoThreeEngine()
+    engine.run(
+        [
+            {
+                "trace_id": "graph-expand-1",
+                "source_name": "tg-authorized-a",
+                "source_type": "IM",
+                "legal_basis": "AUTHORIZED_PARTNER",
+                "publish_time": "2026-05-28T01:00:00+00:00",
+                "content_text": "群控脚本接码上车，联系 TG:expand01，落地 https://expand.example/path 第一条",
+            },
+            {
+                "trace_id": "graph-expand-2",
+                "source_name": "forum-authorized-b",
+                "source_type": "Forum",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "publish_time": "2026-05-28T02:00:00+00:00",
+                "content_text": "普通文本但联系 TG:expand01，落地 https://expand.example/path 第二条",
+            },
+            {
+                "trace_id": "graph-expand-3",
+                "source_name": "feed-authorized-c",
+                "source_type": "THREAT_INTEL",
+                "legal_basis": "THIRD_PARTY_AUTHORIZED_FEED",
+                "publish_time": "2026-05-28T03:00:00+00:00",
+                "content_text": "普通文本但指向 https://expand.example/path 第三条",
+            },
+        ]
     )
 
-    assert response.status_code == 200
-    payload = response.json()
+    expanded = engine.expand_related_trace_ids(["graph-expand-1"], limit=6)
+
+    assert "graph-expand-1" in expanded
+    assert "graph-expand-2" in expanded
+    assert "graph-expand-3" in expanded
+
+
+def test_reviewed_runtime_slang_updates_phase_engine_entity_normalization():
+    lifecycle = DynamicSlangLifecycleManager()
+    lifecycle.ingest_review_decision(
+        {
+            "payload": {
+                "decision": "APPROVED",
+                "source_trace_id": "review-1",
+                "reviewer": "analyst",
+                "edits": {
+                    "add_to_wordlist": True,
+                    "edited_risk_type": "账号交易",
+                    "corrected_entities": [
+                        {
+                            "entity_value": "火苗",
+                            "normalized_value": "WhatsApp",
+                        }
+                    ],
+                },
+            }
+        }
+    )
+    lifecycle.gray_rollout("火苗", reviewer="analyst")
+    lifecycle.activate("火苗", reviewer="analyst")
+    engine = PhaseTwoThreeEngine(lifecycle_manager=lifecycle)
+
+    result = engine.run(
+        [
+            {
+                "trace_id": "runtime-slang-1",
+                "source_name": "tg-runtime-a",
+                "source_type": "IM",
+                "legal_basis": "AUTHORIZED_PARTNER",
+                "content_text": "火苗联系 handle01，欢迎上车。",
+            }
+        ]
+    )
+    payload = result.model_dump()
+
+    assert any(
+        item["entity_type"] == "slang_term"
+        and item["entity_value"] == "火苗"
+        and item["normalized_value"] == "WhatsApp"
+        for item in payload["entities"]
+    )
+    runtime_context = engine.runtime_prompt_context(label="账号交易")
+    assert runtime_context["slang_terms_mapping"]["火苗"] == "WhatsApp"
+    assert runtime_context["few_shot_examples"][0]["term"] == "火苗"
+
+
+def test_exploration_agent_uses_runtime_slang_candidates_and_normalized_term():
+    lifecycle = DynamicSlangLifecycleManager()
+    lifecycle.ingest_review_decision(
+        {
+            "payload": {
+                "decision": "APPROVED",
+                "source_trace_id": "review-2",
+                "reviewer": "analyst",
+                "edits": {
+                    "add_to_wordlist": True,
+                    "edited_risk_type": "诈骗引流",
+                    "corrected_entities": [
+                        {
+                            "entity_value": "火苗",
+                            "normalized_value": "WhatsApp",
+                        }
+                    ],
+                },
+            }
+        }
+    )
+    lifecycle.gray_rollout("火苗", reviewer="analyst")
+    lifecycle.activate("火苗", reviewer="analyst")
+    engine = PhaseTwoThreeEngine(lifecycle_manager=lifecycle)
+    context = engine.runtime_prompt_context(label="诈骗引流")
+    context["history"] = [{"trace_id": "history-1", "content_text": "以前也有人说火苗联系。"}]
+
+    hypothesis = ExplorationAgent().analyze(
+        raw={"trace_id": "explore-1", "content_text": "最新样本：火苗联系我。"},
+        context=context,
+    )
+
+    assert hypothesis.hypothesis_type.value == "NEW_SLANG_VARIANT"
+    assert hypothesis.suggested_normalized_term == {"raw": "火苗", "target": "WhatsApp"}
+    assert "历史复核样本" in hypothesis.hypothesis_summary
+
+
+def test_advanced_pipeline_local_runtime_smoke():
+    runtime = LocalAgentRuntime()
+    try:
+        payload = runtime.run_advanced_pipeline(
+            phase_records(),
+            prompt_text="Return JSON with confidence evidence requires_human_review",
+        )
+        search_payload = runtime.semantic_search("群控脚本", top_k=1)
+    finally:
+        runtime.close()
+
     assert payload["mode"] == "phase2_phase3_enhancement"
     assert payload["risk_clue_count"] >= 2
     assert payload["playbook_count"] == 1
     assert payload["strategy_count"] >= 3
-
-    search_response = client.get("/api/v1/semantic/search", params={"query": "群控脚本", "top_k": 1})
-    assert search_response.status_code == 200
-    assert search_response.json()["count"] == 1
+    assert search_payload["count"] == 1

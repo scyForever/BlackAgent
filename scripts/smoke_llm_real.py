@@ -84,41 +84,36 @@ def _run_direct_gateway(settings: Any, message: str) -> LLMGatewayResponse:
     )
 
 
-def _run_api_endpoint(settings: Any, message: str) -> dict[str, Any]:
-    from fastapi.testclient import TestClient
+def _run_local_llm_gateway(settings: Any, message: str) -> dict[str, Any]:
+    from src.local_runtime import LocalAgentRuntime
 
-    from main import create_app
-
-    client = TestClient(create_app(settings))
-    response = client.post(
-        f"{settings.api.prefix}/llm/chat",
-        json={
-            "messages": [
+    runtime = LocalAgentRuntime(settings)
+    try:
+        payload = runtime.llm_chat(
+            [
                 {
                     "role": "system",
                     "content": "Return only a compact JSON object with fields pong, route, and note.",
                 },
                 {"role": "user", "content": message},
             ],
-            "temperature": 0,
-            "max_tokens": 120,
-            "response_format": {"type": "json_object"},
-        },
-    )
-    return {"http_status": response.status_code, "payload": response.json()}
+            temperature=0,
+            max_tokens=120,
+            response_format={"type": "json_object"},
+        )
+    finally:
+        runtime.close()
+    return {"runtime_status": "ok", "payload": payload}
 
 
-def _run_investigation_endpoint(settings: Any) -> dict[str, Any]:
-    from fastapi.testclient import TestClient
+def _run_local_investigation(settings: Any) -> dict[str, Any]:
+    from src.local_runtime import LocalAgentRuntime
 
-    from main import create_app
-
-    client = TestClient(create_app(settings))
-    response = client.post(
-        f"{settings.api.prefix}/investigations/run",
-        json={
-            "query": "请复核最近 24 小时内接码、群控脚本相关的高质量黑灰产线索，输出可复核证据链。",
-            "fixture_items": [
+    runtime = LocalAgentRuntime(settings)
+    try:
+        payload = runtime.run_investigation(
+            "请复核最近 24 小时内接码、群控脚本相关的高质量黑灰产线索，输出可复核证据链。",
+            fixture_items=[
                 {
                     "trace_id": "llm-smoke-r1",
                     "source_name": "tg-smoke-a",
@@ -144,12 +139,12 @@ def _run_investigation_endpoint(settings: Any) -> dict[str, Any]:
                     "content_text": "群控脚本接码上车，联系 TG:core01，落地 https://risk.example/path，音符暗号 第三条",
                 },
             ],
-            "max_sources": 2,
-        },
-    )
-    payload = response.json()
+            max_sources=2,
+        )
+    finally:
+        runtime.close()
     return {
-        "http_status": response.status_code,
+        "runtime_status": "ok",
         "status": payload.get("status"),
         "mode": payload.get("mode"),
         "input_count": payload.get("input_count"),
@@ -171,10 +166,10 @@ def _run_investigation_endpoint(settings: Any) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a real OpenAI-compatible LLM smoke test.")
     parser.add_argument("--config", default=None, help="Optional config YAML path.")
-    parser.add_argument("--message", default="ping", help="Small prompt for the direct/API LLM smoke call.")
+    parser.add_argument("--message", default="ping", help="Small prompt for the direct/local LLM smoke call.")
     parser.add_argument("--force-real", action="store_true", help="Override settings to enabled=true and dry_run=false.")
-    parser.add_argument("--skip-api", action="store_true", help="Skip the FastAPI /llm/chat path.")
-    parser.add_argument("--include-investigation", action="store_true", help="Also run /investigations/run with fixture data.")
+    parser.add_argument("--skip-local-gateway", action="store_true", help="Skip the local runtime LLM gateway path.")
+    parser.add_argument("--include-investigation", action="store_true", help="Also run local investigation with fixture data.")
     args = parser.parse_args(argv)
 
     load_project_env_file()
@@ -197,17 +192,17 @@ def main(argv: list[str] | None = None) -> int:
     if not direct.ok or not direct.network_attempted:
         return 1
 
-    if not args.skip_api:
-        api_result = _run_api_endpoint(settings, args.message)
-        print("API " + json.dumps(api_result, ensure_ascii=False, sort_keys=True))
-        api_payload = api_result.get("payload") or {}
-        if api_result.get("http_status") != 200 or not api_payload.get("ok") or not api_payload.get("network_attempted"):
+    if not args.skip_local_gateway:
+        gateway_result = _run_local_llm_gateway(settings, args.message)
+        print("LOCAL_GATEWAY " + json.dumps(gateway_result, ensure_ascii=False, sort_keys=True))
+        gateway_payload = gateway_result.get("payload") or {}
+        if gateway_result.get("runtime_status") != "ok" or not gateway_payload.get("ok") or not gateway_payload.get("network_attempted"):
             return 1
 
     if args.include_investigation:
-        investigation_result = _run_investigation_endpoint(settings)
+        investigation_result = _run_local_investigation(settings)
         print("INVESTIGATION " + json.dumps(investigation_result, ensure_ascii=False, sort_keys=True))
-        if investigation_result.get("http_status") != 200:
+        if investigation_result.get("runtime_status") != "ok":
             return 1
         for trace in investigation_result.get("llm_trace_summary") or []:
             if not trace.get("llm_ok"):

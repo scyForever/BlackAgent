@@ -60,7 +60,13 @@ class LLMUserRequestParser:
     def __init__(self, llm_gateway: LLMGateway) -> None:
         self.llm_gateway = llm_gateway
 
-    def parse(self, query: str) -> tuple[UserIntent, LLMDecisionTrace]:
+    def parse(
+        self,
+        query: str,
+        *,
+        runtime_context: Mapping[str, Any] | None = None,
+    ) -> tuple[UserIntent, LLMDecisionTrace]:
+        runtime_context = dict(runtime_context or {})
         response = self.llm_gateway.chat(
             [
                 {
@@ -70,35 +76,61 @@ class LLMUserRequestParser:
                         "for a cyber-fraud intelligence request. "
                         "Return only JSON with fields: goal, risk_types, source_preferences, "
                         "include_keywords, exclude_keywords, time_range_hours, quality_profile, "
-                        "output_type, require_cross_source, require_evidence_chain."
+                        "output_type, require_cross_source, require_evidence_chain. "
+                        "Use runtime approved slang terms and few-shot review examples when they help disambiguate the request."
                     ),
                 },
-                {"role": "user", "content": query},
+                {
+                    "role": "user",
+                    "content": (
+                        f"query={query}\n"
+                        f"runtime_slang_terms={runtime_context.get('slang_terms', [])[:12]}\n"
+                        f"runtime_few_shot_examples={runtime_context.get('few_shot_examples', [])[:4]}"
+                    ),
+                },
             ],
             temperature=0.0,
             max_tokens=400,
             response_format={"type": "json_object"},
         )
         parsed = response.parsed_json or {}
-        intent = self._intent_from_payload(parsed, query=query)
+        intent = self._intent_from_payload(parsed, query=query, runtime_context=runtime_context)
         used_fallback = not _intent_payload_usable(parsed)
         if used_fallback:
-            intent = _fallback_intent(query)
+            intent = _fallback_intent(query, runtime_context=runtime_context)
         trace = LLMDecisionTrace(
             stage="intent_parse",
             llm_ok=response.ok,
             used_fallback=used_fallback,
-            parsed_json=parsed if parsed else None,
+            parsed_json=(
+                {
+                    **parsed,
+                    "runtime_slang_term_count": len(runtime_context.get("slang_terms", []) or []),
+                    "runtime_few_shot_count": len(runtime_context.get("few_shot_examples", []) or []),
+                }
+                if parsed
+                else {
+                    "runtime_slang_term_count": len(runtime_context.get("slang_terms", []) or []),
+                    "runtime_few_shot_count": len(runtime_context.get("few_shot_examples", []) or []),
+                }
+            ),
             error=response.error,
         )
         return intent, trace
 
-    def _intent_from_payload(self, payload: Mapping[str, Any], *, query: str) -> UserIntent:
+    def _intent_from_payload(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        query: str,
+        runtime_context: Mapping[str, Any] | None = None,
+    ) -> UserIntent:
+        fallback = _fallback_intent(query, runtime_context=runtime_context)
         return UserIntent(
             goal=_normalize_goal(payload.get("goal")),
-            risk_types=_string_list(payload.get("risk_types")) or _fallback_intent(query).risk_types,
+            risk_types=_string_list(payload.get("risk_types")) or fallback.risk_types,
             source_preferences=_string_list(payload.get("source_preferences")),
-            include_keywords=_string_list(payload.get("include_keywords")),
+            include_keywords=_string_list(payload.get("include_keywords")) or fallback.include_keywords,
             exclude_keywords=_string_list(payload.get("exclude_keywords")),
             time_range_hours=_coerce_positive_int(payload.get("time_range_hours"), default=24),
             quality_profile=_normalize_quality_profile(payload.get("quality_profile")),
@@ -121,7 +153,9 @@ class LLMInvestigationPlanner:
         intent: UserIntent,
         *,
         available_sources: Iterable[Mapping[str, Any]] = (),
+        runtime_context: Mapping[str, Any] | None = None,
     ) -> tuple[InvestigationPlan, LLMDecisionTrace]:
+        runtime_context = dict(runtime_context or {})
         source_brief = [
             {
                 "source_name": str(source.get("source_name") or source.get("name") or ""),
@@ -139,7 +173,10 @@ class LLMInvestigationPlanner:
                     "Return only JSON with fields: goal, agent_steps, selected_source_names, "
                     "source_selection_strategy, execution_notes, quality_gate, budget. "
                     "agent_steps must be an array of {agent, action}. "
-                    "Plan a multi-agent workflow but keep execution reviewable and compliant."
+                    "Plan a multi-agent workflow but keep execution reviewable and compliant. "
+                    "When useful, source_selection_strategy may include collection_mode "
+                    "(adaptive|pool_only|live_only|hybrid) and query_rewrite_policy (auto|off). "
+                    "execution_notes may include refine_policy=budgeted or refine_policy=off."
                 ),
                 },
                 {
@@ -147,7 +184,9 @@ class LLMInvestigationPlanner:
                     "content": (
                         f"user_query={query}\n"
                         f"intent={intent.model_dump()}\n"
-                        f"available_sources={source_brief}"
+                        f"available_sources={source_brief}\n"
+                        f"runtime_slang_terms={runtime_context.get('slang_terms', [])[:12]}\n"
+                        f"runtime_few_shot_examples={runtime_context.get('few_shot_examples', [])[:4]}\n"
                     ),
                 },
             ],
@@ -156,22 +195,40 @@ class LLMInvestigationPlanner:
             response_format={"type": "json_object"},
         )
         parsed = response.parsed_json or {}
-        plan = self._plan_from_payload(parsed, intent=intent)
+        plan = self._plan_from_payload(parsed, intent=intent, runtime_context=runtime_context)
         used_fallback = not _plan_payload_usable(parsed)
         if used_fallback:
-            plan = _fallback_plan(intent)
+            plan = _fallback_plan(intent, runtime_context=runtime_context)
         trace = LLMDecisionTrace(
             stage="investigation_plan",
             llm_ok=response.ok,
             used_fallback=used_fallback,
-            parsed_json=parsed if parsed else None,
+            parsed_json=(
+                {
+                    **parsed,
+                    "runtime_slang_term_count": len(runtime_context.get("slang_terms", []) or []),
+                    "runtime_few_shot_count": len(runtime_context.get("few_shot_examples", []) or []),
+                }
+                if parsed
+                else {
+                    "runtime_slang_term_count": len(runtime_context.get("slang_terms", []) or []),
+                    "runtime_few_shot_count": len(runtime_context.get("few_shot_examples", []) or []),
+                }
+            ),
             error=response.error,
         )
         return plan, trace
 
-    def _plan_from_payload(self, payload: Mapping[str, Any], *, intent: UserIntent) -> InvestigationPlan:
+    def _plan_from_payload(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        intent: UserIntent,
+        runtime_context: Mapping[str, Any] | None = None,
+    ) -> InvestigationPlan:
         steps_raw = payload.get("agent_steps")
         agent_steps: list[dict[str, str]] = []
+        fallback_plan = _fallback_plan(intent, runtime_context=runtime_context)
         if isinstance(steps_raw, list):
             for item in steps_raw:
                 if isinstance(item, Mapping):
@@ -184,24 +241,24 @@ class LLMInvestigationPlanner:
         # deterministic pipeline stages while the raw LLM plan remains available
         # in llm_traces[*].parsed_json for inspection.
         if not agent_steps or agent_steps[0].get("agent") != "intent_planner":
-            agent_steps = _fallback_plan(intent).agent_steps
+            agent_steps = fallback_plan.agent_steps
 
         source_selection_strategy = payload.get("source_selection_strategy")
         if not isinstance(source_selection_strategy, Mapping):
-            source_selection_strategy = _fallback_plan(intent).source_selection_strategy
+            source_selection_strategy = fallback_plan.source_selection_strategy
         quality_gate = payload.get("quality_gate")
         if not isinstance(quality_gate, Mapping):
-            quality_gate = _fallback_plan(intent).quality_gate
+            quality_gate = fallback_plan.quality_gate
         budget = payload.get("budget")
         if not isinstance(budget, Mapping):
-            budget = _fallback_plan(intent).budget
+            budget = fallback_plan.budget
 
         return InvestigationPlan(
             goal=str(payload.get("goal") or intent.goal),
             agent_steps=agent_steps,
             selected_source_names=_string_list(payload.get("selected_source_names")),
             source_selection_strategy=dict(source_selection_strategy),
-            execution_notes=_string_list(payload.get("execution_notes")) or _fallback_plan(intent).execution_notes,
+            execution_notes=_string_list(payload.get("execution_notes")) or fallback_plan.execution_notes,
             quality_gate=dict(quality_gate),
             budget=_normalize_budget(dict(budget)),
             llm_ok=True,
@@ -209,8 +266,9 @@ class LLMInvestigationPlanner:
         )
 
 
-def _fallback_intent(query: str) -> UserIntent:
+def _fallback_intent(query: str, runtime_context: Mapping[str, Any] | None = None) -> UserIntent:
     normalized = query.lower()
+    runtime_context = dict(runtime_context or {})
     risk_types: list[str] = []
     if "诈骗" in query or "引流" in query:
         risk_types.append("诈骗引流")
@@ -222,6 +280,37 @@ def _fallback_intent(query: str) -> UserIntent:
         risk_types.append("账号交易")
     if not risk_types:
         risk_types = ["黑灰产情报"]
+
+    runtime_labels: list[str] = []
+    runtime_keywords: list[str] = []
+    slang_terms = runtime_context.get("slang_terms") if isinstance(runtime_context.get("slang_terms"), list) else []
+    for item in slang_terms:
+        if not isinstance(item, Mapping):
+            continue
+        raw = str(item.get("term") or item.get("raw") or "").strip()
+        target = str(item.get("normalized_term") or item.get("target") or "").strip()
+        if raw and raw in query:
+            runtime_keywords.append(raw)
+            if target:
+                runtime_keywords.append(target)
+        elif target and target.lower() in normalized:
+            runtime_keywords.append(target)
+            if raw:
+                runtime_keywords.append(raw)
+
+    few_shot_examples = runtime_context.get("few_shot_examples") if isinstance(runtime_context.get("few_shot_examples"), list) else []
+    for item in few_shot_examples:
+        if not isinstance(item, Mapping):
+            continue
+        term = str(item.get("term") or "").strip()
+        label = str(item.get("label") or "").strip()
+        if term and term in query:
+            runtime_keywords.append(term)
+            if label:
+                runtime_labels.append(label)
+
+    if runtime_labels:
+        risk_types = _dedupe_list([*risk_types, *runtime_labels])
 
     sources: list[str] = []
     for token in ("telegram", "tg", "电报"):
@@ -248,11 +337,12 @@ def _fallback_intent(query: str) -> UserIntent:
         time_range_hours = 24
 
     quality_profile = "high_precision" if any(term in query for term in ("高质量", "高置信", "可复核")) else "balanced"
+    include_keywords = _dedupe_list([*risk_types, *runtime_keywords])
     return UserIntent(
         goal="collect_high_quality_risk_clues",
         risk_types=risk_types,
         source_preferences=_dedupe_list(sources),
-        include_keywords=risk_types,
+        include_keywords=include_keywords,
         exclude_keywords=["曝光", "辟谣", "警方通报", "安全研究", "反诈提醒"],
         time_range_hours=time_range_hours,
         quality_profile=quality_profile,
@@ -263,13 +353,14 @@ def _fallback_intent(query: str) -> UserIntent:
     )
 
 
-def _fallback_plan(intent: UserIntent) -> InvestigationPlan:
+def _fallback_plan(intent: UserIntent, runtime_context: Mapping[str, Any] | None = None) -> InvestigationPlan:
     threshold = 0.78 if intent.quality_profile == "high_precision" else 0.65
-    return InvestigationPlan(
-        goal=intent.goal,
-        agent_steps=[
-            {"agent": "intent_planner", "action": "parse_request_to_structured_intent"},
-            {"agent": "source_planner", "action": "select_authorized_sources_and_query_variants"},
+    agent_steps = [
+        {"agent": "intent_planner", "action": "parse_request_to_structured_intent"},
+        {"agent": "source_planner", "action": "select_authorized_sources_and_query_variants"},
+    ]
+    agent_steps.extend(
+        [
             {"agent": "collection_agent", "action": "collect_authorized_records"},
             {"agent": "cleaning_agent", "action": "clean_dedup_and_preserve_signal"},
             {"agent": "classification_agent", "action": "classify_risk_intent"},
@@ -277,18 +368,27 @@ def _fallback_plan(intent: UserIntent) -> InvestigationPlan:
             {"agent": "clue_aggregation_agent", "action": "aggregate_risk_clues"},
             {"agent": "quality_review_agent", "action": "score_and_gate_high_quality_clues"},
             {"agent": "report_agent", "action": "render_investigation_output"},
-        ],
+        ]
+    )
+    source_selection_strategy = {
+        "preferred_source_types": intent.source_preferences,
+        "require_authorized_legal_basis": True,
+        "match_query_keywords": intent.include_keywords,
+        "collection_mode": "adaptive",
+        "query_rewrite_policy": "auto",
+    }
+    execution_notes = [
+        "Use external LLM for request understanding and plan generation.",
+        "Keep collection inside authorized configured sources only.",
+        "Use deterministic local execution for collection, cleaning, classification, extraction, and clue aggregation.",
+        "refine_policy=budgeted",
+    ]
+    return InvestigationPlan(
+        goal=intent.goal,
+        agent_steps=agent_steps,
         selected_source_names=[],
-        source_selection_strategy={
-            "preferred_source_types": intent.source_preferences,
-            "require_authorized_legal_basis": True,
-            "match_query_keywords": intent.include_keywords,
-        },
-        execution_notes=[
-            "Use external LLM for request understanding and plan generation.",
-            "Keep collection inside authorized configured sources only.",
-            "Use deterministic local execution for collection, cleaning, classification, extraction, and clue aggregation.",
-        ],
+        source_selection_strategy=source_selection_strategy,
+        execution_notes=execution_notes,
         quality_gate={
             "quality_profile": intent.quality_profile,
             "minimum_quality_score": threshold,
@@ -296,7 +396,7 @@ def _fallback_plan(intent: UserIntent) -> InvestigationPlan:
             "require_evidence_chain": intent.require_evidence_chain,
         },
         budget={
-            "max_sources": 0,
+            "max_sources": 6,
             "max_raw_records": 5000,
             "max_candidate_clues": 100,
             "max_llm_refine_clues": 20,

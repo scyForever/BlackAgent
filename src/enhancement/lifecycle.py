@@ -40,37 +40,61 @@ class DynamicSlangLifecycleManager:
         self.whitelist_candidates: list[dict[str, Any]] = []
 
     def nominate(self, term: str, normalized_term: str, evidence_trace_ids: Iterable[str]) -> SlangLifecycleRecord:
-        record = SlangLifecycleRecord(term=term, normalized_term=normalized_term, stage=self.NEW_CANDIDATE, evidence_trace_ids=list(dict.fromkeys(evidence_trace_ids)))
-        self._records[term] = record
-        return record
+        return self._store_record(
+            term=term,
+            normalized_term=normalized_term,
+            stage=self.NEW_CANDIDATE,
+            evidence_trace_ids=evidence_trace_ids,
+            allow_downgrade=False,
+        )
 
     def review(self, term: str, *, approved: bool, reviewer: str = "system", notes: str | None = None) -> SlangLifecycleRecord:
         current = self._records[term]
         stage = self.REVIEWED if approved else self.REJECTED
-        record = SlangLifecycleRecord(current.term, current.normalized_term, stage, current.evidence_trace_ids, reviewer, notes)
-        self._records[term] = record
-        return record
+        return self._store_record(
+            term=current.term,
+            normalized_term=current.normalized_term,
+            stage=stage,
+            evidence_trace_ids=current.evidence_trace_ids,
+            reviewer=reviewer,
+            notes=notes,
+            allow_downgrade=not approved,
+        )
 
     def gray_rollout(self, term: str, *, reviewer: str = "system", notes: str | None = None) -> SlangLifecycleRecord:
         current = self._records[term]
         if current.stage != self.REVIEWED:
             raise ValueError("term must be REVIEWED before gray rollout")
-        record = SlangLifecycleRecord(current.term, current.normalized_term, self.GRAY_ROLLOUT, current.evidence_trace_ids, reviewer, notes)
-        self._records[term] = record
-        return record
+        return self._store_record(
+            term=current.term,
+            normalized_term=current.normalized_term,
+            stage=self.GRAY_ROLLOUT,
+            evidence_trace_ids=current.evidence_trace_ids,
+            reviewer=reviewer,
+            notes=notes,
+            allow_downgrade=True,
+        )
 
     def activate(self, term: str, *, reviewer: str = "system", notes: str | None = None) -> SlangLifecycleRecord:
         current = self._records[term]
         if current.stage != self.GRAY_ROLLOUT:
             raise ValueError("term must be in GRAY_ROLLOUT before activation")
-        record = SlangLifecycleRecord(current.term, current.normalized_term, self.ACTIVE, current.evidence_trace_ids, reviewer, notes)
-        self._records[term] = record
-        return record
+        return self._store_record(
+            term=current.term,
+            normalized_term=current.normalized_term,
+            stage=self.ACTIVE,
+            evidence_trace_ids=current.evidence_trace_ids,
+            reviewer=reviewer,
+            notes=notes,
+            allow_downgrade=True,
+        )
 
     def ingest_review_decision(self, event_or_payload: Mapping[str, Any] | Any) -> None:
         payload = get_record_field(event_or_payload, "payload") or event_or_payload
         decision = str(get_record_field(payload, "decision") or "").upper()
         source_trace_id = str(get_record_field(payload, "source_trace_id") or "unknown")
+        reviewer = str(get_record_field(payload, "reviewer") or "human_review").strip() or "human_review"
+        notes = str(get_record_field(payload, "notes") or "").strip() or None
         edits = get_record_field(payload, "edits") or {}
         corrected_entities = get_record_field(edits, "corrected_entities") or []
         if decision == "MISREPORT":
@@ -81,14 +105,140 @@ class DynamicSlangLifecycleManager:
             for entity in corrected_entities:
                 term = str(get_record_field(entity, "entity_value") or get_record_field(entity, "term") or "").strip()
                 if term:
-                    self.nominate(term, str(get_record_field(entity, "normalized_value") or term), [source_trace_id])
-                    self.few_shot_examples.append({"term": term, "source_trace_id": source_trace_id, "label": get_record_field(edits, "edited_risk_type")})
+                    normalized_term = str(get_record_field(entity, "normalized_value") or term).strip() or term
+                    record = self._store_record(
+                        term=term,
+                        normalized_term=normalized_term,
+                        stage=self.REVIEWED,
+                        evidence_trace_ids=[source_trace_id],
+                        reviewer=reviewer,
+                        notes=notes or "review_approved_wordlist",
+                        allow_downgrade=False,
+                    )
+                    self.few_shot_examples.append(
+                        {
+                            "term": term,
+                            "normalized_term": record.normalized_term,
+                            "source_trace_id": source_trace_id,
+                            "label": get_record_field(edits, "edited_risk_type"),
+                            "stage": record.stage,
+                        }
+                    )
 
     def list_records(self, stage: str | None = None) -> list[SlangLifecycleRecord]:
         records = list(self._records.values())
         if stage:
             records = [record for record in records if record.stage == stage]
         return records
+
+    def runtime_records(self, *, include_candidates: bool = False) -> list[SlangLifecycleRecord]:
+        stages = set(self.runtime_stages(include_candidates=include_candidates))
+        records = [record for record in self._records.values() if record.stage in stages]
+        return sorted(records, key=lambda item: (-self._stage_priority(item.stage), item.term.lower()))
+
+    def runtime_terms_mapping(self, *, include_candidates: bool = False) -> dict[str, str]:
+        return {record.term: record.normalized_term for record in self.runtime_records(include_candidates=include_candidates)}
+
+    def runtime_slang_entries(self, *, include_candidates: bool = False) -> list[dict[str, Any]]:
+        return [
+            {
+                "term": record.term,
+                "normalized_term": record.normalized_term,
+                "stage": record.stage,
+                "evidence_trace_ids": list(record.evidence_trace_ids),
+            }
+            for record in self.runtime_records(include_candidates=include_candidates)
+        ]
+
+    def few_shot_examples_for_label(self, label: str | None = None) -> list[dict[str, Any]]:
+        if label is None:
+            return [dict(item) for item in self.few_shot_examples]
+        normalized_label = str(label).strip().lower()
+        return [
+            dict(item)
+            for item in self.few_shot_examples
+            if str(item.get("label") or "").strip().lower() == normalized_label
+        ]
+
+    def prompt_context(self, *, label: str | None = None, include_candidates: bool = False) -> dict[str, Any]:
+        return {
+            "slang_terms": self.runtime_slang_entries(include_candidates=include_candidates),
+            "few_shot_examples": self.few_shot_examples_for_label(label),
+            "negative_samples": [dict(item) for item in self.negative_samples],
+            "whitelist_candidates": [dict(item) for item in self.whitelist_candidates],
+        }
+
+    @classmethod
+    def runtime_stages(cls, *, include_candidates: bool = False) -> tuple[str, ...]:
+        stages = [cls.REVIEWED, cls.GRAY_ROLLOUT, cls.ACTIVE]
+        if include_candidates:
+            stages.insert(0, cls.NEW_CANDIDATE)
+        return tuple(stages)
+
+    @classmethod
+    def _stage_priority(cls, stage: str) -> int:
+        priorities = {
+            cls.REJECTED: 0,
+            cls.NEW_CANDIDATE: 1,
+            cls.REVIEWED: 2,
+            cls.GRAY_ROLLOUT: 3,
+            cls.ACTIVE: 4,
+        }
+        return priorities.get(str(stage or "").strip().upper(), 0)
+
+    def _store_record(
+        self,
+        *,
+        term: str,
+        normalized_term: str,
+        stage: str,
+        evidence_trace_ids: Iterable[str],
+        reviewer: str | None = None,
+        notes: str | None = None,
+        allow_downgrade: bool,
+    ) -> SlangLifecycleRecord:
+        normalized_key = str(term).strip()
+        if not normalized_key:
+            raise ValueError("term must not be empty")
+        current = self._records.get(normalized_key)
+        requested_stage = str(stage).strip().upper() or self.NEW_CANDIDATE
+        final_stage = requested_stage
+        final_normalized = str(normalized_term).strip() or normalized_key
+        final_reviewer = reviewer
+        final_notes = notes
+        merged_evidence = self._merge_evidence(current.evidence_trace_ids if current else (), evidence_trace_ids)
+        if current is not None and not allow_downgrade and self._stage_priority(current.stage) > self._stage_priority(requested_stage):
+            final_stage = current.stage
+            final_normalized = current.normalized_term or final_normalized
+            final_reviewer = current.reviewer if reviewer is None else reviewer
+            final_notes = current.notes if notes is None else notes
+        elif current is not None:
+            if reviewer is None:
+                final_reviewer = current.reviewer
+            if notes is None:
+                final_notes = current.notes
+        record = SlangLifecycleRecord(
+            term=normalized_key,
+            normalized_term=final_normalized,
+            stage=final_stage,
+            evidence_trace_ids=merged_evidence,
+            reviewer=final_reviewer,
+            notes=final_notes,
+        )
+        self._records[normalized_key] = record
+        return record
+
+    @staticmethod
+    def _merge_evidence(existing: Iterable[str], incoming: Iterable[str]) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for value in [*existing, *incoming]:
+            normalized = str(value or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(normalized)
+        return merged
 
 
 @dataclass(frozen=True)

@@ -1,7 +1,5 @@
-from fastapi.testclient import TestClient
-
-from main import create_app
 from src.config_loader import Settings
+from src.local_runtime import LocalAgentRuntime
 from storage.sql_backend import connect
 
 
@@ -44,38 +42,33 @@ def make_settings(tmp_path):
 
 def test_real_backend_task_sql_and_llm_integration(tmp_path):
     settings = make_settings(tmp_path)
-    client = TestClient(create_app(settings))
+    runtime = LocalAgentRuntime(settings)
+    try:
+        status = runtime.backend_status()
+        assert status["storage_connected"] is True
+        assert status["storage_backend"] == "sql"
 
-    status = client.get("/api/v1/system/backend")
-    assert status.status_code == 200
-    assert status.json()["storage_connected"] is True
-    assert status.json()["storage_backend"] == "sql"
+        submit = runtime.submit_advanced_pipeline_task(
+            backend_records(),
+            prompt_text="Return JSON with confidence evidence requires_human_review",
+        )
+        task_id = submit["task_id"]
+        assert submit["task_status"] == "PENDING"
 
-    submit = client.post(
-        "/api/v1/tasks/pipeline/advanced",
-        json={
-            "fixture_items": backend_records(),
-            "prompt_text": "Return JSON with confidence evidence requires_human_review",
-        },
-    )
-    assert submit.status_code == 200
-    task_id = submit.json()["task_id"]
-    assert submit.json()["task_status"] == "PENDING"
+        before = runtime.get_task(task_id)
+        assert before["task"]["status"] == "PENDING"
 
-    before = client.get(f"/api/v1/tasks/{task_id}").json()
-    assert before["task"]["status"] == "PENDING"
+        run = runtime.run_pending_tasks()
+        assert run["tasks"][0]["status"] == "SUCCEEDED"
+        assert run["tasks"][0]["result"]["risk_clue_count"] >= 2
+        assert run["tasks"][0]["result"]["playbook_count"] == 1
 
-    run = client.post("/api/v1/tasks/run-pending")
-    assert run.status_code == 200
-    assert run.json()["tasks"][0]["status"] == "SUCCEEDED"
-    assert run.json()["tasks"][0]["result"]["risk_clue_count"] >= 2
-    assert run.json()["tasks"][0]["result"]["playbook_count"] == 1
-
-    llm = client.post("/api/v1/llm/chat", json={"messages": [{"role": "user", "content": "返回 JSON"}]})
-    assert llm.status_code == 200
-    assert llm.json()["ok"] is True
-    assert llm.json()["network_attempted"] is False
-    assert llm.json()["parsed_json"]["model"] == "mock-backend"
+        llm = runtime.llm_chat([{"role": "user", "content": "返回 JSON"}])
+        assert llm["ok"] is True
+        assert llm["network_attempted"] is False
+        assert llm["parsed_json"]["model"] == "mock-backend"
+    finally:
+        runtime.close()
 
     backend = connect(settings.storage.dsn)
     backend.create_schema()
@@ -86,8 +79,10 @@ def test_real_backend_task_sql_and_llm_integration(tmp_path):
     backend.close()
 
     # New app instance can still read task state from SQL when local memory is empty.
-    fresh_client = TestClient(create_app(settings))
-    persisted = fresh_client.get(f"/api/v1/tasks/{task_id}")
-    assert persisted.status_code == 200
-    assert persisted.json()["source"] == "sql"
-    assert persisted.json()["task"]["status"] == "SUCCEEDED"
+    fresh_runtime = LocalAgentRuntime(settings)
+    try:
+        persisted = fresh_runtime.get_task(task_id)
+    finally:
+        fresh_runtime.close()
+    assert persisted["source"] == "sql"
+    assert persisted["task"]["status"] == "SUCCEEDED"

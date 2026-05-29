@@ -36,8 +36,10 @@ class LLMSourceQueryRewriter:
         query: str,
         intent: Mapping[str, Any],
         plan: Mapping[str, Any],
+        runtime_context: Mapping[str, Any] | None = None,
     ) -> tuple[dict[str, Any], QueryRewriteTrace]:
         source_payload = dict(source)
+        runtime_context = dict(runtime_context or {})
         source_name = str(source_payload.get("source_name") or "unknown_source")
         query_url_template = str(source_payload.get("query_url_template") or "").strip()
         if not query_url_template:
@@ -64,7 +66,8 @@ class LLMSourceQueryRewriter:
                         "Return only JSON with fields: search_query, query_theme, query_term, "
                         "query_term_stage, rewrite_reason. "
                         "Keep existing site/domain constraints already present in the source metadata. "
-                        "Use short high-signal keywords. query_term_stage must be core or variant."
+                        "Use short high-signal keywords. query_term_stage must be core or variant. "
+                        "Prefer approved runtime slang normalization when generating query variants."
                     ),
                 },
                 {
@@ -73,7 +76,9 @@ class LLMSourceQueryRewriter:
                         f"user_query={query}\n"
                         f"intent={dict(intent)}\n"
                         f"plan={dict(plan)}\n"
-                        f"source={source_payload}"
+                        f"source={source_payload}\n"
+                        f"runtime_slang_terms={runtime_context.get('slang_terms', [])[:12]}\n"
+                        f"runtime_few_shot_examples={runtime_context.get('few_shot_examples', [])[:4]}"
                     ),
                 },
             ],
@@ -115,7 +120,18 @@ class LLMSourceQueryRewriter:
             llm_ok=response.ok,
             used_fallback=not usable,
             applied=True,
-            parsed_json=parsed if parsed else None,
+            parsed_json=(
+                {
+                    **parsed,
+                    "runtime_slang_term_count": len(runtime_context.get("slang_terms", []) or []),
+                    "runtime_few_shot_count": len(runtime_context.get("few_shot_examples", []) or []),
+                }
+                if parsed
+                else {
+                    "runtime_slang_term_count": len(runtime_context.get("slang_terms", []) or []),
+                    "runtime_few_shot_count": len(runtime_context.get("few_shot_examples", []) or []),
+                }
+            ),
             error=response.error,
         )
 

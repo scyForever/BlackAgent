@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-from scripts.run_agent_cli import discover_source_config_path, load_local_corpus_records, parse_args
+from scripts.run_agent_cli import discover_source_config_path, load_local_corpus_records, parse_args, policy_override_from_args
 from src.enhancement.source_intake import MultimodalTextExtractor
 
 
@@ -92,3 +92,32 @@ def test_cli_max_sources_defaults_to_all_sources_semantics():
     args = parse_args(["--query", "取一下当天诈骗引流相关的线索信息"])
 
     assert args.max_sources is None
+
+
+def test_cli_exposes_tradeoff_profile_and_request_budget_overrides():
+    args = parse_args(
+        [
+            "--query",
+            "取一下当天诈骗引流相关的线索信息",
+            "--routing-profile",
+            "high_recall",
+            "--max-raw-records",
+            "20",
+            "--max-candidate-clues",
+            "8",
+            "--max-llm-refine-clues",
+            "3",
+            "--max-elapsed-seconds",
+            "5",
+            "--disable-live-collection",
+        ]
+    )
+
+    assert args.routing_profile == "high_recall"
+    assert policy_override_from_args(args) == {
+        "live_collection_enabled": False,
+        "max_raw_records": 20,
+        "max_candidate_clues": 8,
+        "max_llm_refine_clues": 3,
+        "max_elapsed_seconds": 5,
+    }

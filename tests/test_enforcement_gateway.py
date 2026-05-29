@@ -1,8 +1,6 @@
-from fastapi.testclient import TestClient
-
-from main import create_app
 from src.backend import EnforcementGateway, EnforcementPolicy
 from src.config_loader import Settings
+from src.local_runtime import LocalAgentRuntime
 
 
 class FakeAdapter:
@@ -78,19 +76,17 @@ def test_enforcement_gateway_requires_confidence_approval_token_and_connector():
     assert len(adapter.actions) == 1
 
 
-def test_enforcement_api_preserves_configured_dry_run_gate(tmp_path):
+def test_enforcement_runtime_preserves_configured_dry_run_gate(tmp_path):
     settings = Settings(
         storage={"backend": "sql", "dsn": f"sqlite:///{(tmp_path / 'enforcement.db').as_posix()}", "auto_create_schema": True},
         enforcement={"enabled": True, "dry_run": True, "require_human_approval": True, "min_confidence": 0.9},
     )
-    client = TestClient(create_app(settings))
+    runtime = LocalAgentRuntime(settings)
+    try:
+        response = runtime.execute_enforcement([candidate_action()], approved=True, dry_run=False)
+    finally:
+        runtime.close()
 
-    response = client.post(
-        "/api/v1/enforcement/execute",
-        json={"actions": [candidate_action()], "approved": True, "dry_run": False},
-    )
-
-    assert response.status_code == 200
-    result = response.json()["results"][0]
+    result = response["results"][0]
     assert result["status"] == "DRY_RUN"
     assert result["dry_run"] is True

@@ -74,3 +74,48 @@ def test_query_rewriter_falls_back_to_existing_search_query_when_llm_payload_is_
     assert trace.used_fallback is True
     assert rewritten["search_query"] == "site:tieba.baidu.com/p 私域导流"
     assert rewritten["query_rewrite_reason"] == "fallback_existing_search_query"
+
+
+def test_query_rewriter_passes_runtime_slang_and_few_shot_context_to_llm():
+    captured = {}
+
+    class _CaptureGateway:
+        def chat(self, messages, **kwargs):  # noqa: ANN001
+            captured["messages"] = messages
+            return LLMGatewayResponse(
+                ok=True,
+                model="test-model",
+                content="{}",
+                parsed_json={
+                    "search_query": "site:t.me/s 火苗 上车",
+                    "query_theme": "诈骗引流",
+                    "query_term": "火苗",
+                    "query_term_stage": "variant",
+                    "rewrite_reason": "runtime_slang_hint",
+                },
+                network_attempted=False,
+            )
+
+    rewriter = LLMSourceQueryRewriter(_CaptureGateway())
+    rewritten, trace = rewriter.rewrite(
+        {
+            "source_name": "telegram-search",
+            "source_url": "https://search.example/?q=old",
+            "query_url_template": "https://search.example/?q={query}",
+            "search_query": "site:t.me/s 接码",
+        },
+        query="找火苗相关线索",
+        intent={"include_keywords": ["火苗"], "risk_types": ["诈骗引流"]},
+        plan={"goal": "collect_high_quality_risk_clues"},
+        runtime_context={
+            "slang_terms": [{"term": "火苗", "normalized_term": "WhatsApp"}],
+            "few_shot_examples": [{"term": "火苗", "label": "诈骗引流"}],
+        },
+    )
+
+    assert rewritten["search_query"] == "site:t.me/s 火苗 上车"
+    user_content = str(captured["messages"][-1]["content"])
+    assert "runtime_slang_terms" in user_content
+    assert "runtime_few_shot_examples" in user_content
+    assert trace.parsed_json["runtime_slang_term_count"] == 1
+    assert trace.parsed_json["runtime_few_shot_count"] == 1

@@ -9,8 +9,6 @@ description = "BlackAgent user-query-driven intelligence investigation pipeline"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.110,<1.0",
-    "uvicorn[standard]>=0.27,<1.0",
     "pydantic>=2.5,<3.0",
     "PyYAML>=6.0,<7.0",
 ]
@@ -24,7 +22,6 @@ telegram = [
 ]
 dev = [
     "pytest>=7.4,<9.0",
-    "httpx>=0.27,<1.0",
 ]
 
 [tool.setuptools.packages.find]

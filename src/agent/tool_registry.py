@@ -89,16 +89,29 @@ class ToolRegistry:
     def _slang_similarity_search(term: str, *, slang_terms: Iterable[str] | None = None, limit: int = 3) -> list[dict[str, Any]]:
         """Find locally configured slang candidates using character similarity."""
 
-        candidates = list(slang_terms or ("音符", "抖", "dy", "接码", "跑分", "上车", "料子"))
+        raw_candidates = list(slang_terms or ("音符", "抖", "dy", "接码", "跑分", "上车", "料子"))
         term_text = str(term or "").lower()
         results: list[dict[str, Any]] = []
-        for candidate in candidates:
-            candidate_text = str(candidate).lower()
+        seen: set[str] = set()
+        for candidate in raw_candidates:
+            if isinstance(candidate, dict):
+                candidate_term = str(candidate.get("term") or candidate.get("raw") or "").strip()
+                normalized_term = str(candidate.get("normalized_term") or candidate.get("target") or candidate_term).strip() or candidate_term
+            else:
+                candidate_term = str(candidate).strip()
+                normalized_term = candidate_term
+            if not candidate_term:
+                continue
+            dedupe_key = candidate_term.lower()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            candidate_text = candidate_term.lower()
             score = SequenceMatcher(None, term_text, candidate_text).ratio()
             if candidate_text in term_text:
                 score = max(score, 0.92)
             if score >= 0.25:
-                results.append({"term": candidate, "score": round(score, 4)})
+                results.append({"term": candidate_term, "normalized_term": normalized_term, "score": round(score, 4)})
         results.sort(key=lambda item: item["score"], reverse=True)
         return results[:limit]
 
@@ -114,4 +127,3 @@ def _split_tokens(text: str) -> set[str]:
     chunks = set(normalized.split())
     chinese_chars = {ch for ch in normalized if "\u4e00" <= ch <= "\u9fff"}
     return chunks.union(chinese_chars)
-

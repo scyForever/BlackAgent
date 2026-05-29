@@ -7,14 +7,12 @@ import json
 from pathlib import Path
 import sys
 
-from fastapi.testclient import TestClient
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from main import create_app
 from src.config_loader import PROJECT_ROOT as APP_PROJECT_ROOT, Settings, resolve_project_path
+from src.local_runtime import LocalAgentRuntime
 from storage.sql_backend import connect
 
 
@@ -90,17 +88,16 @@ def main() -> int:
         },
     )
 
-    with TestClient(create_app(settings)) as client:
-        response = client.post(
-            "/api/v1/sources/collect/batch",
-            json={
-                "source_config_path": str(catalog_path.relative_to(APP_PROJECT_ROOT)),
-                "persist_raw": True,
-                "run_pipeline": args.run_pipeline,
-                "continue_on_error": True,
-            },
+    runtime = LocalAgentRuntime(settings)
+    try:
+        payload = runtime.collect_sources_batch(
+            source_config_path=str(catalog_path.relative_to(APP_PROJECT_ROOT)),
+            persist_raw=True,
+            run_pipeline=args.run_pipeline,
+            continue_on_error=True,
         )
-        payload = response.json()
+    finally:
+        runtime.close()
 
     backend = connect(settings.storage.dsn)
     backend.create_schema()
@@ -110,7 +107,7 @@ def main() -> int:
     backend.close()
 
     summary = {
-        "http_status": response.status_code,
+        "runtime_status": "ok",
         "catalog_path": str(catalog_path),
         "db_path": str(db_path),
         "status": payload.get("status"),
@@ -141,7 +138,7 @@ def main() -> int:
         }
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    return 0 if response.status_code == 200 else 1
+    return 0 if payload.get("status") in {"completed", "partial_failure"} else 1
 
 
 if __name__ == "__main__":

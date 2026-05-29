@@ -3,12 +3,11 @@ from io import BytesIO
 from urllib.error import HTTPError
 
 import pytest
-from fastapi.testclient import TestClient
 
-from main import create_app
 from src.collector import HTTPFeedCollector, HTTPFeedConfig, NetworkCollectionDisabled, SourceAuthorizationError, load_source_catalog
 from src.collector.base_collector import model_dump
 from src.config_loader import Settings
+from src.local_runtime import LocalAgentRuntime
 from storage.sql_backend import connect
 import src.collector.http_feed_collector as http_feed_collector_module
 
@@ -400,7 +399,7 @@ def test_http_feed_collector_requires_network_and_domain_authorization():
         HTTPFeedCollector(blocked, opener=fake_urlopen("[]")).collect()
 
 
-def test_source_collect_api_fetches_and_persists_real_feed_shape(monkeypatch, tmp_path):
+def test_source_collect_runtime_fetches_and_persists_real_feed_shape(monkeypatch, tmp_path):
     body = json.dumps({"items": [{"indicator": "risk.example", "threat": "landing domain"}]})
 
     def _open(request, timeout):
@@ -412,20 +411,19 @@ def test_source_collect_api_fetches_and_persists_real_feed_shape(monkeypatch, tm
         network={"enabled": True, "allowed_domains": ["feed.example"], "max_records_per_fetch": 5},
         storage={"backend": "sql", "dsn": f"sqlite:///{(tmp_path / 'source.db').as_posix()}", "auto_create_schema": True},
     )
-    client = TestClient(create_app(settings))
-
-    response = client.post(
-        "/api/v1/sources/collect",
-        json={
+    runtime = LocalAgentRuntime(settings)
+    try:
+        payload = runtime.collect_source(
+            {
             "source_url": "https://feed.example/intel.json",
             "source_name": "public-feed",
             "legal_basis": "PUBLIC_COMPLIANT_DATA",
-            "persist_raw": True,
-        },
-    )
+            },
+            persist_raw=True,
+        )
+    finally:
+        runtime.close()
 
-    assert response.status_code == 200
-    payload = response.json()
     assert payload["fetched_count"] == 1
     assert payload["persisted_count"] == 1
     assert payload["network_attempted"] is True
@@ -568,7 +566,7 @@ sources:
     assert sources[9]["query_term"] == "加威"
 
 
-def test_batch_source_collect_api_aggregates_multi_platform_sources(monkeypatch, tmp_path):
+def test_batch_source_collect_runtime_aggregates_multi_platform_sources(monkeypatch, tmp_path):
     bodies = {
         "https://tieba.example/post.html": (
             """
@@ -596,14 +594,12 @@ def test_batch_source_collect_api_aggregates_multi_platform_sources(monkeypatch,
         network={"enabled": True, "max_records_per_fetch": 5},
         storage={"backend": "sql", "dsn": f"sqlite:///{(tmp_path / 'batch.db').as_posix()}", "auto_create_schema": True},
     )
-    client = TestClient(create_app(settings))
-
-    response = client.post(
-        "/api/v1/sources/collect/batch",
-        json={
-            "persist_raw": True,
-            "run_pipeline": True,
-            "sources": [
+    runtime = LocalAgentRuntime(settings)
+    try:
+        payload = runtime.collect_sources_batch(
+            persist_raw=True,
+            run_pipeline=True,
+            sources=[
                 {
                     "source_name": "tieba-feed",
                     "source_type": "Social",
@@ -631,11 +627,10 @@ def test_batch_source_collect_api_aggregates_multi_platform_sources(monkeypatch,
                     "text_fields": ["full_text"],
                 },
             ],
-        },
-    )
+        )
+    finally:
+        runtime.close()
 
-    assert response.status_code == 200
-    payload = response.json()
     assert payload["status"] == "completed"
     assert payload["source_count"] == 3
     assert payload["succeeded_count"] == 3
