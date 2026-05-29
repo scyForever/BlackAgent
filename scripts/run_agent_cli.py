@@ -549,6 +549,7 @@ def print_summary(payload: dict[str, Any], *, show_clues: bool) -> None:
         for key in (
             "status",
             "mode",
+            "budget",
             "accepted_count",
             "dropped_count",
             "classification_count",

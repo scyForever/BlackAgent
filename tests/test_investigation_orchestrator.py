@@ -1,12 +1,22 @@
 from datetime import datetime, timedelta, timezone
 
 from src.agent import InvestigationOrchestrator
+from src.agent.user_request_parser import DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS
 from src.backend import LLMGateway
 from src.config_loader import InvestigationConfig, InvestigationPolicyOverride
 
 
 def _orchestrator() -> InvestigationOrchestrator:
     return InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
+
+
+def test_default_investigation_elapsed_budget_is_increased():
+    orchestrator = _orchestrator()
+
+    result = orchestrator.run("找接码和群控相关线索")
+
+    assert result.execution_summary["budget"]["max_elapsed_seconds"] == DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS
+    assert result.execution_summary["budget"]["max_elapsed_seconds"] >= 180
 
 
 def _utc_hours_ago(hours: int) -> str:

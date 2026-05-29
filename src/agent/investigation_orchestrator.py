@@ -23,7 +23,11 @@ from storage import ClueRepo, InMemoryClueRepo, InMemoryReviewRepo
 
 from .exploration_agent import ExplorationAgent
 from .query_rewriter import LLMSourceQueryRewriter
-from .user_request_parser import LLMInvestigationPlanner, LLMUserRequestParser
+from .user_request_parser import (
+    DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS,
+    LLMInvestigationPlanner,
+    LLMUserRequestParser,
+)
 
 
 SourceCollector = Callable[[dict[str, Any]], list[dict[str, Any]]]
@@ -794,12 +798,18 @@ class InvestigationOrchestrator:
             available_source_count=available_source_count,
         )
         candidate_budget_default = max(20, (resolved_max_sources or max(available_source_count, 1)) * 10)
+        elapsed_budget = self._positive_int(
+            raw.get("max_elapsed_seconds"),
+            DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS,
+        )
+        if policy_override is None or policy_override.max_elapsed_seconds is None:
+            elapsed_budget = max(elapsed_budget, DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS)
         budget = {
             "max_sources": resolved_max_sources,
             "max_raw_records": self._positive_int(raw.get("max_raw_records"), 5000),
             "max_candidate_clues": self._positive_int(raw.get("max_candidate_clues"), candidate_budget_default),
             "max_llm_refine_clues": self._positive_int(raw.get("max_llm_refine_clues"), 20),
-            "max_elapsed_seconds": self._positive_int(raw.get("max_elapsed_seconds"), 20),
+            "max_elapsed_seconds": elapsed_budget,
         }
         if budget["max_sources"] is not None and available_source_count > 0:
             budget["max_sources"] = min(budget["max_sources"], available_source_count)

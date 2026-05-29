@@ -242,7 +242,7 @@ flowchart LR
   "max_raw_records": 5000,
   "max_candidate_clues": 200,
   "max_llm_refine_clues": 30,
-  "max_elapsed_seconds": 20
+  "max_elapsed_seconds": 180
 }
 ```
 

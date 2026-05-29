@@ -8,6 +8,9 @@ from typing import Any, Iterable, Mapping
 from src.backend import LLMGateway
 
 
+DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS = 180
+
+
 @dataclass(frozen=True)
 class UserIntent:
     goal: str
@@ -400,7 +403,7 @@ def _fallback_plan(intent: UserIntent, runtime_context: Mapping[str, Any] | None
             "max_raw_records": 5000,
             "max_candidate_clues": 100,
             "max_llm_refine_clues": 20,
-            "max_elapsed_seconds": 20,
+            "max_elapsed_seconds": DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS,
         },
         llm_ok=False,
         llm_reason="fallback_plan",
@@ -488,7 +491,7 @@ def _normalize_budget(budget: Mapping[str, Any]) -> dict[str, int]:
         "max_raw_records": 5000,
         "max_candidate_clues": 100,
         "max_llm_refine_clues": 20,
-        "max_elapsed_seconds": 20,
+        "max_elapsed_seconds": DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS,
     }
     normalized = dict(defaults)
     for key, default in defaults.items():
@@ -505,6 +508,7 @@ def _normalize_budget(budget: Mapping[str, Any]) -> dict[str, int]:
 
 __all__ = [
     "InvestigationPlan",
+    "DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS",
     "LLMDecisionTrace",
     "LLMInvestigationPlanner",
     "LLMUserRequestParser",
