@@ -23,6 +23,7 @@ from src.config_loader import load_project_env_file, load_settings
 
 DEFAULT_LOCAL_CORPUS_PATH = "data/cleaning_phase_high_risk_corpus.jsonl"
 DEFAULT_LOCAL_CORPUS_LIMIT = 200
+DEFAULT_DEMO_QUERY = "分析 demo 样本中的接码、群控、引流和账号交易风险线索"
 DEFAULT_SOURCE_CONFIG_CANDIDATES = (
     "config/intel_sources.blackgray.yaml",
     "config/intel_sources.public.yaml",
@@ -483,6 +484,7 @@ def policy_override_from_args(args: argparse.Namespace) -> dict[str, Any]:
     if args.disable_live_collection:
         override["live_collection_enabled"] = False
     for arg_name, payload_name in (
+        ("max_sources", "max_sources"),
         ("max_raw_records", "max_raw_records"),
         ("max_candidate_clues", "max_candidate_clues"),
         ("max_llm_refine_clues", "max_llm_refine_clues"),
@@ -612,6 +614,8 @@ def main(argv: list[str] | None = None) -> int:
     apply_runtime_overrides(settings, args)
 
     query = args.query.strip()
+    if not query and args.demo_sample:
+        query = DEFAULT_DEMO_QUERY
     if not query:
         query = input("请输入调查需求 query: ").strip()
     if not query:

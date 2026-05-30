@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
 from src.backend import LLMGateway
+from src.safety import OutputValidator, PIIMasker, PromptGuard
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,9 @@ class LLMClueRefiner:
         runtime_context = dict(runtime_context or {})
         few_shot_examples = runtime_context.get("few_shot_examples") if isinstance(runtime_context.get("few_shot_examples"), list) else []
         slang_terms = runtime_context.get("slang_terms") if isinstance(runtime_context.get("slang_terms"), list) else []
+        prompt_guard = PromptGuard()
+        guarded_query = prompt_guard.wrap_untrusted_text(query)
+        guarded_clue = prompt_guard.wrap_untrusted_text(json.dumps(dict(clue), ensure_ascii=False, default=str))
         response = self.llm_gateway.chat(
             [
                 {
@@ -55,9 +59,9 @@ class LLMClueRefiner:
                 {
                     "role": "user",
                     "content": (
-                        f"query={query}\n"
+                        f"query={guarded_query}\n"
                         f"intent={dict(intent)}\n"
-                        f"clue={dict(clue)}\n"
+                        f"clue={guarded_clue}\n"
                         f"runtime_slang_terms={slang_terms[:12]}\n"
                         f"runtime_few_shot_examples={few_shot_examples[:4]}"
                     ),
@@ -70,6 +74,7 @@ class LLMClueRefiner:
         parsed = response.parsed_json or {}
         usable = isinstance(parsed.get("refined_summary"), str)
         payload = _fallback_refinement(clue) if not usable else _normalize_payload(parsed, clue)
+        payload["refined_summary"] = _safe_summary(payload["refined_summary"])
         final_confidence = round(max(0.0, min(float(clue.get("confidence") or 0.0) + float(payload["confidence_delta"]), 0.99)), 4)
         refined = RefinedClue(
             clue_id=str(clue.get("clue_id") or "unknown_clue"),
@@ -115,6 +120,9 @@ class LLMClueRefiner:
         runtime_context = dict(runtime_context or {})
         few_shot_examples = runtime_context.get("few_shot_examples") if isinstance(runtime_context.get("few_shot_examples"), list) else []
         slang_terms = runtime_context.get("slang_terms") if isinstance(runtime_context.get("slang_terms"), list) else []
+        prompt_guard = PromptGuard()
+        guarded_query = prompt_guard.wrap_untrusted_text(query)
+        guarded_clues = prompt_guard.wrap_untrusted_text(json.dumps(materialized, ensure_ascii=False, default=str))
         response = self.llm_gateway.chat(
             [
                 {
@@ -128,9 +136,9 @@ class LLMClueRefiner:
                 {
                     "role": "user",
                     "content": (
-                        f"query={query}\n"
+                        f"query={guarded_query}\n"
                         f"intent={dict(intent)}\n"
-                        f"clues={json.dumps(materialized, ensure_ascii=False, default=str)}\n"
+                        f"clues={guarded_clues}\n"
                         f"runtime_slang_terms={slang_terms[:12]}\n"
                         f"runtime_few_shot_examples={few_shot_examples[:4]}"
                     ),
@@ -143,6 +151,7 @@ class LLMClueRefiner:
             budget=budget,
             cache_policy="read_write",
             deadline_ms=deadline_ms,
+            extra_body={"budget_item_count": len(materialized)},
         )
         parsed = response.parsed_json or {}
         parsed_items = parsed.get("items") if isinstance(parsed.get("items"), list) else []
@@ -159,6 +168,7 @@ class LLMClueRefiner:
             candidate_payload = payload_by_id.get(clue_id)
             usable = isinstance(candidate_payload, Mapping) and isinstance(candidate_payload.get("refined_summary"), str)
             payload = _fallback_refinement(clue) if not usable else _normalize_payload(candidate_payload, clue)
+            payload["refined_summary"] = _safe_summary(payload["refined_summary"])
             final_confidence = round(max(0.0, min(float(clue.get("confidence") or 0.0) + float(payload["confidence_delta"]), 0.99)), 4)
             refined = RefinedClue(
                 clue_id=clue_id,
@@ -211,6 +221,12 @@ def _fallback_refinement(clue: Mapping[str, Any]) -> dict[str, Any]:
         "review_required": bool(((clue.get('quality') or {}).get("review_required")) or clue.get("quality_level") != "high"),
         "refinement_reasons": ["deterministic_fallback_summary", "preserve_candidate_clue_contract"],
     }
+
+
+def _safe_summary(text: Any) -> str:
+    masked = PIIMasker().mask_text(str(text or ""))
+    OutputValidator().reject_dangerous_text(masked)
+    return masked
 
 
 def _coerce_delta(value: Any) -> float:

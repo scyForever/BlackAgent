@@ -54,36 +54,40 @@ class BudgetController:
     def __init__(self, budget: RuntimeBudget) -> None:
         self.budget = budget
         self.llm_calls = 0
+        self.llm_refine_calls = 0
         self.estimated_tokens = 0
         self.refined_clues = 0
         self.classified_by_llm = 0
         self.extracted_by_llm = 0
         self.started_at = time.perf_counter()
 
-    def allow_llm_call(self, *, stage: str, estimated_tokens: int) -> bool:
+    def allow_llm_call(self, *, stage: str, estimated_tokens: int, item_count: int = 1) -> bool:
+        item_count = max(1, int(item_count or 1))
         if self.elapsed_seconds() > self.budget.max_elapsed_seconds:
             return False
         if self.llm_calls + 1 > self.budget.max_llm_calls:
             return False
         if self.estimated_tokens + max(0, int(estimated_tokens or 0)) > self.budget.max_llm_tokens:
             return False
-        if stage == "clue_refine" and self.refined_clues + 1 > self.budget.max_llm_refine_clues:
+        if stage == "clue_refine" and self.refined_clues + item_count > self.budget.max_llm_refine_clues:
             return False
-        if stage == "llm_classify" and self.classified_by_llm + 1 > self.budget.max_llm_classify_records:
+        if stage == "llm_classify" and self.classified_by_llm + item_count > self.budget.max_llm_classify_records:
             return False
-        if stage == "llm_extract" and self.extracted_by_llm + 1 > self.budget.max_llm_extract_records:
+        if stage == "llm_extract" and self.extracted_by_llm + item_count > self.budget.max_llm_extract_records:
             return False
         return True
 
-    def consume_llm(self, *, stage: str, estimated_tokens: int) -> None:
+    def consume_llm(self, *, stage: str, estimated_tokens: int, item_count: int = 1) -> None:
+        item_count = max(1, int(item_count or 1))
         self.llm_calls += 1
         self.estimated_tokens += max(0, int(estimated_tokens or 0))
         if stage == "clue_refine":
-            self.refined_clues += 1
+            self.llm_refine_calls += 1
+            self.refined_clues += item_count
         elif stage == "llm_classify":
-            self.classified_by_llm += 1
+            self.classified_by_llm += item_count
         elif stage == "llm_extract":
-            self.extracted_by_llm += 1
+            self.extracted_by_llm += item_count
 
     def elapsed_seconds(self) -> float:
         return time.perf_counter() - self.started_at
@@ -94,6 +98,8 @@ class BudgetController:
             "llm_calls": self.llm_calls,
             "estimated_tokens": self.estimated_tokens,
             "refined_clues": self.refined_clues,
+            "llm_refine_calls": self.llm_refine_calls,
+            "llm_refined_clue_count": self.refined_clues,
             "classified_by_llm": self.classified_by_llm,
             "extracted_by_llm": self.extracted_by_llm,
             "elapsed_seconds": round(self.elapsed_seconds(), 4),
@@ -105,7 +111,7 @@ def _positive_int(value: Any, default: int) -> int:
         parsed = int(value)
     except (TypeError, ValueError):
         return default
-    return parsed if parsed > 0 else default
+    return parsed if parsed >= 0 else default
 
 
 def _optional_positive_int(value: Any) -> int | None:

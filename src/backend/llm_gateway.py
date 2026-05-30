@@ -214,8 +214,9 @@ class LLMGateway:
         stage_name = str(stage or "chat")
         completion_limit = int(max_tokens or 0)
         estimated_tokens = _estimate_tokens(messages) + completion_limit
-        cache_key = _cache_key(payload)
+        cache_key = _cache_key(payload, stage=stage_name)
         normalized_cache_policy = str(cache_policy or "none").strip().lower()
+        budget_item_count = max(1, int((extra_body or {}).get("budget_item_count") or 1)) if isinstance(extra_body, Mapping) else 1
 
         if normalized_cache_policy in {"read", "read_write"} and cache_key in self._cache:
             cached = self._cache[cache_key]
@@ -240,7 +241,14 @@ class LLMGateway:
             return response
 
         if budget is not None and hasattr(budget, "allow_llm_call"):
-            allowed = budget.allow_llm_call(stage=stage_name, estimated_tokens=estimated_tokens)
+            try:
+                allowed = budget.allow_llm_call(
+                    stage=stage_name,
+                    estimated_tokens=estimated_tokens,
+                    item_count=budget_item_count,
+                )
+            except TypeError:
+                allowed = budget.allow_llm_call(stage=stage_name, estimated_tokens=estimated_tokens)
             if not allowed:
                 response = self._blocked_response("budget_exhausted", f"LLM budget denied for stage={stage_name}")
                 self._record_stats(
@@ -256,7 +264,14 @@ class LLMGateway:
         if self.config.mock or self.config.dry_run:
             response = self._mock_response(payload)
             if budget is not None and hasattr(budget, "consume_llm"):
-                budget.consume_llm(stage=stage_name, estimated_tokens=estimated_tokens)
+                try:
+                    budget.consume_llm(
+                        stage=stage_name,
+                        estimated_tokens=estimated_tokens,
+                        item_count=budget_item_count,
+                    )
+                except TypeError:
+                    budget.consume_llm(stage=stage_name, estimated_tokens=estimated_tokens)
             if normalized_cache_policy in {"write", "read_write"}:
                 self._cache[cache_key] = response
             self._record_stats(
@@ -413,7 +428,14 @@ class LLMGateway:
             status_code=status_code,
         )
         if budget is not None and hasattr(budget, "consume_llm"):
-            budget.consume_llm(stage=stage_name, estimated_tokens=estimated_tokens)
+            try:
+                budget.consume_llm(
+                    stage=stage_name,
+                    estimated_tokens=estimated_tokens,
+                    item_count=budget_item_count,
+                )
+            except TypeError:
+                budget.consume_llm(stage=stage_name, estimated_tokens=estimated_tokens)
         if normalized_cache_policy in {"write", "read_write"}:
             self._cache[cache_key] = response
         self._record_stats(
@@ -483,14 +505,16 @@ class LLMGateway:
         }
         if self.config.extra_body:
             payload.update(dict(self.config.extra_body))
+        runtime_extra_body = dict(extra_body or {})
+        runtime_extra_body.pop("budget_item_count", None)
         if max_tokens is not None:
             payload[self.config.max_tokens_param] = max_tokens
         if self.config.service_tier:
             payload["service_tier"] = self.config.service_tier
         if response_format is not None and self.config.response_format_supported:
             payload["response_format"] = dict(response_format)
-        if extra_body:
-            payload.update(dict(extra_body))
+        if runtime_extra_body:
+            payload.update(runtime_extra_body)
         return payload
 
     def _mock_response(self, payload: Mapping[str, Any]) -> LLMGatewayResponse:
@@ -578,8 +602,13 @@ def _estimate_tokens(messages: Sequence[Mapping[str, Any]]) -> int:
     return max(1, len(text) // 4)
 
 
-def _cache_key(payload: Mapping[str, Any]) -> str:
-    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":"))
+def _cache_key(payload: Mapping[str, Any], *, stage: str = "chat", prompt_version: str | None = None) -> str:
+    cache_payload = {
+        "stage": stage,
+        "prompt_version": prompt_version or "default",
+        "payload": payload,
+    }
+    canonical = json.dumps(cache_payload, sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -660,3 +689,4 @@ def _normalize_max_tokens_param(value: str) -> str:
 
 
 __all__ = ["LLMCallStats", "LLMGateway", "LLMGatewayConfig", "LLMGatewayResponse", "urllib_request"]
+

@@ -4,10 +4,10 @@ from .budget_manager import BudgetExceeded, BudgetManager, BudgetSnapshot
 from .budget_controller import BudgetController, RuntimeBudget
 from .clue_ranker import ClueRanker, RankedClue
 from .exploration_agent import ExplorationAgent
-from .investigation_orchestrator import InvestigationOrchestrator, InvestigationRunResult
 from .model_router import ModelRouteDecision, ModelRouter, RouteAction
 from .policy_guard import PolicyGuard, SafetyPolicyViolation
 from .query_rewriter import LLMSourceQueryRewriter, QueryRewriteTrace
+from .services import ClueMergeService, IntentPlanningService, InvestigationTelemetryService, SourceSelectionService
 from .tool_registry import ToolRegistry, ToolRegistryViolation
 from .user_request_parser import InvestigationPlan, LLMDecisionTrace, LLMInvestigationPlanner, LLMUserRequestParser, UserIntent
 
@@ -17,10 +17,13 @@ __all__ = [
     "BudgetManager",
     "BudgetSnapshot",
     "ClueRanker",
+    "ClueMergeService",
     "ExplorationAgent",
     "InvestigationOrchestrator",
     "InvestigationPlan",
     "InvestigationRunResult",
+    "InvestigationTelemetryService",
+    "IntentPlanningService",
     "LLMDecisionTrace",
     "LLMInvestigationPlanner",
     "LLMSourceQueryRewriter",
@@ -33,7 +36,21 @@ __all__ = [
     "RouteAction",
     "RuntimeBudget",
     "SafetyPolicyViolation",
+    "SourceSelectionService",
     "ToolRegistry",
     "ToolRegistryViolation",
     "UserIntent",
 ]
+
+
+def __getattr__(name: str):
+    """Load the top-level orchestrator lazily to avoid pipeline import cycles."""
+
+    if name in {"InvestigationOrchestrator", "InvestigationRunResult"}:
+        from .investigation_orchestrator import InvestigationOrchestrator, InvestigationRunResult
+
+        return {
+            "InvestigationOrchestrator": InvestigationOrchestrator,
+            "InvestigationRunResult": InvestigationRunResult,
+        }[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

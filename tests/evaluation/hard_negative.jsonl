@@ -1,0 +1,2 @@
+{"trace_id":"neg-1","source_name":"news","source_type":"News","legal_basis":"PUBLIC_COMPLIANT_DATA","content_text":"警方发布反诈提醒，提醒公众不要参与刷单和接码。","expected_risk_categories":[],"expected_entities":[]}
+{"trace_id":"neg-2","source_name":"research","source_type":"Forum","legal_basis":"PUBLIC_COMPLIANT_DATA","content_text":"安全研究复盘黑产治理案例，不提供工具交易渠道。","expected_risk_categories":[],"expected_entities":[]}

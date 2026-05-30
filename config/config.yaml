@@ -78,14 +78,14 @@ enforcement:
   production_safety_token: ${BLACKAGENT_PRODUCTION_SAFETY_TOKEN}
 
 llm:
-  provider: doubao
-  enabled: true
+  provider: mock
+  enabled: false
   base_url: ${BLACKAGENT_LLM_BASE_URL}
   api_key: ${BLACKAGENT_LLM_API_KEY}
-  model: ep-20260508212150-wgqpg
+  model: mock-local
   timeout_seconds: 60
-  dry_run: false
-  response_format_supported: false
+  dry_run: true
+  response_format_supported: true
   # auth_header: api-key
   # max_tokens_param: max_completion_tokens
   # extra_body:

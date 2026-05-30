@@ -1,0 +1,2 @@
+{"trace_id":"entity-1","source_name":"tg-entity","source_type":"IM","legal_basis":"PUBLIC_COMPLIANT_DATA","content_text":"接码群控工具，联系 TG:entity01，官网 risk-entity.example/path","expected_risk_categories":["工具交易"],"expected_entities":["Telegram:entity01","risk-entity.example/path","接码","群控"]}
+{"trace_id":"entity-2","source_name":"forum-entity","source_type":"Forum","legal_basis":"PUBLIC_COMPLIANT_DATA","content_text":"音符引流群，邀请码 code:dy2026，联系 13800138000","expected_risk_categories":["诈骗引流"],"expected_entities":["抖音","dy2026","13800138000"]}

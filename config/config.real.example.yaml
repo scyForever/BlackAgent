@@ -1,0 +1,28 @@
+app:
+  name: BlackAgent
+  mode: llm_driven_investigation
+  year: 2026
+  environment: local-real-llm
+
+llm:
+  provider: doubao
+  enabled: true
+  base_url: ${BLACKAGENT_LLM_BASE_URL}
+  api_key: ${BLACKAGENT_LLM_API_KEY}
+  model: ${BLACKAGENT_LLM_MODEL}
+  timeout_seconds: 60
+  dry_run: false
+  response_format_supported: false
+  # auth_header: api-key
+  # max_tokens_param: max_completion_tokens
+  # extra_body:
+  #   thinking:
+  #     type: disabled
+
+network:
+  enabled: false
+  allowed_domains: []
+
+investigation:
+  live_collection_enabled: true
+  telemetry_enabled: true

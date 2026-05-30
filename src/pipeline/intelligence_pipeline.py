@@ -1,15 +1,12 @@
-"""Composable intelligence pipeline wrapper.
-
-The current production path still uses ``PhaseTwoThreeEngine`` through
-``OfflineClueBuilder``.  This module exposes the staged pipeline boundary from
-``重构.md`` so new code can compose deterministic stages without making the
-orchestrator own every processing detail.
-"""
+"""Composable intelligence pipeline wrapper over real deterministic stages."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
+
+from src.agent.model_router import ModelRouter
+from src.pipeline.stages import ClassifyStage, CleanStage, CorrelateStage, DedupStage, ExtractStage, PassThroughStage, ScoreStage
 
 
 @dataclass
@@ -31,23 +28,23 @@ class IntelligencePipeline:
     def __init__(
         self,
         *,
-        clean_stage: Any,
-        dedup_stage: Any,
-        triage_stage: Any,
-        classify_stage: Any,
-        extract_stage: Any,
-        correlate_stage: Any,
-        score_stage: Any,
-        model_router: Any,
+        clean_stage: Any | None = None,
+        dedup_stage: Any | None = None,
+        triage_stage: Any | None = None,
+        classify_stage: Any | None = None,
+        extract_stage: Any | None = None,
+        correlate_stage: Any | None = None,
+        score_stage: Any | None = None,
+        model_router: Any | None = None,
     ) -> None:
-        self.clean_stage = clean_stage
-        self.dedup_stage = dedup_stage
-        self.triage_stage = triage_stage
-        self.classify_stage = classify_stage
-        self.extract_stage = extract_stage
-        self.correlate_stage = correlate_stage
-        self.score_stage = score_stage
-        self.model_router = model_router
+        self.clean_stage = clean_stage or CleanStage()
+        self.dedup_stage = dedup_stage or DedupStage()
+        self.triage_stage = triage_stage or PassThroughStage()
+        self.classify_stage = classify_stage or ClassifyStage()
+        self.extract_stage = extract_stage or ExtractStage()
+        self.correlate_stage = correlate_stage or CorrelateStage()
+        self.score_stage = score_stage or ScoreStage()
+        self.model_router = model_router or ModelRouter()
 
     def run(self, raw_items: Iterable[Mapping[str, Any]], context: Mapping[str, Any] | None = None) -> PipelineResult:
         context = dict(context or {})
@@ -58,21 +55,25 @@ class IntelligencePipeline:
         classified = self.classify_stage.run_batch(triaged, context=context)
         extracted = self.extract_stage.run_batch(classified, context=context)
         routed = [self._route_item(item) for item in extracted]
-        correlated = self.correlate_stage.run_batch(extracted, routed=routed, context=context)
-        scored = self.score_stage.run_batch(correlated, context=context)
+        classifications = [dict(item.get("classification") or {}) for item in extracted if isinstance(item.get("classification"), Mapping)]
+        entities = [dict(entity) for item in extracted for entity in (item.get("entities") or []) if isinstance(entity, Mapping)]
+        stage_context = {**context, "classifications": classifications, "entities": entities}
+        correlated = self.correlate_stage.run_batch(extracted, routed=routed, context=stage_context)
+        scored = self.score_stage.run_batch(correlated, context=stage_context)
         return PipelineResult(
             cleaned=[dict(item) for item in cleaned],
-            classified=[dict(item) for item in classified],
-            entities=[dict(item) for item in extracted],
+            classified=classifications,
+            entities=entities,
             routed=routed,
             clues=[dict(item) for item in scored],
             execution_summary={
                 "status": "completed",
                 "input_count": len(materialized_raw),
                 "cleaned_count": len(cleaned),
-                "classified_count": len(classified),
-                "entity_count": len(extracted),
+                "classified_count": len(classifications),
+                "entity_count": len(entities),
                 "clue_count": len(scored),
+                "stage_mode": "real_components",
             },
         )
 

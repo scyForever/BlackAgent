@@ -60,6 +60,7 @@ class RuntimeContainer:
                 phase_engine=self.phase_engine(),
                 clue_repo=self.clue_repo,
                 investigation_config=self.settings.investigation,
+                routing_profiles=self.settings.routing_profiles,
             )
         return self._orchestrator
 

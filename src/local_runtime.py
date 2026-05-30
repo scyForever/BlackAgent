@@ -417,7 +417,7 @@ class LocalAgentRuntime:
         def collect_for_investigation(source_payload: dict[str, Any]) -> list[dict[str, Any]]:
             return collect_source_records(self.settings, source_payload)
 
-        result = self.get_investigation_orchestrator().run(
+        result = self.container.investigation_service().run(
             query,
             records=records,
             available_sources=available_sources,

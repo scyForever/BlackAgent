@@ -1,0 +1,2 @@
+{"trace_id":"slang-1","source_name":"tg-slang","source_type":"IM","legal_basis":"PUBLIC_COMPLIANT_DATA","content_text":"音符拉群加薇，上车看料子，联系 TG:slang01","expected_risk_categories":["诈骗引流"],"expected_entities":["抖音","加v","账号资料","Telegram:slang01"]}
+{"trace_id":"slang-2","source_name":"forum-slang","source_type":"Forum","legal_basis":"PUBLIC_COMPLIANT_DATA","content_text":"纸飞机群里卖协议号和群控脚本，暗号 code:bot88","expected_risk_categories":["工具交易"],"expected_entities":["Telegram","bot88","群控","脚本"]}

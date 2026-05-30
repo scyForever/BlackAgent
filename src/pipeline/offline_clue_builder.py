@@ -7,6 +7,8 @@ from typing import Any, Iterable, Mapping
 
 from src.enhancement.clue_quality import ClueQualityEvaluator
 from src.enhancement.engine import PhaseTwoThreeEngine
+from src.enhancement.strategy import RiskClue
+from src.pipeline.intelligence_pipeline import IntelligencePipeline
 from storage import ClueRepo, InMemoryClueRepo
 
 
@@ -37,6 +39,7 @@ class OfflineClueBuilder:
         self.phase_engine = phase_engine or PhaseTwoThreeEngine()
         self.quality_evaluator = quality_evaluator or ClueQualityEvaluator()
         self.clue_repo = clue_repo if clue_repo is not None else InMemoryClueRepo()
+        self.intelligence_pipeline = IntelligencePipeline()
 
     def build(
         self,
@@ -54,8 +57,43 @@ class OfflineClueBuilder:
             for record in materialized_records
             if isinstance(record, Mapping)
         }
-        result = self.phase_engine.run(materialized_records, prompt_text=prompt_text, source_candidates=source_candidates)
-        payload = result.model_dump()
+        pipeline_result = self.intelligence_pipeline.run(
+            materialized_records,
+            context={
+                "quality_profile": quality_profile,
+                "require_cross_source": require_cross_source,
+                "require_evidence_chain": require_evidence_chain,
+            },
+        )
+        payload = {
+            "status": "completed",
+            "mode": "intelligence_pipeline",
+            "input_count": len(materialized_records),
+            "accepted_count": pipeline_result.execution_summary.get("cleaned_count", 0),
+            "dropped_count": max(0, len(materialized_records) - int(pipeline_result.execution_summary.get("cleaned_count", 0) or 0)),
+            "classification_count": pipeline_result.execution_summary.get("classified_count", 0),
+            "entity_count": pipeline_result.execution_summary.get("entity_count", 0),
+            "cluster_count": 0,
+            "risk_clue_count": pipeline_result.execution_summary.get("clue_count", 0),
+            "playbook_count": 0,
+            "strategy_count": 0,
+            "classifications": pipeline_result.classified,
+            "entities": pipeline_result.entities,
+            "risk_clues": pipeline_result.clues,
+            "pipeline_summary": pipeline_result.execution_summary,
+        }
+        if not payload["risk_clues"]:
+            result = self.phase_engine.run(materialized_records, prompt_text=prompt_text, source_candidates=source_candidates)
+            payload = result.model_dump()
+        else:
+            risk_clues = _to_risk_clues(payload["risk_clues"])
+            playbooks = self.phase_engine.playbook_builder.build(risk_clues, materialized_records)
+            strategies = self.phase_engine.strategy_planner.plan(risk_clues, playbooks)
+            payload["playbooks"] = [item.model_dump() if hasattr(item, "model_dump") else dict(item) for item in playbooks]
+            payload["strategies"] = [item.model_dump() if hasattr(item, "model_dump") else dict(item) for item in strategies]
+            payload["playbook_count"] = len(playbooks)
+            payload["strategy_count"] = len(strategies)
+            self.phase_engine._last_run_payload = payload
         assessments = self.quality_evaluator.evaluate_many(
             payload.get("risk_clues", []),
             classifications=payload.get("classifications", []),
@@ -125,3 +163,55 @@ class OfflineClueBuilder:
 
 
 __all__ = ["OfflineClueBuildResult", "OfflineClueBuilder"]
+
+
+def _to_risk_clues(items: Iterable[Mapping[str, Any] | Any]) -> list[RiskClue]:
+    """Convert pipeline clue dictionaries back to strategy-layer dataclasses."""
+
+    risk_clues: list[RiskClue] = []
+    for item in items:
+        payload = _dump_mapping(item)
+        clue_kwargs: dict[str, Any] = {
+            "clue_id": str(payload.get("clue_id") or ""),
+            "clue_type": str(payload.get("clue_type") or ""),
+            "key": str(payload.get("key") or ""),
+            "risk_category": str(payload.get("risk_category") or "unknown"),
+            "evidence_trace_ids": _string_list(payload.get("evidence_trace_ids")),
+            "source_names": _string_list(payload.get("source_names")),
+            "entity_values": _string_list(payload.get("entity_values")),
+            "confidence": _float(payload.get("confidence"), 0.0),
+            "threshold_reason": str(payload.get("threshold_reason") or ""),
+        }
+        if payload.get("created_at"):
+            clue_kwargs["created_at"] = str(payload.get("created_at"))
+        risk_clues.append(RiskClue(**clue_kwargs))
+    return risk_clues
+
+
+def _dump_mapping(value: Mapping[str, Any] | Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    if hasattr(value, "model_dump"):
+        dumped = value.model_dump()
+        return dict(dumped) if isinstance(dumped, Mapping) else {}
+    if hasattr(value, "__dict__"):
+        return dict(value.__dict__)
+    return {}
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)):
+        return [str(value)]
+    try:
+        return [str(item) for item in value if str(item).strip()]
+    except TypeError:
+        return [str(value)]
+
+
+def _float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default

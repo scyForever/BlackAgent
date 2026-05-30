@@ -19,6 +19,7 @@ from src.scheduling.layered_collection import (
     group_sources_by_collection_layer,
     prioritize_sources_for_investigation,
 )
+from src.safety import PIIMasker
 from storage import ClueRepo, InMemoryClueRepo, InMemoryReviewRepo
 
 from .budget_controller import BudgetController, RuntimeBudget
@@ -30,6 +31,8 @@ from .user_request_parser import (
     DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS,
     LLMInvestigationPlanner,
     LLMUserRequestParser,
+    _fallback_intent,
+    _fallback_plan,
 )
 
 
@@ -81,6 +84,77 @@ class PlanExecutionControls:
         return asdict(self)
 
 
+@dataclass
+class _RunPlanningState:
+    started_at: float
+    normalized_policy_override: InvestigationPolicyOverride | None
+    profile: str
+    profile_config: dict[str, Any]
+    effective_config: InvestigationConfig
+    budget_controller: BudgetController
+    intent_payload: dict[str, Any]
+    plan_payload: dict[str, Any]
+    intent_trace: Any
+    plan_trace: Any
+    runtime_quality_gate: RuntimeQualityGate
+    plan_execution_controls: PlanExecutionControls
+    budget: dict[str, Any]
+    deadline_at: float | None
+    available_sources_list: list[dict[str, Any]]
+    retrieval_filters: dict[str, Any]
+    selected_sources: list[dict[str, Any]]
+
+
+@dataclass
+class _RetrievalState:
+    retrieved_clues: list[dict[str, Any]]
+    retrieved_summary: dict[str, Any]
+    provided_records: list[Any]
+
+
+@dataclass
+class _SemanticLocalState:
+    records: list[dict[str, Any]]
+    traces: list[dict[str, Any]]
+    clues: list[dict[str, Any]]
+    phase_payload: dict[str, Any] | None
+    summary: dict[str, Any]
+    should_collect_live: bool
+    live_collection_reasons: list[str]
+
+
+@dataclass
+class _LiveCollectionState:
+    records: list[dict[str, Any]]
+    collection_runs: list[dict[str, Any]]
+    rewrite_traces: list[dict[str, Any]]
+    selected_sources: list[dict[str, Any]]
+    live_collection_reasons: list[str]
+
+
+@dataclass
+class _FreshProcessingState:
+    records: list[Any]
+    built_clues: list[dict[str, Any]]
+    phase_payload: dict[str, Any]
+
+
+@dataclass
+class _RefinementState:
+    pool_clues_for_merge: list[dict[str, Any]]
+    merged_candidates: list[dict[str, Any]]
+    high_quality_clues: list[dict[str, Any]]
+    candidate_clues: list[dict[str, Any]]
+    refine_traces: list[dict[str, Any]]
+    model_route_traces: list[dict[str, Any]]
+    budget_controller_snapshot: Mapping[str, Any]
+    actual_refined_count: int
+    requested_max_refine: int
+    effective_max_refine: int
+    refine_budget_reasons: list[str]
+    exploration_hypotheses: list[dict[str, Any]]
+
+
 class InvestigationOrchestrator:
     """Top-level user-query-driven coordinator with LLM planning and safe local execution."""
 
@@ -94,6 +168,7 @@ class InvestigationOrchestrator:
         clue_retriever: ClueRetriever | None = None,
         review_repo: InMemoryReviewRepo | None = None,
         investigation_config: InvestigationConfig | None = None,
+        routing_profiles: Mapping[str, Any] | None = None,
     ) -> None:
         self.llm_gateway = llm_gateway
         self.phase_engine = phase_engine or PhaseTwoThreeEngine()
@@ -102,6 +177,7 @@ class InvestigationOrchestrator:
         self.clue_retriever = clue_retriever or ClueRetriever()
         self.review_repo = review_repo or InMemoryReviewRepo()
         self.investigation_config = investigation_config or InvestigationConfig()
+        self.routing_profiles = {str(key): value for key, value in (routing_profiles or {}).items()}
         self.clue_refiner = LLMClueRefiner(llm_gateway)
         self.query_rewriter = LLMSourceQueryRewriter(llm_gateway)
         self.model_router = ModelRouter()
@@ -174,40 +250,156 @@ class InvestigationOrchestrator:
         routing_profile: str | None = None,
         policy_override: InvestigationPolicyOverride | Mapping[str, Any] | None = None,
     ) -> InvestigationRunResult:
+        run_state = self._prepare_run_state(
+            query=query,
+            available_sources=available_sources,
+            max_sources=max_sources,
+            retrieval_filters=retrieval_filters,
+            routing_profile=routing_profile,
+            policy_override=policy_override,
+        )
+        retrieval_state = self._retrieve_initial_candidates(
+            query=query,
+            records=records,
+            run_state=run_state,
+            collect_source_records=collect_source_records,
+        )
+        semantic_state = self._run_semantic_local_phase(
+            query=query,
+            run_state=run_state,
+            retrieval_state=retrieval_state,
+            collect_source_records=collect_source_records,
+        )
+        live_state = self._run_live_collection_phase(
+            query=query,
+            run_state=run_state,
+            retrieval_state=retrieval_state,
+            semantic_state=semantic_state,
+            collect_source_records=collect_source_records,
+            max_concurrent_sources=max_concurrent_sources,
+        )
+        fresh_state = self._process_fresh_records(
+            query=query,
+            run_state=run_state,
+            retrieval_state=retrieval_state,
+            semantic_state=semantic_state,
+            live_state=live_state,
+        )
+        refinement_state = self._refine_and_explore_candidates(
+            query=query,
+            run_state=run_state,
+            retrieval_state=retrieval_state,
+            semantic_state=semantic_state,
+            live_state=live_state,
+            fresh_state=fresh_state,
+        )
+        execution_summary = self._build_execution_summary(
+            run_state=run_state,
+            retrieval_state=retrieval_state,
+            semantic_state=semantic_state,
+            live_state=live_state,
+            fresh_state=fresh_state,
+            refinement_state=refinement_state,
+        )
+
+        return InvestigationRunResult(
+            status="completed" if (fresh_state.records or semantic_state.clues or retrieval_state.retrieved_clues) else "no_data",
+            mode="llm_driven_investigation",
+            query=query,
+            input_count=len(fresh_state.records),
+            fetched_count=len(live_state.records) if live_state.records else len(fresh_state.records),
+            selected_source_count=len(live_state.selected_sources),
+            high_quality_count=len(refinement_state.high_quality_clues),
+            candidate_count=len(refinement_state.candidate_clues),
+            intent=run_state.intent_payload,
+            investigation_plan=run_state.plan_payload,
+            llm_traces=[
+                run_state.intent_trace.model_dump(),
+                run_state.plan_trace.model_dump(),
+                *semantic_state.traces,
+                *live_state.rewrite_traces,
+                *refinement_state.model_route_traces,
+                *refinement_state.refine_traces,
+            ],
+            selected_sources=live_state.selected_sources,
+            collection_runs=live_state.collection_runs,
+            execution_summary=execution_summary,
+            high_quality_clues=refinement_state.high_quality_clues,
+            candidate_clues=refinement_state.candidate_clues,
+            exploration_hypotheses=refinement_state.exploration_hypotheses,
+        )
+
+    def _prepare_run_state(
+        self,
+        *,
+        query: str,
+        available_sources: Iterable[Mapping[str, Any]],
+        max_sources: int | None,
+        retrieval_filters: Mapping[str, Any] | None,
+        routing_profile: str | None,
+        policy_override: InvestigationPolicyOverride | Mapping[str, Any] | None,
+    ) -> _RunPlanningState:
         started_at = time.perf_counter()
         normalized_policy_override = self._normalize_policy_override(policy_override)
+        profile = self._normalize_routing_profile(routing_profile)
+        profile_config = self._routing_profile_config(profile) if (routing_profile is not None or self.routing_profiles) else {}
         effective_config = self._effective_investigation_config(
             routing_profile=routing_profile,
             policy_override=normalized_policy_override,
         )
         initial_runtime_context = self._planner_runtime_context()
-        intent, intent_trace = self.intent_parser.parse(
-            query,
-            runtime_context=initial_runtime_context,
-        )
+        budget_controller = BudgetController(RuntimeBudget.from_mapping(self._profile_budget_defaults(profile_config)))
+        if bool(profile_config.get("enable_llm_intent_parse", True)):
+            intent, intent_trace = self.intent_parser.parse(
+                query,
+                runtime_context=initial_runtime_context,
+                budget=budget_controller,
+                deadline_ms=self._stage_deadline_ms(profile_config, default=1500),
+            )
+        else:
+            intent = _fallback_intent(query, runtime_context=initial_runtime_context)
+            intent_trace = self._disabled_llm_trace(
+                "intent_parse",
+                reason="profile_disabled_llm_intent_parse",
+                runtime_context=initial_runtime_context,
+            )
         intent_payload = intent.model_dump()
         available_sources_list = [dict(source) for source in available_sources]
-        plan, plan_trace = self.planner.plan(
-            query,
-            intent,
-            available_sources=available_sources_list,
-            runtime_context=initial_runtime_context,
-        )
+        if profile == "fast":
+            plan = _fallback_plan(intent, runtime_context=initial_runtime_context)
+            plan_trace = self._disabled_llm_trace(
+                "investigation_plan",
+                reason="profile_fast_uses_deterministic_fallback_plan",
+                runtime_context=initial_runtime_context,
+            )
+        else:
+            plan, plan_trace = self.planner.plan(
+                query,
+                intent,
+                available_sources=available_sources_list,
+                runtime_context=initial_runtime_context,
+                budget=budget_controller,
+                deadline_ms=self._stage_deadline_ms(profile_config, default=2500),
+            )
         plan_payload = plan.model_dump()
         runtime_quality_gate = self._runtime_quality_gate(
             intent=intent_payload,
             plan=plan_payload,
             policy_override=normalized_policy_override,
         )
-        plan_execution_controls = self._plan_execution_controls(plan_payload)
+        plan_execution_controls = self._apply_profile_execution_controls(
+            self._plan_execution_controls(plan_payload),
+            profile_config=profile_config,
+            profile=profile,
+        )
         budget = self._resolve_budget(
             plan_payload,
             explicit_max_sources=max_sources,
             available_source_count=len(available_sources_list),
             policy_override=normalized_policy_override,
+            profile_config=profile_config,
         )
-        deadline_at = self._deadline_at(started_at, budget["max_elapsed_seconds"])
-        retrieval_filters = dict(retrieval_filters or {})
+        budget_controller.budget = RuntimeBudget.from_mapping(budget)
         selected_sources = self._select_sources(
             plan_payload,
             available_sources_list,
@@ -216,163 +408,254 @@ class InvestigationOrchestrator:
         )
         if isinstance(budget.get("max_sources"), int) and budget["max_sources"] > 0:
             selected_sources = selected_sources[: int(budget["max_sources"])]
+        return _RunPlanningState(
+            started_at=started_at,
+            normalized_policy_override=normalized_policy_override,
+            profile=profile,
+            profile_config=profile_config,
+            effective_config=effective_config,
+            budget_controller=budget_controller,
+            intent_payload=intent_payload,
+            plan_payload=plan_payload,
+            intent_trace=intent_trace,
+            plan_trace=plan_trace,
+            runtime_quality_gate=runtime_quality_gate,
+            plan_execution_controls=plan_execution_controls,
+            budget=budget,
+            deadline_at=self._deadline_at(started_at, budget["max_elapsed_seconds"]),
+            available_sources_list=available_sources_list,
+            retrieval_filters=dict(retrieval_filters or {}),
+            selected_sources=selected_sources,
+        )
+
+    def _retrieve_initial_candidates(
+        self,
+        *,
+        query: str,
+        records: Iterable[Mapping[str, Any] | Any],
+        run_state: _RunPlanningState,
+        collect_source_records: SourceCollector | None,
+    ) -> _RetrievalState:
         retrieved_clues = self.clue_retriever.retrieve(
             self.clue_repo.list(),
             query=query,
-            intent=intent_payload,
-            limit=budget["max_candidate_clues"],
-            time_range_hours=self._optional_positive_int(retrieval_filters.get("time_range_hours")),
-            allowed_source_types=retrieval_filters.get("source_types") or (),
-            allowed_risk_types=retrieval_filters.get("risk_types") or (),
-            min_quality_score=self._optional_float(retrieval_filters.get("min_quality_score")),
+            intent=run_state.intent_payload,
+            limit=run_state.budget["max_candidate_clues"],
+            time_range_hours=self._optional_positive_int(run_state.retrieval_filters.get("time_range_hours")),
+            allowed_source_types=run_state.retrieval_filters.get("source_types") or (),
+            allowed_risk_types=run_state.retrieval_filters.get("risk_types") or (),
+            min_quality_score=self._optional_float(run_state.retrieval_filters.get("min_quality_score")),
         )
         retrieved_summary = self._summarize_retrieved_clues(
             retrieved_clues,
-            time_range_hours=self._optional_positive_int(retrieval_filters.get("time_range_hours"))
-            or self._optional_positive_int(intent_payload.get("time_range_hours")),
-            quality_gate=runtime_quality_gate,
+            time_range_hours=self._optional_positive_int(run_state.retrieval_filters.get("time_range_hours"))
+            or self._optional_positive_int(run_state.intent_payload.get("time_range_hours")),
+            quality_gate=run_state.runtime_quality_gate,
         )
         provided_records = [dict(record) if isinstance(record, Mapping) else record for record in records]
-        if len(provided_records) > budget["max_raw_records"]:
-            provided_records = provided_records[: budget["max_raw_records"]]
-        semantic_local_records: list[dict[str, Any]] = []
-        semantic_local_traces: list[dict[str, Any]] = []
-        semantic_local_clues: list[dict[str, Any]] = []
-        semantic_phase_payload: dict[str, Any] | None = None
-        semantic_local_summary = {
+        if len(provided_records) > run_state.budget["max_raw_records"]:
+            provided_records = provided_records[: run_state.budget["max_raw_records"]]
+        return _RetrievalState(
+            retrieved_clues=retrieved_clues,
+            retrieved_summary=retrieved_summary,
+            provided_records=provided_records,
+        )
+
+    def _initial_live_collection_decision(
+        self,
+        *,
+        run_state: _RunPlanningState,
+        retrieval_state: _RetrievalState,
+        collect_source_records: SourceCollector | None,
+    ) -> tuple[bool, list[str]]:
+        return self._should_collect_live_sources(
+            config=run_state.effective_config,
+            intent=run_state.intent_payload,
+            quality_gate=run_state.runtime_quality_gate,
+            execution_controls=run_state.plan_execution_controls,
+            selected_sources=run_state.selected_sources,
+            retrieved_summary=retrieval_state.retrieved_summary,
+            retrieval_filters=run_state.retrieval_filters,
+            collect_source_records=collect_source_records,
+            has_provided_records=bool(retrieval_state.provided_records),
+        )
+
+    def _run_semantic_local_phase(
+        self,
+        *,
+        query: str,
+        run_state: _RunPlanningState,
+        retrieval_state: _RetrievalState,
+        collect_source_records: SourceCollector | None,
+    ) -> _SemanticLocalState:
+        summary = {
             "query_limit": 0,
             "hit_count": 0,
             "record_count": 0,
             "clue_count": 0,
             "graph_expanded_count": 0,
         }
-        collection_runs: list[dict[str, Any]] = []
-        rewrite_traces: list[dict[str, Any]] = []
-        should_collect_live, live_collection_reasons = self._should_collect_live_sources(
-            config=effective_config,
-            intent=intent_payload,
-            quality_gate=runtime_quality_gate,
-            execution_controls=plan_execution_controls,
-            selected_sources=selected_sources,
-            retrieved_summary=retrieved_summary,
-            retrieval_filters=retrieval_filters,
+        should_collect_live, live_collection_reasons = self._initial_live_collection_decision(
+            run_state=run_state,
+            retrieval_state=retrieval_state,
             collect_source_records=collect_source_records,
-            has_provided_records=bool(provided_records),
         )
-        if should_collect_live and not provided_records:
-            semantic_local_limit = self._semantic_local_limit(budget=budget)
-            semantic_local_summary["query_limit"] = semantic_local_limit
-            semantic_local_records, semantic_local_traces = self._collect_semantic_local_records(
-                query=query,
-                limit=semantic_local_limit,
-            )
-            semantic_local_summary["hit_count"] = sum(
-                1 for item in semantic_local_traces if item.get("stage") == "semantic_local_retrieval"
-            )
-            semantic_local_summary["record_count"] = len(semantic_local_records)
-            semantic_local_summary["graph_expanded_count"] = sum(
-                1 for item in semantic_local_traces if item.get("stage") == "semantic_graph_expansion"
-            )
-            if semantic_local_records:
-                semantic_local_build = self.offline_builder.build(
-                    semantic_local_records,
-                    prompt_text=query,
-                    source_candidates=selected_sources or available_sources_list,
-                    quality_profile=intent.quality_profile,
-                    require_cross_source=intent.require_cross_source,
-                    require_evidence_chain=intent.require_evidence_chain,
-                )
-                semantic_phase_payload = _as_investigation_processing_summary(semantic_local_build.execution_summary)
-                semantic_local_clues = semantic_local_build.clues
-                semantic_local_summary["clue_count"] = len(semantic_local_clues)
-                semantic_retrieved_summary = self._summarize_retrieved_clues(
-                    semantic_local_clues,
-                    time_range_hours=self._optional_positive_int(retrieval_filters.get("time_range_hours"))
-                    or self._optional_positive_int(intent_payload.get("time_range_hours")),
-                    quality_gate=runtime_quality_gate,
-                )
-                merged_retrieved_summary = self._merge_retrieved_summary(retrieved_summary, semantic_retrieved_summary)
-                should_collect_live, live_collection_reasons = self._should_collect_live_sources(
-                    config=effective_config,
-                    intent=intent_payload,
-                    quality_gate=runtime_quality_gate,
-                    execution_controls=plan_execution_controls,
-                    selected_sources=selected_sources,
-                    retrieved_summary=merged_retrieved_summary,
-                    retrieval_filters=retrieval_filters,
-                    collect_source_records=collect_source_records,
-                    has_provided_records=bool(provided_records),
-                )
-                if should_collect_live and int(semantic_retrieved_summary.get("high_quality_count") or 0) > 0:
-                    if set(live_collection_reasons).issubset({"insufficient_high_quality_pool_clues"}):
-                        should_collect_live = False
-                        live_collection_reasons = ["semantic_local_high_quality_satisfied"]
-        live_records: list[dict[str, Any]] = []
-        if should_collect_live and collect_source_records is not None:
-            collection_deadline_at = deadline_at
-            planning_exhausted_before_first_collection = (
-                self._deadline_exhausted(collection_deadline_at)
-                and not provided_records
-                and not semantic_local_records
-                and not retrieved_clues
-            )
-            if planning_exhausted_before_first_collection:
-                live_collection_reasons.append("elapsed_budget_reset_for_first_live_collection")
-                collection_deadline_at = None
+        records: list[dict[str, Any]] = []
+        traces: list[dict[str, Any]] = []
+        clues: list[dict[str, Any]] = []
+        phase_payload: dict[str, Any] | None = None
+        if not (should_collect_live and not retrieval_state.provided_records):
+            return _SemanticLocalState(records, traces, clues, phase_payload, summary, should_collect_live, live_collection_reasons)
 
-            if self._deadline_exhausted(collection_deadline_at):
-                live_collection_reasons.append("elapsed_budget_exhausted_before_live_collection")
-            else:
-                selected_sources = self._cap_live_sources(
-                    selected_sources,
-                    retrieved_summary=retrieved_summary,
-                    config=effective_config,
-                )
-                if plan_execution_controls.query_rewrite_policy == "off" or planning_exhausted_before_first_collection:
-                    rewrite_traces = self._query_rewrite_skipped_traces(
-                        selected_sources,
-                        reason=(
-                            "elapsed_budget_exhausted_before_query_rewrite"
-                            if planning_exhausted_before_first_collection
-                            else "plan_query_rewrite_disabled"
-                        ),
-                    )
-                else:
-                    selected_sources, rewrite_traces = self._rewrite_selected_sources(
-                        selected_sources,
-                        query=query,
-                        intent=intent_payload,
-                        plan=plan_payload,
-                        runtime_context=self.phase_engine.runtime_prompt_context(
-                            label=self._runtime_context_label(intent_payload),
-                            include_candidates=True,
-                        ),
-                    )
-                    if (
-                        self._deadline_exhausted(collection_deadline_at)
-                        and not provided_records
-                        and not semantic_local_records
-                        and not retrieved_clues
-                    ):
-                        live_collection_reasons.append("elapsed_budget_reset_after_query_rewrite_for_first_live_collection")
-                        collection_deadline_at = None
-                live_records, collection_runs = self._collect_records_from_sources(
-                    selected_sources,
-                    collect_source_records=collect_source_records,
-                    max_raw_records=budget["max_raw_records"],
-                    max_concurrent_sources=max_concurrent_sources,
-                    deadline_at=collection_deadline_at,
-                )
-        fresh_records = provided_records if provided_records else (live_records or semantic_local_records)
+        semantic_local_limit = self._semantic_local_limit(budget=run_state.budget)
+        summary["query_limit"] = semantic_local_limit
+        records, traces = self._collect_semantic_local_records(query=query, limit=semantic_local_limit)
+        summary["hit_count"] = sum(1 for item in traces if item.get("stage") == "semantic_local_retrieval")
+        summary["record_count"] = len(records)
+        summary["graph_expanded_count"] = sum(1 for item in traces if item.get("stage") == "semantic_graph_expansion")
+        if not records:
+            return _SemanticLocalState(records, traces, clues, phase_payload, summary, should_collect_live, live_collection_reasons)
+
+        semantic_local_build = self.offline_builder.build(
+            records,
+            prompt_text=query,
+            source_candidates=run_state.selected_sources or run_state.available_sources_list,
+            quality_profile=str(run_state.intent_payload.get("quality_profile") or "balanced"),
+            require_cross_source=bool(run_state.intent_payload.get("require_cross_source")),
+            require_evidence_chain=bool(run_state.intent_payload.get("require_evidence_chain", True)),
+        )
+        phase_payload = _as_investigation_processing_summary(semantic_local_build.execution_summary)
+        clues = semantic_local_build.clues
+        summary["clue_count"] = len(clues)
+        semantic_retrieved_summary = self._summarize_retrieved_clues(
+            clues,
+            time_range_hours=self._optional_positive_int(run_state.retrieval_filters.get("time_range_hours"))
+            or self._optional_positive_int(run_state.intent_payload.get("time_range_hours")),
+            quality_gate=run_state.runtime_quality_gate,
+        )
+        merged_retrieved_summary = self._merge_retrieved_summary(retrieval_state.retrieved_summary, semantic_retrieved_summary)
+        should_collect_live, live_collection_reasons = self._should_collect_live_sources(
+            config=run_state.effective_config,
+            intent=run_state.intent_payload,
+            quality_gate=run_state.runtime_quality_gate,
+            execution_controls=run_state.plan_execution_controls,
+            selected_sources=run_state.selected_sources,
+            retrieved_summary=merged_retrieved_summary,
+            retrieval_filters=run_state.retrieval_filters,
+            collect_source_records=collect_source_records,
+            has_provided_records=bool(retrieval_state.provided_records),
+        )
+        if should_collect_live and int(semantic_retrieved_summary.get("high_quality_count") or 0) > 0:
+            if set(live_collection_reasons).issubset({"insufficient_high_quality_pool_clues"}):
+                should_collect_live = False
+                live_collection_reasons = ["semantic_local_high_quality_satisfied"]
+        return _SemanticLocalState(records, traces, clues, phase_payload, summary, should_collect_live, live_collection_reasons)
+
+    def _run_live_collection_phase(
+        self,
+        *,
+        query: str,
+        run_state: _RunPlanningState,
+        retrieval_state: _RetrievalState,
+        semantic_state: _SemanticLocalState,
+        collect_source_records: SourceCollector | None,
+        max_concurrent_sources: int,
+    ) -> _LiveCollectionState:
+        selected_sources = [dict(item) for item in run_state.selected_sources]
+        live_collection_reasons = list(semantic_state.live_collection_reasons)
+        rewrite_traces: list[dict[str, Any]] = []
+        live_records: list[dict[str, Any]] = []
+        collection_runs: list[dict[str, Any]] = []
+        if not (semantic_state.should_collect_live and collect_source_records is not None):
+            return _LiveCollectionState(live_records, collection_runs, rewrite_traces, selected_sources, live_collection_reasons)
+
+        collection_deadline_at = run_state.deadline_at
+        planning_exhausted_before_first_collection = (
+            self._deadline_exhausted(collection_deadline_at)
+            and not retrieval_state.provided_records
+            and not semantic_state.records
+            and not retrieval_state.retrieved_clues
+        )
+        if planning_exhausted_before_first_collection:
+            live_collection_reasons.append("elapsed_budget_reset_for_first_live_collection")
+            collection_deadline_at = None
+        if self._deadline_exhausted(collection_deadline_at):
+            live_collection_reasons.append("elapsed_budget_exhausted_before_live_collection")
+            return _LiveCollectionState(live_records, collection_runs, rewrite_traces, selected_sources, live_collection_reasons)
+
+        selected_sources = self._cap_live_sources(
+            selected_sources,
+            retrieved_summary=retrieval_state.retrieved_summary,
+            config=run_state.effective_config,
+        )
+        if (
+            run_state.plan_execution_controls.query_rewrite_policy == "off"
+            or planning_exhausted_before_first_collection
+            or not bool(run_state.profile_config.get("enable_query_rewrite", True))
+            or int(run_state.budget.get("max_query_rewrite_sources") or 0) <= 0
+        ):
+            rewrite_traces = self._query_rewrite_skipped_traces(
+                selected_sources,
+                reason=(
+                    "elapsed_budget_exhausted_before_query_rewrite"
+                    if planning_exhausted_before_first_collection
+                    else "profile_disabled_query_rewrite"
+                    if not bool(run_state.profile_config.get("enable_query_rewrite", True))
+                    else "query_rewrite_budget_zero"
+                    if int(run_state.budget.get("max_query_rewrite_sources") or 0) <= 0
+                    else "plan_query_rewrite_disabled"
+                ),
+            )
+        else:
+            selected_sources, rewrite_traces = self._rewrite_selected_sources(
+                selected_sources,
+                query=query,
+                intent=run_state.intent_payload,
+                plan=run_state.plan_payload,
+                runtime_context=self.phase_engine.runtime_prompt_context(
+                    label=self._runtime_context_label(run_state.intent_payload),
+                    include_candidates=True,
+                ),
+                max_rewrite_sources=int(run_state.budget.get("max_query_rewrite_sources") or 0),
+                budget=run_state.budget_controller,
+                deadline_ms=self._stage_deadline_ms(run_state.profile_config, default=2000),
+            )
+            if (
+                self._deadline_exhausted(collection_deadline_at)
+                and not retrieval_state.provided_records
+                and not semantic_state.records
+                and not retrieval_state.retrieved_clues
+            ):
+                live_collection_reasons.append("elapsed_budget_reset_after_query_rewrite_for_first_live_collection")
+                collection_deadline_at = None
+        live_records, collection_runs = self._collect_records_from_sources(
+            selected_sources,
+            collect_source_records=collect_source_records,
+            max_raw_records=run_state.budget["max_raw_records"],
+            max_concurrent_sources=max_concurrent_sources,
+            deadline_at=collection_deadline_at,
+        )
+        return _LiveCollectionState(live_records, collection_runs, rewrite_traces, selected_sources, live_collection_reasons)
+
+    def _process_fresh_records(
+        self,
+        *,
+        query: str,
+        run_state: _RunPlanningState,
+        retrieval_state: _RetrievalState,
+        semantic_state: _SemanticLocalState,
+        live_state: _LiveCollectionState,
+    ) -> _FreshProcessingState:
+        fresh_records = retrieval_state.provided_records if retrieval_state.provided_records else (live_state.records or semantic_state.records)
         built_clues: list[dict[str, Any]] = []
-        if live_records or provided_records:
+        if live_state.records or retrieval_state.provided_records:
             build_result = self.offline_builder.build(
                 fresh_records,
                 prompt_text=query,
-                source_candidates=selected_sources or available_sources_list,
-                quality_profile=intent.quality_profile,
-                require_cross_source=intent.require_cross_source,
-                require_evidence_chain=intent.require_evidence_chain,
+                source_candidates=live_state.selected_sources or run_state.available_sources_list,
+                quality_profile=str(run_state.intent_payload.get("quality_profile") or "balanced"),
+                require_cross_source=bool(run_state.intent_payload.get("require_cross_source")),
+                require_evidence_chain=bool(run_state.intent_payload.get("require_evidence_chain", True)),
             )
             phase_payload = _as_investigation_processing_summary(build_result.execution_summary)
             built_clues = build_result.clues
@@ -390,137 +673,152 @@ class InvestigationOrchestrator:
                 "playbook_count": 0,
                 "strategy_count": 0,
             }
-        if semantic_phase_payload is not None and not (live_records or provided_records):
-            phase_payload = semantic_phase_payload
+        if semantic_state.phase_payload is not None and not (live_state.records or retrieval_state.provided_records):
+            phase_payload = semantic_state.phase_payload
+        return _FreshProcessingState(records=fresh_records, built_clues=built_clues, phase_payload=phase_payload)
+
+    def _refine_and_explore_candidates(
+        self,
+        *,
+        query: str,
+        run_state: _RunPlanningState,
+        retrieval_state: _RetrievalState,
+        semantic_state: _SemanticLocalState,
+        live_state: _LiveCollectionState,
+        fresh_state: _FreshProcessingState,
+    ) -> _RefinementState:
         pool_clues_for_merge = (
-            retrieved_clues
-            if not fresh_records
+            retrieval_state.retrieved_clues
+            if not fresh_state.records
             else [
                 dict(clue)
-                for clue in retrieved_clues
-                if float(clue.get("retrieval_score") or 0.0) >= effective_config.retrieval_score_threshold_for_pool_merge
+                for clue in retrieval_state.retrieved_clues
+                if float(clue.get("retrieval_score") or 0.0) >= run_state.effective_config.retrieval_score_threshold_for_pool_merge
             ]
         )
         merged_candidates = self._merge_candidate_clues(
             pool_clues=pool_clues_for_merge,
-            fresh_clues=[*semantic_local_clues, *built_clues],
+            fresh_clues=[*semantic_state.clues, *fresh_state.built_clues],
         )
-        if not merged_candidates and retrieved_clues and not fresh_records:
-            merged_candidates = [dict(clue) for clue in retrieved_clues]
-        requested_max_refine = 0 if plan_execution_controls.refine_policy == "off" else int(budget["max_llm_refine_clues"] or 0)
+        if not merged_candidates and retrieval_state.retrieved_clues and not fresh_state.records:
+            merged_candidates = [dict(clue) for clue in retrieval_state.retrieved_clues]
+        requested_max_refine = 0 if run_state.plan_execution_controls.refine_policy == "off" else int(run_state.budget["max_llm_refine_clues"] or 0)
         effective_max_refine = max(0, requested_max_refine)
         refine_budget_reasons: list[str] = []
         refined_high_quality, refined_candidates, refine_traces, model_route_traces, budget_controller_snapshot = self._refine_retrieved_clues(
             merged_candidates,
             query=query,
-            intent=intent_payload,
-            quality_gate=runtime_quality_gate,
+            intent=run_state.intent_payload,
+            quality_gate=run_state.runtime_quality_gate,
             max_refine=effective_max_refine,
-            deadline_at=deadline_at,
-            routing_profile=self._normalize_routing_profile(routing_profile),
-            runtime_budget=RuntimeBudget.from_mapping(budget),
+            deadline_at=run_state.deadline_at,
+            routing_profile=run_state.profile,
+            budget_controller=run_state.budget_controller,
         )
-        high_quality_clues = refined_high_quality
-        candidate_clues = refined_candidates
-        actual_refined_count = len(refine_traces)
         exploration_hypotheses = self._build_exploration_hypotheses(
             query=query,
-            processed_records=fresh_records,
+            processed_records=fresh_state.records,
             candidate_clues=refined_candidates,
             high_quality_clues=refined_high_quality,
-            runtime_quality_gate=runtime_quality_gate,
+            runtime_quality_gate=run_state.runtime_quality_gate,
         )
-        orchestration_route = self._orchestration_route(
-            used_clue_pool=bool(pool_clues_for_merge or (retrieved_clues and not fresh_records)),
-            used_fresh_processing=bool(fresh_records),
-            used_live_collection=bool(live_records),
-            used_provided_records=bool(provided_records),
-            used_semantic_local=bool(semantic_local_records),
-        )
-        execution_summary = {
-            **phase_payload,
-            "status": "completed" if (fresh_records or semantic_local_clues) else "retrieved_from_clue_pool",
-            "mode": self._execution_mode(
-                used_clue_pool=bool(pool_clues_for_merge or (retrieved_clues and not fresh_records)),
-                used_fresh_processing=bool(fresh_records or semantic_local_clues),
-            ),
-            "budget": budget,
-            "refined_clue_count": actual_refined_count,
-            "query_rewrite_count": sum(1 for item in selected_sources if item.get("query_rewrite_applied")),
-            "query_rewrite_fallback_count": sum(1 for item in selected_sources if item.get("query_rewrite_used_fallback")),
-            "candidate_clue_hits": len(retrieved_clues),
-            "fresh_candidate_count": len(built_clues) + len(semantic_local_clues),
-            "live_fresh_candidate_count": len(built_clues),
-            "semantic_local_candidate_count": len(semantic_local_clues),
-            "merged_candidate_count": len(merged_candidates),
-            "used_clue_pool": bool(pool_clues_for_merge or (retrieved_clues and not fresh_records)),
-            "used_live_collection": bool(live_records),
-            "used_provided_records": bool(provided_records),
-            "used_semantic_local_retrieval": bool(semantic_local_records),
-            "semantic_local_summary": semantic_local_summary,
-            "orchestration_route": orchestration_route,
-            "live_collection_reasons": live_collection_reasons,
-            "elapsed_budget_exhausted": self._deadline_exhausted(deadline_at),
-            "runtime_quality_gate": runtime_quality_gate.model_dump(),
-            "plan_execution_controls": plan_execution_controls.model_dump(),
-            "requested_max_llm_refine_clues": requested_max_refine,
-            "effective_max_llm_refine_clues": effective_max_refine,
-            "refine_budget_reasons": refine_budget_reasons,
-            "model_route_count": len(model_route_traces),
-            "model_route_summary": self._summarize_model_routes(model_route_traces),
-            "budget_controller": budget_controller_snapshot,
-            "exploration_hypothesis_count": len(exploration_hypotheses),
-            "collection_layers_executed": [str(item.get("collection_layer") or "") for item in collection_runs if item.get("fetched_count", 0) > 0],
-        }
-        if effective_config.telemetry_enabled:
-            execution_summary["telemetry"] = self._build_telemetry(
-                started_at=started_at,
-                budget=budget,
-                requested_max_llm_refine_clues=requested_max_refine,
-                effective_max_llm_refine_clues=effective_max_refine,
-                selected_source_count=len(selected_sources),
-                collected_record_count=len(live_records),
-                provided_record_count=len(provided_records),
-                retrieved_clue_count=len(retrieved_clues),
-                merged_candidate_count=len(merged_candidates),
-                refined_clue_count=actual_refined_count,
-                rewrite_count=sum(1 for item in selected_sources if item.get("query_rewrite_applied")),
-                used_live_collection=bool(live_records),
-                used_clue_pool=bool(pool_clues_for_merge or (retrieved_clues and not fresh_records)),
-                elapsed_budget_exhausted=self._deadline_exhausted(deadline_at),
-                semantic_local_record_count=len(semantic_local_records),
-                model_route_traces=model_route_traces,
-                budget_controller_snapshot=budget_controller_snapshot,
-            )
-        execution_summary["routing_profile"] = self._normalize_routing_profile(routing_profile)
-        processed_records = provided_records if provided_records else (live_records or semantic_local_records)
-
-        return InvestigationRunResult(
-            status="completed" if (fresh_records or semantic_local_clues or retrieved_clues) else "no_data",
-            mode="llm_driven_investigation",
-            query=query,
-            input_count=len(processed_records),
-            fetched_count=len(live_records) if live_records else len(processed_records),
-            selected_source_count=len(selected_sources),
-            high_quality_count=len(high_quality_clues),
-            candidate_count=len(candidate_clues),
-            intent=intent_payload,
-            investigation_plan=plan_payload,
-            llm_traces=[
-                intent_trace.model_dump(),
-                plan_trace.model_dump(),
-                *semantic_local_traces,
-                *rewrite_traces,
-                *model_route_traces,
-                *refine_traces,
-            ],
-            selected_sources=selected_sources,
-            collection_runs=collection_runs,
-            execution_summary=execution_summary,
-            high_quality_clues=high_quality_clues,
-            candidate_clues=candidate_clues,
+        return _RefinementState(
+            pool_clues_for_merge=pool_clues_for_merge,
+            merged_candidates=merged_candidates,
+            high_quality_clues=refined_high_quality,
+            candidate_clues=refined_candidates,
+            refine_traces=refine_traces,
+            model_route_traces=model_route_traces,
+            budget_controller_snapshot=budget_controller_snapshot,
+            actual_refined_count=sum(1 for trace in refine_traces if trace.get("stage") == "clue_refine"),
+            requested_max_refine=requested_max_refine,
+            effective_max_refine=effective_max_refine,
+            refine_budget_reasons=refine_budget_reasons,
             exploration_hypotheses=exploration_hypotheses,
         )
+
+    def _build_execution_summary(
+        self,
+        *,
+        run_state: _RunPlanningState,
+        retrieval_state: _RetrievalState,
+        semantic_state: _SemanticLocalState,
+        live_state: _LiveCollectionState,
+        fresh_state: _FreshProcessingState,
+        refinement_state: _RefinementState,
+    ) -> dict[str, Any]:
+        used_clue_pool = bool(refinement_state.pool_clues_for_merge or (retrieval_state.retrieved_clues and not fresh_state.records))
+        orchestration_route = self._orchestration_route(
+            used_clue_pool=used_clue_pool,
+            used_fresh_processing=bool(fresh_state.records),
+            used_live_collection=bool(live_state.records),
+            used_provided_records=bool(retrieval_state.provided_records),
+            used_semantic_local=bool(semantic_state.records),
+        )
+        query_rewrite_count = sum(1 for item in live_state.selected_sources if item.get("query_rewrite_applied"))
+        execution_summary = {
+            **fresh_state.phase_payload,
+            "status": "completed" if (fresh_state.records or semantic_state.clues) else "retrieved_from_clue_pool",
+            "mode": self._execution_mode(
+                used_clue_pool=used_clue_pool,
+                used_fresh_processing=bool(fresh_state.records or semantic_state.clues),
+            ),
+            "budget": run_state.budget,
+            "refined_clue_count": refinement_state.actual_refined_count,
+            "query_rewrite_count": query_rewrite_count,
+            "query_rewrite_fallback_count": sum(1 for item in live_state.selected_sources if item.get("query_rewrite_used_fallback")),
+            "candidate_clue_hits": len(retrieval_state.retrieved_clues),
+            "fresh_candidate_count": len(fresh_state.built_clues) + len(semantic_state.clues),
+            "live_fresh_candidate_count": len(fresh_state.built_clues),
+            "semantic_local_candidate_count": len(semantic_state.clues),
+            "merged_candidate_count": len(refinement_state.merged_candidates),
+            "used_clue_pool": used_clue_pool,
+            "used_live_collection": bool(live_state.records),
+            "used_provided_records": bool(retrieval_state.provided_records),
+            "used_semantic_local_retrieval": bool(semantic_state.records),
+            "semantic_local_summary": semantic_state.summary,
+            "orchestration_route": orchestration_route,
+            "live_collection_reasons": live_state.live_collection_reasons,
+            "elapsed_budget_exhausted": self._deadline_exhausted(run_state.deadline_at),
+            "runtime_quality_gate": run_state.runtime_quality_gate.model_dump(),
+            "plan_execution_controls": run_state.plan_execution_controls.model_dump(),
+            "requested_max_llm_refine_clues": refinement_state.requested_max_refine,
+            "effective_max_llm_refine_clues": refinement_state.effective_max_refine,
+            "refine_budget_reasons": refinement_state.refine_budget_reasons,
+            "model_route_count": len(refinement_state.model_route_traces),
+            "model_route_summary": self._summarize_model_routes(refinement_state.model_route_traces),
+            "budget_controller": refinement_state.budget_controller_snapshot,
+            "llm_gateway": self._summarize_gateway_stats(),
+            "exploration_hypothesis_count": len(refinement_state.exploration_hypotheses),
+            "collection_layers_executed": [
+                str(item.get("collection_layer") or "")
+                for item in live_state.collection_runs
+                if item.get("fetched_count", 0) > 0
+            ],
+        }
+        if run_state.effective_config.telemetry_enabled:
+            execution_summary["telemetry"] = self._build_telemetry(
+                started_at=run_state.started_at,
+                budget=run_state.budget,
+                requested_max_llm_refine_clues=refinement_state.requested_max_refine,
+                effective_max_llm_refine_clues=refinement_state.effective_max_refine,
+                selected_source_count=len(live_state.selected_sources),
+                collected_record_count=len(live_state.records),
+                provided_record_count=len(retrieval_state.provided_records),
+                retrieved_clue_count=len(retrieval_state.retrieved_clues),
+                merged_candidate_count=len(refinement_state.merged_candidates),
+                refined_clue_count=refinement_state.actual_refined_count,
+                rewrite_count=query_rewrite_count,
+                used_live_collection=bool(live_state.records),
+                used_clue_pool=used_clue_pool,
+                elapsed_budget_exhausted=self._deadline_exhausted(run_state.deadline_at),
+                semantic_local_record_count=len(semantic_state.records),
+                model_route_traces=refinement_state.model_route_traces,
+                budget_controller_snapshot=refinement_state.budget_controller_snapshot,
+                llm_gateway_stats=self._gateway_stats(),
+            )
+        execution_summary["routing_profile"] = run_state.profile
+        return self._mask_execution_summary(execution_summary)
 
     def _planner_runtime_context(self) -> dict[str, Any]:
         return self.phase_engine.runtime_prompt_context(include_candidates=True)
@@ -633,6 +931,28 @@ class InvestigationOrchestrator:
         if "skip_llm_refine" in agent_actions or any("refine_policy=off" in note or "skip_refine" in note for note in execution_notes):
             refine_policy = "off"
 
+        return PlanExecutionControls(
+            collection_mode=collection_mode,
+            query_rewrite_policy=query_rewrite_policy,
+            refine_policy=refine_policy,
+        )
+
+    def _apply_profile_execution_controls(
+        self,
+        controls: PlanExecutionControls,
+        *,
+        profile_config: Mapping[str, Any],
+        profile: str,
+    ) -> PlanExecutionControls:
+        collection_mode = controls.collection_mode
+        query_rewrite_policy = controls.query_rewrite_policy
+        refine_policy = controls.refine_policy
+        if not bool(profile_config.get("enable_live_collection", True)):
+            collection_mode = "pool_only"
+        if not bool(profile_config.get("enable_query_rewrite", True)):
+            query_rewrite_policy = "off"
+        if profile == "fast" and int(profile_config.get("max_llm_refine_clues") or 0) <= 0:
+            refine_policy = "off"
         return PlanExecutionControls(
             collection_mode=collection_mode,
             query_rewrite_policy=query_rewrite_policy,
@@ -801,10 +1121,37 @@ class InvestigationOrchestrator:
         explicit_max_sources: int | None,
         available_source_count: int = 0,
         policy_override: InvestigationPolicyOverride | None = None,
+        profile_config: Mapping[str, Any] | None = None,
     ) -> dict[str, int | None]:
-        raw = plan.get("budget") or {}
-        if not isinstance(raw, Mapping):
-            raw = {}
+        raw = self._profile_budget_defaults(profile_config or {})
+        plan_budget = plan.get("budget") or {}
+        if not isinstance(plan_budget, Mapping):
+            plan_budget = {}
+        # Profile budgets are the runtime source of truth; the LLM plan can only
+        # tighten them.  This keeps fast/balanced/high_recall cost and latency
+        # caps real even when fallback plans carry larger defaults.
+        for key in (
+            "max_sources",
+            "max_raw_records",
+            "max_candidate_clues",
+            "max_llm_refine_clues",
+            "max_llm_calls",
+            "max_llm_tokens",
+            "max_llm_classify_records",
+            "max_llm_extract_records",
+            "max_query_rewrite_sources",
+            "max_elapsed_seconds",
+        ):
+            if key not in plan_budget or plan_budget.get(key) in (None, ""):
+                continue
+            plan_value = self._optional_positive_int(plan_budget.get(key))
+            if plan_value is None:
+                continue
+            current_value = raw.get(key)
+            if current_value is None:
+                raw[key] = plan_value
+            else:
+                raw[key] = min(int(current_value), plan_value)
         if policy_override is not None:
             raw = {
                 **raw,
@@ -821,8 +1168,6 @@ class InvestigationOrchestrator:
             raw.get("max_elapsed_seconds"),
             DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS,
         )
-        if policy_override is None or policy_override.max_elapsed_seconds is None:
-            elapsed_budget = max(elapsed_budget, DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS)
         budget = {
             "max_sources": resolved_max_sources,
             "max_raw_records": self._positive_int(raw.get("max_raw_records"), 5000),
@@ -986,19 +1331,30 @@ class InvestigationOrchestrator:
         intent: Mapping[str, Any],
         plan: Mapping[str, Any],
         runtime_context: Mapping[str, Any] | None = None,
+        max_rewrite_sources: int | None = None,
+        budget: BudgetController | None = None,
+        deadline_ms: int | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         rewritten_sources: list[dict[str, Any]] = []
         traces: list[dict[str, Any]] = []
-        for source in selected_sources:
+        rewrite_limit = max(0, int(max_rewrite_sources if max_rewrite_sources is not None else len(selected_sources)))
+        rewrite_targets = selected_sources[:rewrite_limit]
+        untouched_sources = selected_sources[rewrite_limit:]
+        for source in rewrite_targets:
             rewritten_source, trace = self.query_rewriter.rewrite(
                 source,
                 query=query,
                 intent=intent,
                 plan=plan,
                 runtime_context=runtime_context,
+                budget=budget,
+                deadline_ms=deadline_ms,
             )
             rewritten_sources.append(rewritten_source)
             traces.append(trace.model_dump())
+        if untouched_sources:
+            rewritten_sources.extend(untouched_sources)
+            traces.extend(self._query_rewrite_skipped_traces(untouched_sources, reason="query_rewrite_source_limit_reached"))
         return rewritten_sources, traces
 
     def _refine_retrieved_clues(
@@ -1011,12 +1367,12 @@ class InvestigationOrchestrator:
         max_refine: int,
         deadline_at: float | None = None,
         routing_profile: str | None = None,
-        runtime_budget: RuntimeBudget | None = None,
+        budget_controller: BudgetController | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         refined: list[dict[str, Any]] = []
         traces: list[dict[str, Any]] = []
         model_route_traces: list[dict[str, Any]] = []
-        budget_controller = BudgetController(runtime_budget or RuntimeBudget(max_llm_refine_clues=max_refine))
+        active_budget_controller = budget_controller or BudgetController(RuntimeBudget(max_llm_refine_clues=max_refine))
         routed_clues = self.clue_ranker.rank(clues)
         active_router = self.model_router.with_profile(routing_profile)
         pending_refine: list[dict[str, Any]] = []
@@ -1037,7 +1393,11 @@ class InvestigationOrchestrator:
                 route_decision.action == "llm_refine_only"
                 and len(pending_refine) < max_refine
                 and not self._deadline_exhausted(deadline_at)
-                and budget_controller.allow_llm_call(stage="clue_refine", estimated_tokens=route_decision.max_tokens)
+                and active_budget_controller.allow_llm_call(
+                    stage="clue_refine",
+                    estimated_tokens=route_decision.max_tokens,
+                    item_count=1,
+                )
             )
             if should_refine:
                 pending_refine.append(item)
@@ -1065,7 +1425,7 @@ class InvestigationOrchestrator:
                 runtime_context=runtime_context,
                 max_tokens=max_tokens,
                 deadline_ms=deadline_ms,
-                budget=budget_controller,
+                budget=active_budget_controller,
             )
             by_clue_id = {str(item.get("clue_id") or ""): item for item in enriched_batch}
             meta_by_clue_id = {
@@ -1083,7 +1443,7 @@ class InvestigationOrchestrator:
             self.clue_repo.save(item)
         high_quality = [clue for clue in refined if self._passes_runtime_quality_gate(clue, quality_gate=quality_gate)]
         candidates = [clue for clue in refined if clue not in high_quality]
-        return high_quality, candidates, traces, model_route_traces, budget_controller.snapshot()
+        return high_quality, candidates, traces, model_route_traces, active_budget_controller.snapshot()
 
     def _runtime_quality_gate(
         self,
@@ -1279,6 +1639,7 @@ class InvestigationOrchestrator:
         semantic_local_record_count: int,
         model_route_traces: list[dict[str, Any]] | None = None,
         budget_controller_snapshot: Mapping[str, Any] | None = None,
+        llm_gateway_stats: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
         max_sources = budget.get("max_sources")
@@ -1315,6 +1676,7 @@ class InvestigationOrchestrator:
             "elapsed_budget_exhausted": elapsed_budget_exhausted,
             "model_route_summary": self._summarize_model_routes(model_route_traces or []),
             "budget_controller": dict(budget_controller_snapshot or {}),
+            "llm": self._summarize_gateway_stats(llm_gateway_stats),
         }
         return telemetry
 
@@ -1325,6 +1687,48 @@ class InvestigationOrchestrator:
             action = str(trace.get("action") or "unknown")
             summary[action] = summary.get(action, 0) + 1
         return summary
+
+    def _gateway_stats(self) -> list[dict[str, Any]]:
+        if hasattr(self.llm_gateway, "stats"):
+            return [dict(item) for item in self.llm_gateway.stats()]
+        return []
+
+    def _summarize_gateway_stats(self, stats: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        items = [dict(item) for item in (stats if stats is not None else self._gateway_stats())]
+        by_stage: dict[str, dict[str, Any]] = {}
+        for item in items:
+            stage = str(item.get("stage") or "unknown")
+            bucket = by_stage.setdefault(
+                stage,
+                {
+                    "call_count": 0,
+                    "success_count": 0,
+                    "failed_count": 0,
+                    "cache_hit_count": 0,
+                    "estimated_tokens": 0,
+                    "elapsed_ms": 0,
+                },
+            )
+            bucket["call_count"] += 1
+            if bool(item.get("ok")):
+                bucket["success_count"] += 1
+            else:
+                bucket["failed_count"] += 1
+            if bool(item.get("cache_hit")):
+                bucket["cache_hit_count"] += 1
+            bucket["estimated_tokens"] += int(item.get("prompt_tokens_estimated") or 0) + int(item.get("completion_tokens_limit") or 0)
+            bucket["elapsed_ms"] += int(item.get("elapsed_ms") or 0)
+        return {
+            "call_count": len(items),
+            "success_count": sum(1 for item in items if bool(item.get("ok"))),
+            "failed_count": sum(1 for item in items if not bool(item.get("ok"))),
+            "cache_hit_count": sum(1 for item in items if bool(item.get("cache_hit"))),
+            "estimated_tokens": sum(
+                int(item.get("prompt_tokens_estimated") or 0) + int(item.get("completion_tokens_limit") or 0)
+                for item in items
+            ),
+            "by_stage": by_stage,
+        }
 
     def _collect_semantic_local_records(
         self,
@@ -1583,9 +1987,10 @@ class InvestigationOrchestrator:
         return "balanced"
 
     def _profile_overrides(self, profile: str) -> dict[str, Any]:
+        profile_config = self._routing_profile_config(profile)
         if profile == "fast":
             return {
-                "live_collection_enabled": True,
+                "live_collection_enabled": bool(profile_config.get("enable_live_collection", False)),
                 "balanced_min_pool_high_quality_count": 1,
                 "high_precision_min_pool_high_quality_count": 1,
                 "min_cross_source_count": 2,
@@ -1594,14 +1999,142 @@ class InvestigationOrchestrator:
             }
         if profile == "high_recall":
             return {
-                "live_collection_enabled": True,
+                "live_collection_enabled": bool(profile_config.get("enable_live_collection", True)),
                 "balanced_min_pool_high_quality_count": 2,
                 "high_precision_min_pool_high_quality_count": 3,
                 "min_cross_source_count": 3,
                 "max_live_sources_when_pool_hit": max(3, self.investigation_config.max_live_sources_when_pool_hit),
                 "retrieval_score_threshold_for_pool_merge": 0.0,
             }
+        if profile_config:
+            return {"live_collection_enabled": bool(profile_config.get("enable_live_collection", True))}
         return {}
+
+    def _routing_profile_config(self, profile: str) -> dict[str, Any]:
+        default_profiles = {
+            "fast": {
+                "max_elapsed_seconds": 8,
+                "max_sources": 1,
+                "max_raw_records": 500,
+                "max_candidate_clues": 20,
+                "max_llm_calls": 3,
+                "max_llm_tokens": 3000,
+                "max_llm_classify_records": 5,
+                "max_llm_extract_records": 5,
+                "max_llm_refine_clues": 2,
+                "max_query_rewrite_sources": 0,
+                "enable_llm_intent_parse": False,
+                "enable_query_rewrite": False,
+                "enable_live_collection": False,
+                "prefer_clue_pool": True,
+                "min_rule_confidence_for_auto_accept": 0.82,
+            },
+            "balanced": {
+                "max_elapsed_seconds": 30,
+                "max_sources": 2,
+                "max_raw_records": 3000,
+                "max_candidate_clues": 50,
+                "max_llm_calls": 10,
+                "max_llm_tokens": 10000,
+                "max_llm_classify_records": 20,
+                "max_llm_extract_records": 20,
+                "max_llm_refine_clues": 6,
+                "max_query_rewrite_sources": 2,
+                "enable_llm_intent_parse": True,
+                "enable_query_rewrite": True,
+                "enable_live_collection": True,
+                "prefer_clue_pool": True,
+                "min_rule_confidence_for_auto_accept": 0.85,
+            },
+            "high_recall": {
+                "max_elapsed_seconds": 180,
+                "max_sources": 5,
+                "max_raw_records": 20000,
+                "max_candidate_clues": 200,
+                "max_llm_calls": 40,
+                "max_llm_tokens": 50000,
+                "max_llm_classify_records": 100,
+                "max_llm_extract_records": 100,
+                "max_llm_refine_clues": 20,
+                "max_query_rewrite_sources": 5,
+                "enable_llm_intent_parse": True,
+                "enable_query_rewrite": True,
+                "enable_live_collection": True,
+                "prefer_clue_pool": False,
+                "min_rule_confidence_for_auto_accept": 0.78,
+            },
+        }
+        configured = self.routing_profiles.get(profile)
+        if configured is None:
+            configured_payload: Mapping[str, Any] = {}
+        elif hasattr(configured, "model_dump"):
+            configured_payload = configured.model_dump()
+        elif isinstance(configured, Mapping):
+            configured_payload = configured
+        else:
+            configured_payload = {}
+        return {**default_profiles.get(profile, default_profiles["balanced"]), **dict(configured_payload)}
+
+    @staticmethod
+    def _profile_budget_defaults(profile_config: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "max_elapsed_seconds": profile_config.get(
+                "max_elapsed_seconds",
+                DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS,
+            ),
+            "max_sources": profile_config.get("max_sources"),
+            "max_raw_records": profile_config.get("max_raw_records", 5000),
+            "max_candidate_clues": profile_config.get("max_candidate_clues", 100),
+            "max_llm_calls": profile_config.get("max_llm_calls", 20),
+            "max_llm_tokens": profile_config.get("max_llm_tokens", 20000),
+            "max_llm_classify_records": profile_config.get("max_llm_classify_records", 20),
+            "max_llm_extract_records": profile_config.get("max_llm_extract_records", 20),
+            "max_llm_refine_clues": profile_config.get("max_llm_refine_clues", 20),
+            "max_query_rewrite_sources": profile_config.get("max_query_rewrite_sources", 5),
+        }
+
+    @staticmethod
+    def _stage_deadline_ms(profile_config: Mapping[str, Any], *, default: int) -> int:
+        elapsed = int(profile_config.get("max_elapsed_seconds") or 0)
+        if elapsed <= 0:
+            return default
+        return max(250, min(default, int(elapsed * 1000 / 4)))
+
+    @staticmethod
+    def _disabled_llm_trace(stage: str, *, reason: str, runtime_context: Mapping[str, Any] | None = None) -> Any:
+        runtime_context = dict(runtime_context or {})
+        return type(
+            "DisabledLLMTrace",
+            (),
+            {
+                "model_dump": lambda self: {
+                    "stage": stage,
+                    "llm_ok": False,
+                    "used_fallback": True,
+                    "parsed_json": {
+                        "reason": reason,
+                        "runtime_slang_term_count": len(runtime_context.get("slang_terms", []) or []),
+                        "runtime_few_shot_count": len(runtime_context.get("few_shot_examples", []) or []),
+                    },
+                    "error": reason,
+                }
+            },
+        )()
+
+    @staticmethod
+    def _mask_execution_summary(summary: dict[str, Any]) -> dict[str, Any]:
+        masker = PIIMasker()
+
+        def mask(value: Any) -> Any:
+            if isinstance(value, str):
+                return masker.mask_text(value)
+            if isinstance(value, list):
+                return [mask(item) for item in value]
+            if isinstance(value, dict):
+                return {key: mask(item) for key, item in value.items()}
+            return value
+
+        return mask(summary)
 
     @staticmethod
     def _positive_int(value: Any, default: int) -> int:
@@ -1609,7 +2142,7 @@ class InvestigationOrchestrator:
             parsed = int(value)
         except (TypeError, ValueError):
             return default
-        return parsed if parsed > 0 else default
+        return parsed if parsed >= 0 else default
 
     @staticmethod
     def _optional_positive_int(value: Any) -> int | None:

@@ -7,6 +7,7 @@ from typing import Any, Mapping
 from urllib.parse import quote
 
 from src.backend import LLMGateway
+from src.safety import PromptGuard
 
 
 @dataclass(frozen=True)
@@ -37,9 +38,12 @@ class LLMSourceQueryRewriter:
         intent: Mapping[str, Any],
         plan: Mapping[str, Any],
         runtime_context: Mapping[str, Any] | None = None,
+        budget: Any | None = None,
+        deadline_ms: int | None = None,
     ) -> tuple[dict[str, Any], QueryRewriteTrace]:
         source_payload = dict(source)
         runtime_context = dict(runtime_context or {})
+        guarded_query = PromptGuard().wrap_untrusted_text(query)
         source_name = str(source_payload.get("source_name") or "unknown_source")
         query_url_template = str(source_payload.get("query_url_template") or "").strip()
         if not query_url_template:
@@ -73,7 +77,7 @@ class LLMSourceQueryRewriter:
                 {
                     "role": "user",
                     "content": (
-                        f"user_query={query}\n"
+                        f"user_query={guarded_query}\n"
                         f"intent={dict(intent)}\n"
                         f"plan={dict(plan)}\n"
                         f"source={source_payload}\n"
@@ -85,6 +89,10 @@ class LLMSourceQueryRewriter:
             temperature=0.0,
             max_tokens=250,
             response_format={"type": "json_object"},
+            stage="source_query_rewrite",
+            budget=budget,
+            cache_policy="read_write",
+            deadline_ms=deadline_ms,
         )
 
         parsed = response.parsed_json or {}

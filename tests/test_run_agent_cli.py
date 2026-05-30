@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-from scripts.run_agent_cli import discover_source_config_path, load_local_corpus_records, parse_args, policy_override_from_args
+from scripts.run_agent_cli import DEFAULT_DEMO_QUERY, discover_source_config_path, load_local_corpus_records, main, parse_args, policy_override_from_args
 from src.enhancement.source_intake import MultimodalTextExtractor
 
 
@@ -101,6 +101,8 @@ def test_cli_exposes_tradeoff_profile_and_request_budget_overrides():
             "取一下当天诈骗引流相关的线索信息",
             "--routing-profile",
             "high_recall",
+            "--max-sources",
+            "2",
             "--max-raw-records",
             "20",
             "--max-candidate-clues",
@@ -116,8 +118,22 @@ def test_cli_exposes_tradeoff_profile_and_request_budget_overrides():
     assert args.routing_profile == "high_recall"
     assert policy_override_from_args(args) == {
         "live_collection_enabled": False,
+        "max_sources": 2,
         "max_raw_records": 20,
         "max_candidate_clues": 8,
         "max_llm_refine_clues": 3,
         "max_elapsed_seconds": 5,
     }
+
+
+def test_cli_demo_sample_without_query_uses_default_query(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "scripts.run_agent_cli.run_agent",
+        lambda payload, settings: (200, {"status": "completed", "mode": "test", "query": payload["query"], "execution_summary": {}}),
+    )
+
+    exit_code = main(["--demo-sample", "--show", "summary", "--dry-run"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert DEFAULT_DEMO_QUERY in captured.out
