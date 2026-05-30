@@ -13,6 +13,7 @@ from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
 from src.config_loader import PROJECT_ROOT, Settings, get_settings, resolve_project_path
+from src.infra import RuntimeContainer
 from storage import InMemoryClueRepo, connect
 
 
@@ -146,9 +147,10 @@ class LocalAgentRuntime:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
+        self.container = RuntimeContainer(self.settings)
         self.phase_engine: Any | None = None
         self.investigation_orchestrator: Any | None = None
-        self.clue_repo = InMemoryClueRepo()
+        self.clue_repo = self.container.clue_repo
         self.offline_clue_builder: Any | None = None
         self.task_backend: Any | None = None
         self.llm_gateway: Any | None = None
@@ -159,6 +161,7 @@ class LocalAgentRuntime:
         self.collection_scheduler: Any | None = None
 
     def close(self) -> None:
+        self.container.close()
         for attr in ("sql_backend", "scheduler_backend"):
             backend = getattr(self, attr, None)
             if backend is not None and hasattr(backend, "close"):
@@ -187,43 +190,27 @@ class LocalAgentRuntime:
 
     def get_phase_engine(self) -> Any:
         if self.phase_engine is None:
-            from src.enhancement.engine import PhaseTwoThreeEngine
-
-            self.phase_engine = PhaseTwoThreeEngine()
+            self.phase_engine = self.container.phase_engine()
         return self.phase_engine
 
     def get_llm_gateway(self) -> Any:
         if self.llm_gateway is None:
-            self.llm_gateway = make_llm_gateway(self.settings)
+            self.llm_gateway = self.container.llm_gateway()
         return self.llm_gateway
 
     def get_investigation_orchestrator(self) -> Any:
         if self.investigation_orchestrator is None:
-            from src.agent import InvestigationOrchestrator
-
-            self.investigation_orchestrator = InvestigationOrchestrator(
-                llm_gateway=self.get_llm_gateway(),
-                phase_engine=self.get_phase_engine(),
-                clue_repo=self.clue_repo,
-                investigation_config=self.settings.investigation,
-            )
+            self.investigation_orchestrator = self.container.investigation_orchestrator()
         return self.investigation_orchestrator
 
     def get_offline_clue_builder(self) -> Any:
         if self.offline_clue_builder is None:
-            from src.pipeline import OfflineClueBuilder
-
-            self.offline_clue_builder = OfflineClueBuilder(
-                phase_engine=self.get_phase_engine(),
-                clue_repo=self.clue_repo,
-            )
+            self.offline_clue_builder = self.container.offline_clue_builder()
         return self.offline_clue_builder
 
     def get_task_backend(self) -> Any:
         if self.task_backend is None:
-            from src.backend import TaskBackend
-
-            self.task_backend = TaskBackend(execution_mode="sync")
+            self.task_backend = self.container.task_backend()
         return self.task_backend
 
     def get_sql_backend(self) -> Any | None:

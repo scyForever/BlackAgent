@@ -52,6 +52,25 @@ flowchart TD
 
 ## 3. 现有代码与目标分层映射
 
+### 3.0 已落地的过渡分层
+
+本阶段按 `重构.md` 的“先包一层，不大搬家”策略完成低风险过渡：
+
+- `src/domain/`：建立跨层 domain 命名空间，兼容复用 `storage.schemas`，并补 `RiskClue` 线索卡契约。
+- `src/application/`：新增 `InvestigationService`、`TaskService`、`ReviewService`、`ReportService`，把 CLI/runtime 入口和业务编排隔离。
+- `src/infra/container.py`：集中组装 LLM gateway、phase engine、orchestrator、task backend、clue repo，`LocalAgentRuntime` 继续保持原 API。
+- `src/agent/model_router.py`、`budget_controller.py`、`clue_ranker.py`：把 LLM refine 的路由、预算和 Top-K 排序从 orchestrator 中抽成可测模块。
+- `src/pipeline/intelligence_pipeline.py`：提供 Clean → Dedup → Triage → Classify → Extract → Correlate → Score 的可组合 stage 边界。
+- `src/safety/`：提供 prompt guard、output validator、PII masker，并复用原 `PolicyGuard`。
+- `config/routing_profiles.yaml`：沉淀 fast / balanced / high_recall 的预算参考。
+
+兼容边界：
+
+- CLI 仍是 `python main.py` / `python scripts/run_agent_cli.py`。
+- `src.local_runtime.LocalAgentRuntime` 的公开方法保持不变。
+- `storage/` 暂不搬迁，先通过 `pyproject.toml` include 打包，后续再逐步合入标准包。
+- 现有 `OfflineClueBuilder` 和 `PhaseTwoThreeEngine` 仍是主执行链路，新的 staged pipeline 作为后续迁移面。
+
 ### L1 采集接入层
 
 现有模块：

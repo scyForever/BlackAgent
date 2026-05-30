@@ -1,0 +1,51 @@
+routing_profiles:
+  fast:
+    max_elapsed_seconds: 8
+    max_sources: 1
+    max_raw_records: 500
+    max_candidate_clues: 20
+    max_llm_calls: 3
+    max_llm_tokens: 3000
+    max_llm_classify_records: 5
+    max_llm_extract_records: 5
+    max_llm_refine_clues: 2
+    max_query_rewrite_sources: 0
+    enable_llm_intent_parse: false
+    enable_query_rewrite: false
+    enable_live_collection: false
+    prefer_clue_pool: true
+    min_rule_confidence_for_auto_accept: 0.82
+
+  balanced:
+    max_elapsed_seconds: 30
+    max_sources: 2
+    max_raw_records: 3000
+    max_candidate_clues: 50
+    max_llm_calls: 10
+    max_llm_tokens: 10000
+    max_llm_classify_records: 20
+    max_llm_extract_records: 20
+    max_llm_refine_clues: 6
+    max_query_rewrite_sources: 2
+    enable_llm_intent_parse: true
+    enable_query_rewrite: true
+    enable_live_collection: true
+    prefer_clue_pool: true
+    min_rule_confidence_for_auto_accept: 0.85
+
+  high_recall:
+    max_elapsed_seconds: 180
+    max_sources: 5
+    max_raw_records: 20000
+    max_candidate_clues: 200
+    max_llm_calls: 40
+    max_llm_tokens: 50000
+    max_llm_classify_records: 100
+    max_llm_extract_records: 100
+    max_llm_refine_clues: 20
+    max_query_rewrite_sources: 5
+    enable_llm_intent_parse: true
+    enable_query_rewrite: true
+    enable_live_collection: true
+    prefer_clue_pool: false
+    min_rule_confidence_for_auto_accept: 0.78

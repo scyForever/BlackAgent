@@ -21,7 +21,10 @@ from src.scheduling.layered_collection import (
 )
 from storage import ClueRepo, InMemoryClueRepo, InMemoryReviewRepo
 
+from .budget_controller import BudgetController, RuntimeBudget
+from .clue_ranker import ClueRanker
 from .exploration_agent import ExplorationAgent
+from .model_router import ModelRouter
 from .query_rewriter import LLMSourceQueryRewriter
 from .user_request_parser import (
     DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS,
@@ -101,6 +104,8 @@ class InvestigationOrchestrator:
         self.investigation_config = investigation_config or InvestigationConfig()
         self.clue_refiner = LLMClueRefiner(llm_gateway)
         self.query_rewriter = LLMSourceQueryRewriter(llm_gateway)
+        self.model_router = ModelRouter()
+        self.clue_ranker = ClueRanker()
         self.exploration_agent = ExplorationAgent()
         self.offline_builder = OfflineClueBuilder(
             phase_engine=self.phase_engine,
@@ -313,7 +318,7 @@ class InvestigationOrchestrator:
             )
             if planning_exhausted_before_first_collection:
                 live_collection_reasons.append("elapsed_budget_reset_for_first_live_collection")
-                collection_deadline_at = self._deadline_at(time.perf_counter(), budget["max_elapsed_seconds"])
+                collection_deadline_at = None
 
             if self._deadline_exhausted(collection_deadline_at):
                 live_collection_reasons.append("elapsed_budget_exhausted_before_live_collection")
@@ -350,7 +355,7 @@ class InvestigationOrchestrator:
                         and not retrieved_clues
                     ):
                         live_collection_reasons.append("elapsed_budget_reset_after_query_rewrite_for_first_live_collection")
-                        collection_deadline_at = self._deadline_at(time.perf_counter(), budget["max_elapsed_seconds"])
+                        collection_deadline_at = None
                 live_records, collection_runs = self._collect_records_from_sources(
                     selected_sources,
                     collect_source_records=collect_source_records,
@@ -405,13 +410,15 @@ class InvestigationOrchestrator:
         requested_max_refine = 0 if plan_execution_controls.refine_policy == "off" else int(budget["max_llm_refine_clues"] or 0)
         effective_max_refine = max(0, requested_max_refine)
         refine_budget_reasons: list[str] = []
-        refined_high_quality, refined_candidates, refine_traces = self._refine_retrieved_clues(
+        refined_high_quality, refined_candidates, refine_traces, model_route_traces, budget_controller_snapshot = self._refine_retrieved_clues(
             merged_candidates,
             query=query,
             intent=intent_payload,
             quality_gate=runtime_quality_gate,
             max_refine=effective_max_refine,
             deadline_at=deadline_at,
+            routing_profile=self._normalize_routing_profile(routing_profile),
+            runtime_budget=RuntimeBudget.from_mapping(budget),
         )
         high_quality_clues = refined_high_quality
         candidate_clues = refined_candidates
@@ -459,6 +466,9 @@ class InvestigationOrchestrator:
             "requested_max_llm_refine_clues": requested_max_refine,
             "effective_max_llm_refine_clues": effective_max_refine,
             "refine_budget_reasons": refine_budget_reasons,
+            "model_route_count": len(model_route_traces),
+            "model_route_summary": self._summarize_model_routes(model_route_traces),
+            "budget_controller": budget_controller_snapshot,
             "exploration_hypothesis_count": len(exploration_hypotheses),
             "collection_layers_executed": [str(item.get("collection_layer") or "") for item in collection_runs if item.get("fetched_count", 0) > 0],
         }
@@ -479,6 +489,8 @@ class InvestigationOrchestrator:
                 used_clue_pool=bool(pool_clues_for_merge or (retrieved_clues and not fresh_records)),
                 elapsed_budget_exhausted=self._deadline_exhausted(deadline_at),
                 semantic_local_record_count=len(semantic_local_records),
+                model_route_traces=model_route_traces,
+                budget_controller_snapshot=budget_controller_snapshot,
             )
         execution_summary["routing_profile"] = self._normalize_routing_profile(routing_profile)
         processed_records = provided_records if provided_records else (live_records or semantic_local_records)
@@ -494,7 +506,14 @@ class InvestigationOrchestrator:
             candidate_count=len(candidate_clues),
             intent=intent_payload,
             investigation_plan=plan_payload,
-            llm_traces=[intent_trace.model_dump(), plan_trace.model_dump(), *semantic_local_traces, *rewrite_traces, *refine_traces],
+            llm_traces=[
+                intent_trace.model_dump(),
+                plan_trace.model_dump(),
+                *semantic_local_traces,
+                *rewrite_traces,
+                *model_route_traces,
+                *refine_traces,
+            ],
             selected_sources=selected_sources,
             collection_runs=collection_runs,
             execution_summary=execution_summary,
@@ -809,6 +828,11 @@ class InvestigationOrchestrator:
             "max_raw_records": self._positive_int(raw.get("max_raw_records"), 5000),
             "max_candidate_clues": self._positive_int(raw.get("max_candidate_clues"), candidate_budget_default),
             "max_llm_refine_clues": self._positive_int(raw.get("max_llm_refine_clues"), 20),
+            "max_llm_calls": self._positive_int(raw.get("max_llm_calls"), max(20, self._positive_int(raw.get("max_llm_refine_clues"), 20))),
+            "max_llm_tokens": self._positive_int(raw.get("max_llm_tokens"), 20_000),
+            "max_llm_classify_records": self._positive_int(raw.get("max_llm_classify_records"), 20),
+            "max_llm_extract_records": self._positive_int(raw.get("max_llm_extract_records"), 20),
+            "max_query_rewrite_sources": self._positive_int(raw.get("max_query_rewrite_sources"), 5),
             "max_elapsed_seconds": elapsed_budget,
         }
         if budget["max_sources"] is not None and available_source_count > 0:
@@ -986,27 +1010,80 @@ class InvestigationOrchestrator:
         quality_gate: RuntimeQualityGate,
         max_refine: int,
         deadline_at: float | None = None,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        routing_profile: str | None = None,
+        runtime_budget: RuntimeBudget | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         refined: list[dict[str, Any]] = []
         traces: list[dict[str, Any]] = []
-        for index, clue in enumerate(clues):
+        model_route_traces: list[dict[str, Any]] = []
+        budget_controller = BudgetController(runtime_budget or RuntimeBudget(max_llm_refine_clues=max_refine))
+        routed_clues = self.clue_ranker.rank(clues)
+        active_router = self.model_router.with_profile(routing_profile)
+        pending_refine: list[dict[str, Any]] = []
+        pending_meta: list[dict[str, Any]] = []
+        for clue in routed_clues:
             item = dict(clue)
-            if index < max_refine and not self._deadline_exhausted(deadline_at):
-                item, trace = self.clue_refiner.refine(
-                    item,
-                    query=query,
-                    intent=intent,
-                    runtime_context=self.phase_engine.runtime_prompt_context(
-                        label=self._runtime_context_label(intent),
-                        include_candidates=True,
-                    ),
+            route_decision = active_router.decide_clue_refinement(item)
+            route_trace = {
+                "stage": "model_route",
+                "route_target": "clue_refine",
+                "clue_id": str(item.get("clue_id") or "unknown_clue"),
+                **route_decision.model_dump(),
+            }
+            model_route_traces.append(route_trace)
+            if route_decision.action == "llm_refine_only":
+                item["model_route"] = route_decision.model_dump()
+            should_refine = (
+                route_decision.action == "llm_refine_only"
+                and len(pending_refine) < max_refine
+                and not self._deadline_exhausted(deadline_at)
+                and budget_controller.allow_llm_call(stage="clue_refine", estimated_tokens=route_decision.max_tokens)
+            )
+            if should_refine:
+                pending_refine.append(item)
+                pending_meta.append(route_decision.model_dump())
+            elif route_decision.action == "llm_refine_only":
+                route_trace["skipped_reason"] = (
+                    "elapsed_budget_exhausted"
+                    if self._deadline_exhausted(deadline_at)
+                    else "llm_refine_budget_exhausted"
+                    if len(pending_refine) >= max_refine
+                    else "budget_controller_denied"
                 )
-                traces.append(trace)
             refined.append(item)
+        if pending_refine:
+            max_tokens = sum(int(meta.get("max_tokens") or 0) for meta in pending_meta) or 900
+            deadline_ms = max(int(meta.get("deadline_ms") or 0) for meta in pending_meta) or None
+            runtime_context = self.phase_engine.runtime_prompt_context(
+                label=self._runtime_context_label(intent),
+                include_candidates=True,
+            )
+            enriched_batch, batch_traces = self.clue_refiner.refine_batch(
+                pending_refine,
+                query=query,
+                intent=intent,
+                runtime_context=runtime_context,
+                max_tokens=max_tokens,
+                deadline_ms=deadline_ms,
+                budget=budget_controller,
+            )
+            by_clue_id = {str(item.get("clue_id") or ""): item for item in enriched_batch}
+            meta_by_clue_id = {
+                str(item.get("clue_id") or ""): meta
+                for item, meta in zip(pending_refine, pending_meta, strict=False)
+            }
+            refined = [by_clue_id.get(str(item.get("clue_id") or ""), item) for item in refined]
+            for trace in batch_traces:
+                meta = meta_by_clue_id.get(str(trace.get("clue_id") or ""), {})
+                trace["model_route_reason"] = meta.get("reason")
+                trace["model_route_priority"] = meta.get("priority")
+                trace["max_tokens_budgeted"] = meta.get("max_tokens")
+            traces.extend(batch_traces)
+        for item in refined:
             self.clue_repo.save(item)
         high_quality = [clue for clue in refined if self._passes_runtime_quality_gate(clue, quality_gate=quality_gate)]
         candidates = [clue for clue in refined if clue not in high_quality]
-        return high_quality, candidates, traces
+        return high_quality, candidates, traces, model_route_traces, budget_controller.snapshot()
 
     def _runtime_quality_gate(
         self,
@@ -1200,6 +1277,8 @@ class InvestigationOrchestrator:
         used_clue_pool: bool,
         elapsed_budget_exhausted: bool,
         semantic_local_record_count: int,
+        model_route_traces: list[dict[str, Any]] | None = None,
+        budget_controller_snapshot: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
         max_sources = budget.get("max_sources")
@@ -1234,8 +1313,18 @@ class InvestigationOrchestrator:
             "used_live_collection": used_live_collection,
             "used_clue_pool": used_clue_pool,
             "elapsed_budget_exhausted": elapsed_budget_exhausted,
+            "model_route_summary": self._summarize_model_routes(model_route_traces or []),
+            "budget_controller": dict(budget_controller_snapshot or {}),
         }
         return telemetry
+
+    @staticmethod
+    def _summarize_model_routes(model_route_traces: list[dict[str, Any]]) -> dict[str, int]:
+        summary: dict[str, int] = {}
+        for trace in model_route_traces:
+            action = str(trace.get("action") or "unknown")
+            summary[action] = summary.get(action, 0) + 1
+        return summary
 
     def _collect_semantic_local_records(
         self,

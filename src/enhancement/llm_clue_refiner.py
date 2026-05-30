@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
@@ -94,6 +95,99 @@ class LLMClueRefiner:
             "error": response.error,
         }
         return enriched, trace
+
+    def refine_batch(
+        self,
+        clues: list[Mapping[str, Any]],
+        *,
+        query: str,
+        intent: Mapping[str, Any],
+        runtime_context: Mapping[str, Any] | None = None,
+        max_tokens: int = 900,
+        deadline_ms: int | None = None,
+        budget: Any | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Refine multiple clue cards in one LLM call with per-clue fallback."""
+
+        materialized = [dict(clue) for clue in clues]
+        if not materialized:
+            return [], []
+        runtime_context = dict(runtime_context or {})
+        few_shot_examples = runtime_context.get("few_shot_examples") if isinstance(runtime_context.get("few_shot_examples"), list) else []
+        slang_terms = runtime_context.get("slang_terms") if isinstance(runtime_context.get("slang_terms"), list) else []
+        response = self.llm_gateway.chat(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are BlackAgent's batch clue refiner. Return only JSON with an items array. "
+                        "Each item must contain clue_id, refined_summary, confidence_delta, "
+                        "review_required, and refinement_reasons. Do not invent facts beyond the evidence."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"query={query}\n"
+                        f"intent={dict(intent)}\n"
+                        f"clues={json.dumps(materialized, ensure_ascii=False, default=str)}\n"
+                        f"runtime_slang_terms={slang_terms[:12]}\n"
+                        f"runtime_few_shot_examples={few_shot_examples[:4]}"
+                    ),
+                },
+            ],
+            temperature=0.0,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+            stage="clue_refine",
+            budget=budget,
+            cache_policy="read_write",
+            deadline_ms=deadline_ms,
+        )
+        parsed = response.parsed_json or {}
+        parsed_items = parsed.get("items") if isinstance(parsed.get("items"), list) else []
+        payload_by_id = {
+            str(item.get("clue_id") or ""): item
+            for item in parsed_items
+            if isinstance(item, Mapping) and str(item.get("clue_id") or "").strip()
+        }
+
+        enriched_items: list[dict[str, Any]] = []
+        traces: list[dict[str, Any]] = []
+        for clue in materialized:
+            clue_id = str(clue.get("clue_id") or "unknown_clue")
+            candidate_payload = payload_by_id.get(clue_id)
+            usable = isinstance(candidate_payload, Mapping) and isinstance(candidate_payload.get("refined_summary"), str)
+            payload = _fallback_refinement(clue) if not usable else _normalize_payload(candidate_payload, clue)
+            final_confidence = round(max(0.0, min(float(clue.get("confidence") or 0.0) + float(payload["confidence_delta"]), 0.99)), 4)
+            refined = RefinedClue(
+                clue_id=clue_id,
+                refined_summary=str(payload["refined_summary"]),
+                confidence_delta=float(payload["confidence_delta"]),
+                final_confidence=final_confidence,
+                review_required=bool(payload["review_required"]),
+                refinement_reasons=[str(item) for item in payload.get("refinement_reasons", [])],
+                llm_ok=response.ok,
+                used_fallback=not usable,
+            )
+            enriched = dict(clue)
+            enriched["refinement"] = refined.model_dump()
+            enriched["confidence"] = final_confidence
+            enriched_items.append(enriched)
+            traces.append(
+                {
+                    "stage": "clue_refine",
+                    "mode": "batch",
+                    "clue_id": clue_id,
+                    "llm_ok": response.ok,
+                    "used_fallback": not usable,
+                    "runtime_slang_term_count": len(slang_terms),
+                    "runtime_few_shot_count": len(few_shot_examples),
+                    "parsed_json": candidate_payload if candidate_payload else None,
+                    "error": response.error,
+                }
+            )
+        return enriched_items, traces
 
 
 def _normalize_payload(payload: Mapping[str, Any], clue: Mapping[str, Any]) -> dict[str, Any]:

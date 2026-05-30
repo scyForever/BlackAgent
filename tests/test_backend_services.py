@@ -1,5 +1,6 @@
 import json
 
+from src.agent import BudgetController, RuntimeBudget
 from src.backend import LLMGateway, TaskBackend, TaskStatus
 from src.backend import llm_gateway
 
@@ -304,3 +305,48 @@ def test_llm_gateway_timeout_returns_normalized_error(monkeypatch):
     assert response.ok is False
     assert response.network_attempted is True
     assert response.error.startswith("timeout:")
+
+
+def test_llm_gateway_records_stage_stats_uses_cache_and_respects_budget():
+    gateway = LLMGateway(
+        base_url="https://llm.invalid/v1",
+        api_key=None,
+        model="mock-risk-model",
+        mock=True,
+    )
+    budget = BudgetController(RuntimeBudget(max_llm_calls=1, max_llm_tokens=200, max_llm_refine_clues=1))
+    messages = [{"role": "user", "content": "提取风险实体并返回 JSON"}]
+
+    first = gateway.chat(
+        messages,
+        stage="clue_refine",
+        max_tokens=16,
+        budget=budget,
+        cache_policy="read_write",
+        deadline_ms=1000,
+    )
+    second = gateway.chat(
+        messages,
+        stage="clue_refine",
+        max_tokens=16,
+        budget=budget,
+        cache_policy="read_write",
+        deadline_ms=1000,
+    )
+    denied = gateway.chat(
+        [{"role": "user", "content": "another uncached call"}],
+        stage="clue_refine",
+        max_tokens=16,
+        budget=budget,
+        cache_policy="none",
+    )
+
+    stats = gateway.stats()
+    assert first.ok is True
+    assert second.ok is True
+    assert second.raw["cache_hit"] is True
+    assert denied.ok is False
+    assert denied.error == "budget_exhausted"
+    assert stats[0]["stage"] == "clue_refine"
+    assert stats[1]["cache_hit"] is True
+    assert stats[2]["error"] == "budget_exhausted"

@@ -13,6 +13,7 @@ import json
 import os
 import re
 import socket
+import time
 import urllib.error
 import urllib.request as urllib_request
 from dataclasses import dataclass, field
@@ -84,6 +85,32 @@ class LLMGatewayResponse:
         }
 
 
+@dataclass(frozen=True)
+class LLMCallStats:
+    """Observable metadata for one gateway call."""
+
+    stage: str
+    model: str
+    prompt_tokens_estimated: int
+    completion_tokens_limit: int
+    elapsed_ms: int
+    cache_hit: bool
+    ok: bool
+    error: str | None = None
+
+    def model_dump(self) -> dict[str, Any]:
+        return {
+            "stage": self.stage,
+            "model": self.model,
+            "prompt_tokens_estimated": self.prompt_tokens_estimated,
+            "completion_tokens_limit": self.completion_tokens_limit,
+            "elapsed_ms": self.elapsed_ms,
+            "cache_hit": self.cache_hit,
+            "ok": self.ok,
+            "error": self.error,
+        }
+
+
 class LLMGateway:
     """Minimal OpenAI-compatible LLM adapter with deterministic mock mode."""
 
@@ -127,6 +154,8 @@ class LLMGateway:
             ),
             extra_body=resolved_extra_body,
         )
+        self._cache: dict[str, LLMGatewayResponse] = {}
+        self._stats: list[LLMCallStats] = []
 
     @property
     def endpoint(self) -> str:
@@ -140,6 +169,10 @@ class LLMGateway:
         max_tokens: int | None = None,
         response_format: Mapping[str, Any] | None = None,
         extra_body: Mapping[str, Any] | None = None,
+        stage: str = "chat",
+        budget: Any | None = None,
+        cache_policy: str = "none",
+        deadline_ms: int | None = None,
     ) -> LLMGatewayResponse:
         """Send or simulate a chat completion request."""
 
@@ -149,6 +182,10 @@ class LLMGateway:
             max_tokens=max_tokens,
             response_format=response_format,
             extra_body=extra_body,
+            stage=stage,
+            budget=budget,
+            cache_policy=cache_policy,
+            deadline_ms=deadline_ms,
         )
 
     def chat_completions(
@@ -159,9 +196,14 @@ class LLMGateway:
         max_tokens: int | None = None,
         response_format: Mapping[str, Any] | None = None,
         extra_body: Mapping[str, Any] | None = None,
+        stage: str = "chat",
+        budget: Any | None = None,
+        cache_policy: str = "none",
+        deadline_ms: int | None = None,
     ) -> LLMGatewayResponse:
         """Call an OpenAI-compatible ``/chat/completions`` endpoint."""
 
+        started_at = time.perf_counter()
         payload = self._build_payload(
             messages,
             temperature=temperature,
@@ -169,12 +211,75 @@ class LLMGateway:
             response_format=response_format,
             extra_body=extra_body,
         )
+        stage_name = str(stage or "chat")
+        completion_limit = int(max_tokens or 0)
+        estimated_tokens = _estimate_tokens(messages) + completion_limit
+        cache_key = _cache_key(payload)
+        normalized_cache_policy = str(cache_policy or "none").strip().lower()
+
+        if normalized_cache_policy in {"read", "read_write"} and cache_key in self._cache:
+            cached = self._cache[cache_key]
+            response = LLMGatewayResponse(
+                ok=cached.ok,
+                model=cached.model,
+                content=cached.content,
+                raw={**cached.raw, "cache_hit": True},
+                parsed_json=cached.parsed_json,
+                network_attempted=False,
+                error=cached.error,
+                status_code=cached.status_code,
+            )
+            self._record_stats(
+                stage=stage_name,
+                started_at=started_at,
+                prompt_tokens_estimated=estimated_tokens,
+                completion_tokens_limit=completion_limit,
+                cache_hit=True,
+                response=response,
+            )
+            return response
+
+        if budget is not None and hasattr(budget, "allow_llm_call"):
+            allowed = budget.allow_llm_call(stage=stage_name, estimated_tokens=estimated_tokens)
+            if not allowed:
+                response = self._blocked_response("budget_exhausted", f"LLM budget denied for stage={stage_name}")
+                self._record_stats(
+                    stage=stage_name,
+                    started_at=started_at,
+                    prompt_tokens_estimated=estimated_tokens,
+                    completion_tokens_limit=completion_limit,
+                    cache_hit=False,
+                    response=response,
+                )
+                return response
 
         if self.config.mock or self.config.dry_run:
-            return self._mock_response(payload)
+            response = self._mock_response(payload)
+            if budget is not None and hasattr(budget, "consume_llm"):
+                budget.consume_llm(stage=stage_name, estimated_tokens=estimated_tokens)
+            if normalized_cache_policy in {"write", "read_write"}:
+                self._cache[cache_key] = response
+            self._record_stats(
+                stage=stage_name,
+                started_at=started_at,
+                prompt_tokens_estimated=estimated_tokens,
+                completion_tokens_limit=completion_limit,
+                cache_hit=False,
+                response=response,
+            )
+            return response
 
         if not self.config.api_key:
-            return self._blocked_response("missing_api_key", "api_key is required before a real LLM request")
+            response = self._blocked_response("missing_api_key", "api_key is required before a real LLM request")
+            self._record_stats(
+                stage=stage_name,
+                started_at=started_at,
+                prompt_tokens_estimated=estimated_tokens,
+                completion_tokens_limit=completion_limit,
+                cache_hit=False,
+                response=response,
+            )
+            return response
 
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {
@@ -193,13 +298,17 @@ class LLMGateway:
             headers=headers,
         )
 
+        timeout_seconds = self.config.timeout_seconds
+        if deadline_ms is not None and deadline_ms > 0:
+            timeout_seconds = min(timeout_seconds, max(float(deadline_ms) / 1000.0, 0.001))
+
         try:
-            with urllib_request.urlopen(request, timeout=self.config.timeout_seconds) as response:  # noqa: S310
+            with urllib_request.urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
                 raw_body = response.read().decode("utf-8")
                 try:
                     raw = json.loads(raw_body) if raw_body else {}
                 except json.JSONDecodeError as exc:
-                    return LLMGatewayResponse(
+                    gateway_response = LLMGatewayResponse(
                         ok=False,
                         model=self.config.model,
                         content=raw_body,
@@ -208,10 +317,19 @@ class LLMGateway:
                         error=f"invalid_json_response:{exc.msg}",
                         status_code=getattr(response, "status", None),
                     )
+                    self._record_stats(
+                        stage=stage_name,
+                        started_at=started_at,
+                        prompt_tokens_estimated=estimated_tokens,
+                        completion_tokens_limit=completion_limit,
+                        cache_hit=False,
+                        response=gateway_response,
+                    )
+                    return gateway_response
                 status_code = getattr(response, "status", None)
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            return LLMGatewayResponse(
+            response = LLMGatewayResponse(
                 ok=False,
                 model=self.config.model,
                 content="",
@@ -220,8 +338,17 @@ class LLMGateway:
                 error=f"http_error:{exc.code}",
                 status_code=exc.code,
             )
+            self._record_stats(
+                stage=stage_name,
+                started_at=started_at,
+                prompt_tokens_estimated=estimated_tokens,
+                completion_tokens_limit=completion_limit,
+                cache_hit=False,
+                response=response,
+            )
+            return response
         except urllib.error.URLError as exc:
-            return LLMGatewayResponse(
+            response = LLMGatewayResponse(
                 ok=False,
                 model=self.config.model,
                 content="",
@@ -229,8 +356,17 @@ class LLMGateway:
                 network_attempted=True,
                 error=f"url_error:{exc.reason}",
             )
+            self._record_stats(
+                stage=stage_name,
+                started_at=started_at,
+                prompt_tokens_estimated=estimated_tokens,
+                completion_tokens_limit=completion_limit,
+                cache_hit=False,
+                response=response,
+            )
+            return response
         except (TimeoutError, socket.timeout) as exc:
-            return LLMGatewayResponse(
+            response = LLMGatewayResponse(
                 ok=False,
                 model=self.config.model,
                 content="",
@@ -238,8 +374,17 @@ class LLMGateway:
                 network_attempted=True,
                 error=f"timeout:{exc}",
             )
+            self._record_stats(
+                stage=stage_name,
+                started_at=started_at,
+                prompt_tokens_estimated=estimated_tokens,
+                completion_tokens_limit=completion_limit,
+                cache_hit=False,
+                response=response,
+            )
+            return response
         except OSError as exc:
-            return LLMGatewayResponse(
+            response = LLMGatewayResponse(
                 ok=False,
                 model=self.config.model,
                 content="",
@@ -247,9 +392,18 @@ class LLMGateway:
                 network_attempted=True,
                 error=f"os_error:{exc}",
             )
+            self._record_stats(
+                stage=stage_name,
+                started_at=started_at,
+                prompt_tokens_estimated=estimated_tokens,
+                completion_tokens_limit=completion_limit,
+                cache_hit=False,
+                response=response,
+            )
+            return response
 
         content = _extract_message_content(raw)
-        return LLMGatewayResponse(
+        response = LLMGatewayResponse(
             ok=True,
             model=str(raw.get("model") or self.config.model),
             content=content,
@@ -257,6 +411,50 @@ class LLMGateway:
             parsed_json=_try_parse_json(content),
             network_attempted=True,
             status_code=status_code,
+        )
+        if budget is not None and hasattr(budget, "consume_llm"):
+            budget.consume_llm(stage=stage_name, estimated_tokens=estimated_tokens)
+        if normalized_cache_policy in {"write", "read_write"}:
+            self._cache[cache_key] = response
+        self._record_stats(
+            stage=stage_name,
+            started_at=started_at,
+            prompt_tokens_estimated=estimated_tokens,
+            completion_tokens_limit=completion_limit,
+            cache_hit=False,
+            response=response,
+        )
+        return response
+
+    def stats(self) -> list[dict[str, Any]]:
+        """Return call statistics accumulated by this gateway instance."""
+
+        return [item.model_dump() for item in self._stats]
+
+    def clear_cache(self) -> None:
+        self._cache.clear()
+
+    def _record_stats(
+        self,
+        *,
+        stage: str,
+        started_at: float,
+        prompt_tokens_estimated: int,
+        completion_tokens_limit: int,
+        cache_hit: bool,
+        response: LLMGatewayResponse,
+    ) -> None:
+        self._stats.append(
+            LLMCallStats(
+                stage=stage,
+                model=response.model,
+                prompt_tokens_estimated=prompt_tokens_estimated,
+                completion_tokens_limit=completion_tokens_limit,
+                elapsed_ms=int((time.perf_counter() - started_at) * 1000),
+                cache_hit=cache_hit,
+                ok=response.ok,
+                error=response.error,
+            )
         )
 
     def _build_payload(
@@ -375,6 +573,16 @@ def _try_parse_json(content: str) -> dict[str, Any] | None:
     return None
 
 
+def _estimate_tokens(messages: Sequence[Mapping[str, Any]]) -> int:
+    text = json.dumps(list(messages), ensure_ascii=False, sort_keys=True, default=str)
+    return max(1, len(text) // 4)
+
+
+def _cache_key(payload: Mapping[str, Any]) -> str:
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _strip_markdown_code_fence(content: str) -> str | None:
     if not isinstance(content, str):
         return None
@@ -451,4 +659,4 @@ def _normalize_max_tokens_param(value: str) -> str:
     return normalized
 
 
-__all__ = ["LLMGateway", "LLMGatewayConfig", "LLMGatewayResponse", "urllib_request"]
+__all__ = ["LLMCallStats", "LLMGateway", "LLMGatewayConfig", "LLMGatewayResponse", "urllib_request"]

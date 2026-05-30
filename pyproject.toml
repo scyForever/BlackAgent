@@ -25,7 +25,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["src*"]
+include = ["src*", "storage*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

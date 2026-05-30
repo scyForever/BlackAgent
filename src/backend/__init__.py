@@ -5,7 +5,7 @@ workers can be wired into the API layer later without changing the existing
 MVP and phase-2/3 pipelines.
 """
 
-from .llm_gateway import LLMGateway, LLMGatewayConfig, LLMGatewayResponse
+from .llm_gateway import LLMCallStats, LLMGateway, LLMGatewayConfig, LLMGatewayResponse
 from .task_backend import TaskBackend, TaskError, TaskRecord, TaskStatus
 from .enforcement import (
     EnforcementAction,
@@ -21,6 +21,7 @@ __all__ = [
     "EnforcementGateway",
     "EnforcementPolicy",
     "EnforcementResult",
+    "LLMCallStats",
     "LLMGateway",
     "LLMGatewayConfig",
     "LLMGatewayResponse",
