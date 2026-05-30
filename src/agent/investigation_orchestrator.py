@@ -22,17 +22,16 @@ from src.scheduling.layered_collection import (
 from src.safety import PIIMasker
 from storage import ClueRepo, InMemoryClueRepo, InMemoryReviewRepo
 
-from .budget_controller import BudgetController, RuntimeBudget
+from .budget_controller import BudgetController
 from .clue_ranker import ClueRanker
 from .exploration_agent import ExplorationAgent
 from .model_router import ModelRouter
 from .query_rewriter import LLMSourceQueryRewriter
+from .services import ClueRefinementService, InitialCandidateRetrievalService, RunStatePreparationService
 from .user_request_parser import (
     DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS,
     LLMInvestigationPlanner,
     LLMUserRequestParser,
-    _fallback_intent,
-    _fallback_plan,
 )
 
 
@@ -100,6 +99,7 @@ class _RunPlanningState:
     plan_execution_controls: PlanExecutionControls
     budget: dict[str, Any]
     deadline_at: float | None
+    gateway_stats_start: int
     available_sources_list: list[dict[str, Any]]
     retrieval_filters: dict[str, Any]
     selected_sources: list[dict[str, Any]]
@@ -183,6 +183,20 @@ class InvestigationOrchestrator:
         self.model_router = ModelRouter()
         self.clue_ranker = ClueRanker()
         self.exploration_agent = ExplorationAgent()
+        self.run_state_preparation = RunStatePreparationService(self)
+        self.initial_candidate_retrieval = InitialCandidateRetrievalService(self)
+        self.clue_refinement = ClueRefinementService(
+            clue_refiner=self.clue_refiner,
+            clue_ranker=self.clue_ranker,
+            model_router=self.model_router,
+            clue_repo=self.clue_repo,
+            runtime_context_factory=lambda intent: self.phase_engine.runtime_prompt_context(
+                label=self._runtime_context_label(intent),
+                include_candidates=True,
+            ),
+            quality_gate_checker=self._passes_runtime_quality_gate,
+            deadline_checker=self._deadline_exhausted,
+        )
         self.offline_builder = OfflineClueBuilder(
             phase_engine=self.phase_engine,
             quality_evaluator=self.quality_evaluator,
@@ -250,19 +264,20 @@ class InvestigationOrchestrator:
         routing_profile: str | None = None,
         policy_override: InvestigationPolicyOverride | Mapping[str, Any] | None = None,
     ) -> InvestigationRunResult:
-        run_state = self._prepare_run_state(
+        run_state = self.run_state_preparation.prepare(
             query=query,
             available_sources=available_sources,
             max_sources=max_sources,
             retrieval_filters=retrieval_filters,
             routing_profile=routing_profile,
             policy_override=policy_override,
+            run_state_type=_RunPlanningState,
         )
-        retrieval_state = self._retrieve_initial_candidates(
+        retrieval_state = self.initial_candidate_retrieval.retrieve(
             query=query,
             records=records,
             run_state=run_state,
-            collect_source_records=collect_source_records,
+            retrieval_state_type=_RetrievalState,
         )
         semantic_state = self._run_semantic_local_phase(
             query=query,
@@ -327,138 +342,6 @@ class InvestigationOrchestrator:
             high_quality_clues=refinement_state.high_quality_clues,
             candidate_clues=refinement_state.candidate_clues,
             exploration_hypotheses=refinement_state.exploration_hypotheses,
-        )
-
-    def _prepare_run_state(
-        self,
-        *,
-        query: str,
-        available_sources: Iterable[Mapping[str, Any]],
-        max_sources: int | None,
-        retrieval_filters: Mapping[str, Any] | None,
-        routing_profile: str | None,
-        policy_override: InvestigationPolicyOverride | Mapping[str, Any] | None,
-    ) -> _RunPlanningState:
-        started_at = time.perf_counter()
-        normalized_policy_override = self._normalize_policy_override(policy_override)
-        profile = self._normalize_routing_profile(routing_profile)
-        profile_config = self._routing_profile_config(profile) if (routing_profile is not None or self.routing_profiles) else {}
-        effective_config = self._effective_investigation_config(
-            routing_profile=routing_profile,
-            policy_override=normalized_policy_override,
-        )
-        initial_runtime_context = self._planner_runtime_context()
-        budget_controller = BudgetController(RuntimeBudget.from_mapping(self._profile_budget_defaults(profile_config)))
-        if bool(profile_config.get("enable_llm_intent_parse", True)):
-            intent, intent_trace = self.intent_parser.parse(
-                query,
-                runtime_context=initial_runtime_context,
-                budget=budget_controller,
-                deadline_ms=self._stage_deadline_ms(profile_config, default=1500),
-            )
-        else:
-            intent = _fallback_intent(query, runtime_context=initial_runtime_context)
-            intent_trace = self._disabled_llm_trace(
-                "intent_parse",
-                reason="profile_disabled_llm_intent_parse",
-                runtime_context=initial_runtime_context,
-            )
-        intent_payload = intent.model_dump()
-        available_sources_list = [dict(source) for source in available_sources]
-        if profile == "fast":
-            plan = _fallback_plan(intent, runtime_context=initial_runtime_context)
-            plan_trace = self._disabled_llm_trace(
-                "investigation_plan",
-                reason="profile_fast_uses_deterministic_fallback_plan",
-                runtime_context=initial_runtime_context,
-            )
-        else:
-            plan, plan_trace = self.planner.plan(
-                query,
-                intent,
-                available_sources=available_sources_list,
-                runtime_context=initial_runtime_context,
-                budget=budget_controller,
-                deadline_ms=self._stage_deadline_ms(profile_config, default=2500),
-            )
-        plan_payload = plan.model_dump()
-        runtime_quality_gate = self._runtime_quality_gate(
-            intent=intent_payload,
-            plan=plan_payload,
-            policy_override=normalized_policy_override,
-        )
-        plan_execution_controls = self._apply_profile_execution_controls(
-            self._plan_execution_controls(plan_payload),
-            profile_config=profile_config,
-            profile=profile,
-        )
-        budget = self._resolve_budget(
-            plan_payload,
-            explicit_max_sources=max_sources,
-            available_source_count=len(available_sources_list),
-            policy_override=normalized_policy_override,
-            profile_config=profile_config,
-        )
-        budget_controller.budget = RuntimeBudget.from_mapping(budget)
-        selected_sources = self._select_sources(
-            plan_payload,
-            available_sources_list,
-            max_sources=budget["max_sources"],
-            risk_types=intent.risk_types,
-        )
-        if isinstance(budget.get("max_sources"), int) and budget["max_sources"] > 0:
-            selected_sources = selected_sources[: int(budget["max_sources"])]
-        return _RunPlanningState(
-            started_at=started_at,
-            normalized_policy_override=normalized_policy_override,
-            profile=profile,
-            profile_config=profile_config,
-            effective_config=effective_config,
-            budget_controller=budget_controller,
-            intent_payload=intent_payload,
-            plan_payload=plan_payload,
-            intent_trace=intent_trace,
-            plan_trace=plan_trace,
-            runtime_quality_gate=runtime_quality_gate,
-            plan_execution_controls=plan_execution_controls,
-            budget=budget,
-            deadline_at=self._deadline_at(started_at, budget["max_elapsed_seconds"]),
-            available_sources_list=available_sources_list,
-            retrieval_filters=dict(retrieval_filters or {}),
-            selected_sources=selected_sources,
-        )
-
-    def _retrieve_initial_candidates(
-        self,
-        *,
-        query: str,
-        records: Iterable[Mapping[str, Any] | Any],
-        run_state: _RunPlanningState,
-        collect_source_records: SourceCollector | None,
-    ) -> _RetrievalState:
-        retrieved_clues = self.clue_retriever.retrieve(
-            self.clue_repo.list(),
-            query=query,
-            intent=run_state.intent_payload,
-            limit=run_state.budget["max_candidate_clues"],
-            time_range_hours=self._optional_positive_int(run_state.retrieval_filters.get("time_range_hours")),
-            allowed_source_types=run_state.retrieval_filters.get("source_types") or (),
-            allowed_risk_types=run_state.retrieval_filters.get("risk_types") or (),
-            min_quality_score=self._optional_float(run_state.retrieval_filters.get("min_quality_score")),
-        )
-        retrieved_summary = self._summarize_retrieved_clues(
-            retrieved_clues,
-            time_range_hours=self._optional_positive_int(run_state.retrieval_filters.get("time_range_hours"))
-            or self._optional_positive_int(run_state.intent_payload.get("time_range_hours")),
-            quality_gate=run_state.runtime_quality_gate,
-        )
-        provided_records = [dict(record) if isinstance(record, Mapping) else record for record in records]
-        if len(provided_records) > run_state.budget["max_raw_records"]:
-            provided_records = provided_records[: run_state.budget["max_raw_records"]]
-        return _RetrievalState(
-            retrieved_clues=retrieved_clues,
-            retrieved_summary=retrieved_summary,
-            provided_records=provided_records,
         )
 
     def _initial_live_collection_decision(
@@ -649,6 +532,10 @@ class InvestigationOrchestrator:
         fresh_records = retrieval_state.provided_records if retrieval_state.provided_records else (live_state.records or semantic_state.records)
         built_clues: list[dict[str, Any]] = []
         if live_state.records or retrieval_state.provided_records:
+            self.offline_builder.set_runtime_controls(
+                llm_gateway=self.llm_gateway,
+                budget_controller=run_state.budget_controller,
+            )
             build_result = self.offline_builder.build(
                 fresh_records,
                 prompt_text=query,
@@ -705,7 +592,7 @@ class InvestigationOrchestrator:
         requested_max_refine = 0 if run_state.plan_execution_controls.refine_policy == "off" else int(run_state.budget["max_llm_refine_clues"] or 0)
         effective_max_refine = max(0, requested_max_refine)
         refine_budget_reasons: list[str] = []
-        refined_high_quality, refined_candidates, refine_traces, model_route_traces, budget_controller_snapshot = self._refine_retrieved_clues(
+        refined_high_quality, refined_candidates, refine_traces, model_route_traces, budget_controller_snapshot = self.clue_refinement.refine(
             merged_candidates,
             query=query,
             intent=run_state.intent_payload,
@@ -788,7 +675,7 @@ class InvestigationOrchestrator:
             "model_route_count": len(refinement_state.model_route_traces),
             "model_route_summary": self._summarize_model_routes(refinement_state.model_route_traces),
             "budget_controller": refinement_state.budget_controller_snapshot,
-            "llm_gateway": self._summarize_gateway_stats(),
+            "llm_gateway": self._summarize_gateway_stats(self._gateway_stats_since(run_state.gateway_stats_start)),
             "exploration_hypothesis_count": len(refinement_state.exploration_hypotheses),
             "collection_layers_executed": [
                 str(item.get("collection_layer") or "")
@@ -815,7 +702,7 @@ class InvestigationOrchestrator:
                 semantic_local_record_count=len(semantic_state.records),
                 model_route_traces=refinement_state.model_route_traces,
                 budget_controller_snapshot=refinement_state.budget_controller_snapshot,
-                llm_gateway_stats=self._gateway_stats(),
+                llm_gateway_stats=self._gateway_stats_since(run_state.gateway_stats_start),
             )
         execution_summary["routing_profile"] = run_state.profile
         return self._mask_execution_summary(execution_summary)
@@ -1130,28 +1017,30 @@ class InvestigationOrchestrator:
         # Profile budgets are the runtime source of truth; the LLM plan can only
         # tighten them.  This keeps fast/balanced/high_recall cost and latency
         # caps real even when fallback plans carry larger defaults.
-        for key in (
-            "max_sources",
-            "max_raw_records",
-            "max_candidate_clues",
-            "max_llm_refine_clues",
-            "max_llm_calls",
-            "max_llm_tokens",
-            "max_llm_classify_records",
-            "max_llm_extract_records",
-            "max_query_rewrite_sources",
-            "max_elapsed_seconds",
-        ):
-            if key not in plan_budget or plan_budget.get(key) in (None, ""):
-                continue
-            plan_value = self._optional_positive_int(plan_budget.get(key))
-            if plan_value is None:
-                continue
-            current_value = raw.get(key)
-            if current_value is None:
-                raw[key] = plan_value
-            else:
-                raw[key] = min(int(current_value), plan_value)
+        plan_is_fallback = plan.get("llm_ok") is False or plan.get("llm_reason") == "fallback_plan"
+        if not plan_is_fallback:
+            for key in (
+                "max_sources",
+                "max_raw_records",
+                "max_candidate_clues",
+                "max_llm_refine_clues",
+                "max_llm_calls",
+                "max_llm_tokens",
+                "max_llm_classify_records",
+                "max_llm_extract_records",
+                "max_query_rewrite_sources",
+                "max_elapsed_seconds",
+            ):
+                if key not in plan_budget or plan_budget.get(key) in (None, ""):
+                    continue
+                plan_value = self._optional_positive_int(plan_budget.get(key))
+                if plan_value is None:
+                    continue
+                current_value = raw.get(key)
+                if current_value is None:
+                    raw[key] = plan_value
+                else:
+                    raw[key] = min(int(current_value), plan_value)
         if policy_override is not None:
             raw = {
                 **raw,
@@ -1356,94 +1245,6 @@ class InvestigationOrchestrator:
             rewritten_sources.extend(untouched_sources)
             traces.extend(self._query_rewrite_skipped_traces(untouched_sources, reason="query_rewrite_source_limit_reached"))
         return rewritten_sources, traces
-
-    def _refine_retrieved_clues(
-        self,
-        clues: list[dict[str, Any]],
-        *,
-        query: str,
-        intent: Mapping[str, Any],
-        quality_gate: RuntimeQualityGate,
-        max_refine: int,
-        deadline_at: float | None = None,
-        routing_profile: str | None = None,
-        budget_controller: BudgetController | None = None,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-        refined: list[dict[str, Any]] = []
-        traces: list[dict[str, Any]] = []
-        model_route_traces: list[dict[str, Any]] = []
-        active_budget_controller = budget_controller or BudgetController(RuntimeBudget(max_llm_refine_clues=max_refine))
-        routed_clues = self.clue_ranker.rank(clues)
-        active_router = self.model_router.with_profile(routing_profile)
-        pending_refine: list[dict[str, Any]] = []
-        pending_meta: list[dict[str, Any]] = []
-        for clue in routed_clues:
-            item = dict(clue)
-            route_decision = active_router.decide_clue_refinement(item)
-            route_trace = {
-                "stage": "model_route",
-                "route_target": "clue_refine",
-                "clue_id": str(item.get("clue_id") or "unknown_clue"),
-                **route_decision.model_dump(),
-            }
-            model_route_traces.append(route_trace)
-            if route_decision.action == "llm_refine_only":
-                item["model_route"] = route_decision.model_dump()
-            should_refine = (
-                route_decision.action == "llm_refine_only"
-                and len(pending_refine) < max_refine
-                and not self._deadline_exhausted(deadline_at)
-                and active_budget_controller.allow_llm_call(
-                    stage="clue_refine",
-                    estimated_tokens=route_decision.max_tokens,
-                    item_count=1,
-                )
-            )
-            if should_refine:
-                pending_refine.append(item)
-                pending_meta.append(route_decision.model_dump())
-            elif route_decision.action == "llm_refine_only":
-                route_trace["skipped_reason"] = (
-                    "elapsed_budget_exhausted"
-                    if self._deadline_exhausted(deadline_at)
-                    else "llm_refine_budget_exhausted"
-                    if len(pending_refine) >= max_refine
-                    else "budget_controller_denied"
-                )
-            refined.append(item)
-        if pending_refine:
-            max_tokens = sum(int(meta.get("max_tokens") or 0) for meta in pending_meta) or 900
-            deadline_ms = max(int(meta.get("deadline_ms") or 0) for meta in pending_meta) or None
-            runtime_context = self.phase_engine.runtime_prompt_context(
-                label=self._runtime_context_label(intent),
-                include_candidates=True,
-            )
-            enriched_batch, batch_traces = self.clue_refiner.refine_batch(
-                pending_refine,
-                query=query,
-                intent=intent,
-                runtime_context=runtime_context,
-                max_tokens=max_tokens,
-                deadline_ms=deadline_ms,
-                budget=active_budget_controller,
-            )
-            by_clue_id = {str(item.get("clue_id") or ""): item for item in enriched_batch}
-            meta_by_clue_id = {
-                str(item.get("clue_id") or ""): meta
-                for item, meta in zip(pending_refine, pending_meta, strict=False)
-            }
-            refined = [by_clue_id.get(str(item.get("clue_id") or ""), item) for item in refined]
-            for trace in batch_traces:
-                meta = meta_by_clue_id.get(str(trace.get("clue_id") or ""), {})
-                trace["model_route_reason"] = meta.get("reason")
-                trace["model_route_priority"] = meta.get("priority")
-                trace["max_tokens_budgeted"] = meta.get("max_tokens")
-            traces.extend(batch_traces)
-        for item in refined:
-            self.clue_repo.save(item)
-        high_quality = [clue for clue in refined if self._passes_runtime_quality_gate(clue, quality_gate=quality_gate)]
-        candidates = [clue for clue in refined if clue not in high_quality]
-        return high_quality, candidates, traces, model_route_traces, active_budget_controller.snapshot()
 
     def _runtime_quality_gate(
         self,
@@ -1692,6 +1493,19 @@ class InvestigationOrchestrator:
         if hasattr(self.llm_gateway, "stats"):
             return [dict(item) for item in self.llm_gateway.stats()]
         return []
+
+    def _gateway_stats_count(self) -> int:
+        if hasattr(self.llm_gateway, "stats_count"):
+            try:
+                return int(self.llm_gateway.stats_count())
+            except (TypeError, ValueError):
+                return 0
+        return len(self._gateway_stats())
+
+    def _gateway_stats_since(self, start_index: int) -> list[dict[str, Any]]:
+        if hasattr(self.llm_gateway, "stats_since"):
+            return [dict(item) for item in self.llm_gateway.stats_since(start_index)]
+        return self._gateway_stats()[max(0, int(start_index or 0)) :]
 
     def _summarize_gateway_stats(self, stats: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         items = [dict(item) for item in (stats if stats is not None else self._gateway_stats())]

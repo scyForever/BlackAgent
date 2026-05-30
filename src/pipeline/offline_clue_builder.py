@@ -35,11 +35,22 @@ class OfflineClueBuilder:
         phase_engine: PhaseTwoThreeEngine | None = None,
         quality_evaluator: ClueQualityEvaluator | None = None,
         clue_repo: ClueRepo | None = None,
+        llm_gateway: Any | None = None,
+        budget_controller: Any | None = None,
     ) -> None:
         self.phase_engine = phase_engine or PhaseTwoThreeEngine()
         self.quality_evaluator = quality_evaluator or ClueQualityEvaluator()
         self.clue_repo = clue_repo if clue_repo is not None else InMemoryClueRepo()
-        self.intelligence_pipeline = IntelligencePipeline()
+        self.intelligence_pipeline = IntelligencePipeline(llm_gateway=llm_gateway, budget_controller=budget_controller)
+
+    def set_runtime_controls(self, *, llm_gateway: Any | None = None, budget_controller: Any | None = None) -> None:
+        """Refresh per-run LLM/budget controls before building fresh clues."""
+
+        if llm_gateway is not None or budget_controller is not None:
+            self.intelligence_pipeline = IntelligencePipeline(
+                llm_gateway=llm_gateway,
+                budget_controller=budget_controller,
+            )
 
     def build(
         self,

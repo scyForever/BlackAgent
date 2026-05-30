@@ -259,6 +259,44 @@ class FineGrainedIntentClassifier:
     TOOL_UPDATE_MARKERS = ("更新", "版本", "功能", "教程", "软件", "下载", "新增", "修复", "操作", "文档", "演示视频", "停用")
     CLICK_PROMOTION_MARKERS = ("卡单", "支付失败", "支付通道", "下单", "订单", "发货", "补发", "退款", "售后", "手工单", "做单")
     CLICK_CORE_MARKERS = ("刷单", "补单", "垫付", "返佣", "做单", "手工单", "卡单")
+    DEFENSIVE_CONTEXT_MARKERS = (
+        "反诈",
+        "反诈提醒",
+        "安全研究",
+        "研究复盘",
+        "治理复盘",
+        "黑产治理",
+        "警方发布",
+        "警方通报",
+        "公安通报",
+        "新闻曝光",
+        "曝光",
+        "安全通告",
+        "不提供",
+        "不要参与",
+        "切勿参与",
+        "案例复盘",
+    )
+    SOLICITATION_MARKERS = (
+        "出售",
+        "出号",
+        "卖号",
+        "收号",
+        "上车",
+        "招募",
+        "接单",
+        "联系",
+        "客服",
+        "低价",
+        "价格",
+        "报价",
+        "接洽",
+        "合作",
+        "代发",
+        "代投",
+        "包量",
+        "秒出",
+    )
     CATEGORY_PRIORITY = {
         CROWD_SERVICE: 5,
         TOOL_TRADING: 4,
@@ -282,6 +320,17 @@ class FineGrainedIntentClassifier:
 
         if not category_scores:
             return FineClassificationResult(trace_id, UNKNOWN, "待研判", 0.35, True, "UNKNOWN", [], [])
+        if self._is_defensive_context(text):
+            return FineClassificationResult(
+                trace_id,
+                UNKNOWN,
+                "防御语境",
+                0.12,
+                False,
+                "DEFENSIVE_CONTEXT",
+                [],
+                ["defensive_context"],
+            )
 
         ordered = sorted(
             category_scores.items(),
@@ -323,6 +372,13 @@ class FineGrainedIntentClassifier:
             conflict_categories=conflicts,
             evidence=supporting_evidence,
         )
+
+    def _is_defensive_context(self, text: str) -> bool:
+        defensive_hits = self._marker_hits(text, self.DEFENSIVE_CONTEXT_MARKERS)
+        if not defensive_hits:
+            return False
+        solicitation_hits = self._marker_hits(text, self.SOLICITATION_MARKERS)
+        return len(solicitation_hits) == 0 or any(marker in text for marker in ("不提供", "不要参与", "切勿参与"))
 
     def _signal_terms(self, record: Mapping[str, Any] | Any, field_name: str) -> tuple[str, ...]:
         values = get_record_field(record, field_name) or ()

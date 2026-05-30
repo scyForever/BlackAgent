@@ -7,7 +7,15 @@ from .exploration_agent import ExplorationAgent
 from .model_router import ModelRouteDecision, ModelRouter, RouteAction
 from .policy_guard import PolicyGuard, SafetyPolicyViolation
 from .query_rewriter import LLMSourceQueryRewriter, QueryRewriteTrace
-from .services import ClueMergeService, IntentPlanningService, InvestigationTelemetryService, SourceSelectionService
+from .services import (
+    ClueMergeService,
+    ClueRefinementService,
+    InitialCandidateRetrievalService,
+    IntentPlanningService,
+    InvestigationTelemetryService,
+    RunStatePreparationService,
+    SourceSelectionService,
+)
 from .tool_registry import ToolRegistry, ToolRegistryViolation
 from .user_request_parser import InvestigationPlan, LLMDecisionTrace, LLMInvestigationPlanner, LLMUserRequestParser, UserIntent
 
@@ -18,7 +26,9 @@ __all__ = [
     "BudgetSnapshot",
     "ClueRanker",
     "ClueMergeService",
+    "ClueRefinementService",
     "ExplorationAgent",
+    "InitialCandidateRetrievalService",
     "InvestigationOrchestrator",
     "InvestigationPlan",
     "InvestigationRunResult",
@@ -36,6 +46,7 @@ __all__ = [
     "RouteAction",
     "RuntimeBudget",
     "SafetyPolicyViolation",
+    "RunStatePreparationService",
     "SourceSelectionService",
     "ToolRegistry",
     "ToolRegistryViolation",

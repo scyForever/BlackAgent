@@ -7,7 +7,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -19,6 +19,9 @@ from src.pipeline import IntelligencePipeline
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate BlackAgent pipeline on gold JSONL records.")
     parser.add_argument("--gold", required=True, help="JSONL with content_text plus expected_risk_categories/expected_entities.")
+    parser.add_argument("--entities-gold", default=None, help="Optional JSONL focused on entity extraction.")
+    parser.add_argument("--clues-gold", default=None, help="Optional JSONL focused on clue aggregation.")
+    parser.add_argument("--hard-negative", default=None, help="Optional JSONL where no risk prediction is expected.")
     parser.add_argument("--output", default="data/eval_report.json", help="Where to write JSON metrics.")
     return parser.parse_args(argv)
 
@@ -42,64 +45,231 @@ def prf(tp: int, fp: int, fn: int) -> dict[str, float]:
     return {"precision": round(precision, 4), "recall": round(recall, 4), "f1": round(f1, 4)}
 
 
-def evaluate(records: list[dict[str, Any]]) -> dict[str, Any]:
+def evaluate(
+    records: list[dict[str, Any]],
+    *,
+    entity_records: list[dict[str, Any]] | None = None,
+    clue_records: list[dict[str, Any]] | None = None,
+    hard_negative_records: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     started = time.perf_counter()
     pipeline = IntelligencePipeline()
-    result = pipeline.run(records, context={"quality_profile": "high_recall", "require_evidence_chain": False})
+    classification_records = list(records)
+    entity_eval_records = list(entity_records or records)
+    hard_negative_records = list(hard_negative_records or [])
+    clue_eval_records = list(clue_records or [])
+
+    classification_result = pipeline.run(
+        [*classification_records, *hard_negative_records],
+        context={"quality_profile": "high_recall", "require_evidence_chain": False},
+    )
+    entity_result = pipeline.run(entity_eval_records, context={"quality_profile": "high_recall", "require_evidence_chain": False})
+    clue_result = pipeline.run(clue_eval_records, context={"quality_profile": "high_recall", "require_evidence_chain": False}) if clue_eval_records else None
     elapsed_ms = (time.perf_counter() - started) * 1000
 
-    class_tp = class_fp = class_fn = 0
-    entity_tp = entity_fp = entity_fn = 0
-    actual_by_trace = {
-        str(item.get("source_trace_id") or ""): item
-        for item in result.classified
-    }
-    entities_by_trace: dict[str, set[str]] = {}
-    for entity in result.entities:
-        trace_id = str(entity.get("source_trace_id") or "")
-        value = str(entity.get("normalized_value") or entity.get("entity_value") or "")
-        if trace_id and value:
-            entities_by_trace.setdefault(trace_id, set()).add(value)
-
-    for record in records:
-        trace_id = str(record.get("source_trace_id") or record.get("trace_id") or record.get("hash_id") or "")
-        expected_categories = {str(item) for item in (record.get("expected_risk_categories") or [])}
-        actual_category = str((actual_by_trace.get(trace_id) or {}).get("risk_category") or "")
-        actual_categories = {actual_category} if actual_category else set()
-        class_tp += len(expected_categories & actual_categories)
-        class_fp += len(actual_categories - expected_categories)
-        class_fn += len(expected_categories - actual_categories)
-
-        expected_entities = {str(item) for item in (record.get("expected_entities") or [])}
-        actual_entities = entities_by_trace.get(trace_id, set())
-        entity_tp += len(expected_entities & actual_entities)
-        entity_fp += len(actual_entities - expected_entities)
-        entity_fn += len(expected_entities - actual_entities)
-
-    classification = prf(class_tp, class_fp, class_fn)
-    entities = prf(entity_tp, entity_fp, entity_fn)
-    return {
+    classification_metrics = evaluate_classification(
+        [*classification_records, *hard_negative_records],
+        classification_result.classified,
+    )
+    entity_metrics = evaluate_entities(entity_eval_records, entity_result.entities)
+    clue_metrics = evaluate_clues(clue_eval_records, clue_result.clues if clue_result is not None else [])
+    report = {
         "status": "completed",
-        "record_count": len(records),
-        "classification_precision": classification["precision"],
-        "classification_recall": classification["recall"],
-        "classification_f1": classification["f1"],
-        "entity_precision": entities["precision"],
-        "entity_recall": entities["recall"],
-        "entity_f1": entities["f1"],
-        "high_risk_recall": classification["recall"],
-        "false_positive_rate": round(class_fp / max(class_tp + class_fp, 1), 4),
+        "record_count": len(classification_records),
+        "classification_record_count": len(classification_records),
+        "entity_record_count": len(entity_eval_records),
+        "clue_record_count": len(clue_eval_records),
+        "hard_negative_record_count": len(hard_negative_records),
+        "classification": classification_metrics,
+        "entity": entity_metrics,
+        "clue": clue_metrics,
+        "classification_precision": classification_metrics["overall"]["precision"],
+        "classification_recall": classification_metrics["overall"]["recall"],
+        "classification_f1": classification_metrics["overall"]["f1"],
+        "entity_precision": entity_metrics["overall"]["precision"],
+        "entity_recall": entity_metrics["overall"]["recall"],
+        "entity_f1": entity_metrics["overall"]["f1"],
+        "clue_precision": clue_metrics["overall"]["precision"],
+        "clue_recall": clue_metrics["overall"]["recall"],
+        "clue_f1": clue_metrics["overall"]["f1"],
+        "high_risk_recall": classification_metrics["overall"]["recall"],
+        "false_positive_rate": classification_metrics["false_positive_rate"],
+        "hard_negative": classification_metrics["hard_negative"],
         "llm_calls_per_1000_records": 0.0,
         "estimated_tokens_per_valid_clue": 0.0,
         "p50_latency_ms": round(elapsed_ms, 2),
         "p95_latency_ms": round(elapsed_ms, 2),
-        "pipeline_summary": result.execution_summary,
+        "pipeline_summary": classification_result.execution_summary,
     }
+    return report
+
+
+def evaluate_classification(records: list[dict[str, Any]], actual_items: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    primary_tp = primary_fp = primary_fn = 0
+    secondary_tp = secondary_fp = secondary_fn = 0
+    actual_by_trace = {
+        str(item.get("source_trace_id") or ""): item
+        for item in actual_items
+    }
+    hard_tn = hard_fp = 0
+    for record in records:
+        trace_id = _trace_id(record)
+        expected_primary = predicted_categories(record)
+        expected_secondary = predicted_secondary_labels(record)
+        actual = actual_by_trace.get(trace_id, {})
+        actual_primary = predicted_categories(actual)
+        actual_secondary = predicted_secondary_labels(actual)
+        primary_tp += len(expected_primary & actual_primary)
+        primary_fp += len(actual_primary - expected_primary)
+        primary_fn += len(expected_primary - actual_primary)
+        secondary_tp += len(expected_secondary & actual_secondary)
+        secondary_fp += len(actual_secondary - expected_secondary)
+        secondary_fn += len(expected_secondary - actual_secondary)
+        if not expected_primary:
+            if actual_primary:
+                hard_fp += 1
+            else:
+                hard_tn += 1
+    overall = prf(primary_tp, primary_fp, primary_fn)
+    return {
+        "overall": overall,
+        "primary": {**overall, "tp": primary_tp, "fp": primary_fp, "fn": primary_fn},
+        "secondary": {**prf(secondary_tp, secondary_fp, secondary_fn), "tp": secondary_tp, "fp": secondary_fp, "fn": secondary_fn},
+        "false_positive_rate": round(hard_fp / max(hard_fp + hard_tn, 1), 4),
+        "hard_negative": {"tn": hard_tn, "fp": hard_fp},
+    }
+
+
+def evaluate_entities(records: list[dict[str, Any]], actual_entities: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    entity_tp = entity_fp = entity_fn = 0
+    entities_by_trace: dict[str, set[tuple[str, str]]] = {}
+    for entity in actual_entities:
+        trace_id = str(entity.get("source_trace_id") or "")
+        normalized = normalize_entity(entity)
+        if trace_id and normalized:
+            entities_by_trace.setdefault(trace_id, set()).add(normalized)
+
+    for record in records:
+        trace_id = _trace_id(record)
+        expected_entities = expected_entity_set(record)
+        actual_entities = entities_by_trace.get(trace_id, set())
+        tp, fp, fn = entity_confusion(expected_entities, actual_entities)
+        entity_tp += tp
+        entity_fp += fp
+        entity_fn += fn
+    overall = prf(entity_tp, entity_fp, entity_fn)
+    return {"overall": {**overall, "tp": entity_tp, "fp": entity_fp, "fn": entity_fn}}
+
+
+def evaluate_clues(records: list[dict[str, Any]], actual_clues: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    expected_count_values = [int(record.get("expected_clue_count") or 0) for record in records if record.get("expected_clue_count") is not None]
+    expected_count = max(expected_count_values) if expected_count_values else sum(len(record.get("expected_clues") or []) for record in records)
+    expected_types = {str(item).strip() for record in records for item in (record.get("expected_clue_types") or []) if str(item).strip()}
+    actual = [dict(item) for item in actual_clues]
+    actual_types = {str(item.get("clue_type") or "").strip() for item in actual if str(item.get("clue_type") or "").strip()}
+    if expected_types:
+        tp = len(expected_types & actual_types)
+        fp = len(actual_types - expected_types)
+        fn = len(expected_types - actual_types)
+    else:
+        tp = min(len(actual), expected_count)
+        fp = max(0, len(actual) - expected_count)
+        fn = max(0, expected_count - len(actual))
+    overall = prf(tp, fp, fn)
+    return {
+        "overall": {**overall, "tp": tp, "fp": fp, "fn": fn},
+        "expected_clue_count": expected_count,
+        "actual_clue_count": len(actual),
+        "actual_clue_types": sorted(actual_types),
+    }
+
+
+def predicted_categories(classification: Mapping[str, Any]) -> set[str]:
+    risk = _normalize_label(classification.get("risk_category") or classification.get("expected_primary_risk"))
+    expected = classification.get("expected_risk_categories")
+    categories = {_normalize_label(item) for item in expected} if isinstance(expected, list) else set()
+    categories.update({_normalize_label(item) for item in classification.get("expected_primary_risks", [])} if isinstance(classification.get("expected_primary_risks"), list) else set())
+    if risk:
+        categories.add(risk)
+    return {item for item in categories if item not in {"unknown", "normal_noise", "正常业务白噪声", "待研判", "无风险", "none"}}
+
+
+def predicted_secondary_labels(classification: Mapping[str, Any]) -> set[str]:
+    labels = set()
+    secondary = _normalize_label(classification.get("secondary_label") or classification.get("expected_secondary_risk"))
+    if secondary:
+        labels.add(secondary)
+    raw = classification.get("expected_secondary_risks") or classification.get("expected_secondary_labels")
+    if isinstance(raw, list):
+        labels.update(_normalize_label(item) for item in raw)
+    return {item for item in labels if item not in {"待研判", "未细分", "unknown", "none"}}
+
+
+def expected_entity_set(record: Mapping[str, Any]) -> set[tuple[str, str]]:
+    values = record.get("expected_entities") or []
+    output: set[tuple[str, str]] = set()
+    for item in values:
+        if isinstance(item, Mapping):
+            normalized = normalize_entity(item)
+        else:
+            normalized = ("*", _normalize_entity_value(item))
+        if normalized and normalized[1]:
+            output.add(normalized)
+    return output
+
+
+def normalize_entity(entity: Mapping[str, Any]) -> tuple[str, str]:
+    entity_type = str(entity.get("entity_type") or entity.get("type") or "*").strip().lower() or "*"
+    value = _normalize_entity_value(entity.get("normalized_value") or entity.get("entity_value") or entity.get("value"))
+    return (entity_type, value) if value else ("", "")
+
+
+def entity_matches(expected: tuple[str, str], actual: tuple[str, str]) -> bool:
+    expected_type, expected_value = expected
+    actual_type, actual_value = actual
+    if expected_type not in {"", "*"} and expected_type != actual_type:
+        return False
+    if expected_value == actual_value:
+        return True
+    if expected_value and actual_value and (expected_value in actual_value or actual_value in expected_value):
+        return True
+    return False
+
+
+def entity_confusion(expected_entities: set[tuple[str, str]], actual_entities: set[tuple[str, str]]) -> tuple[int, int, int]:
+    unmatched_actual = set(actual_entities)
+    tp = 0
+    for expected in expected_entities:
+        match = next((actual for actual in unmatched_actual if entity_matches(expected, actual)), None)
+        if match is not None:
+            tp += 1
+            unmatched_actual.remove(match)
+    fp = len(unmatched_actual)
+    fn = max(0, len(expected_entities) - tp)
+    return tp, fp, fn
+
+
+def _normalize_label(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _normalize_entity_value(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text.replace("telegram:", "tg:").replace("https://", "").replace("http://", "").strip(" /")
+
+
+def _trace_id(record: Mapping[str, Any]) -> str:
+    return str(record.get("source_trace_id") or record.get("trace_id") or record.get("hash_id") or "")
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    report = evaluate(load_jsonl(args.gold))
+    report = evaluate(
+        load_jsonl(args.gold),
+        entity_records=load_jsonl(args.entities_gold) if args.entities_gold else None,
+        clue_records=load_jsonl(args.clues_gold) if args.clues_gold else None,
+        hard_negative_records=load_jsonl(args.hard_negative) if args.hard_negative else None,
+    )
     output_path = Path(args.output)
     if not output_path.is_absolute():
         output_path = PROJECT_ROOT / output_path

@@ -398,7 +398,7 @@ def detect_noise_reason(
         return "low_information_entropy"
     if score > max_noise_score and risk_score < 0.35:
         return "high_noise_score"
-    if any(marker.lower() in lowered for marker in DEFENSIVE_CONTEXT_MARKERS):
+    if any(marker.lower() in lowered for marker in DEFENSIVE_CONTEXT_MARKERS) and risk_score < 0.85:
         return "defensive_context_noise"
     if any(marker.lower() in lowered for marker in GENERIC_GUIDE_MARKERS) and risk_score < 0.55:
         return "generic_guide_noise"

@@ -172,6 +172,7 @@ class LLMGateway:
         stage: str = "chat",
         budget: Any | None = None,
         cache_policy: str = "none",
+        cache_key: str | None = None,
         deadline_ms: int | None = None,
     ) -> LLMGatewayResponse:
         """Send or simulate a chat completion request."""
@@ -185,6 +186,7 @@ class LLMGateway:
             stage=stage,
             budget=budget,
             cache_policy=cache_policy,
+            cache_key=cache_key,
             deadline_ms=deadline_ms,
         )
 
@@ -199,6 +201,7 @@ class LLMGateway:
         stage: str = "chat",
         budget: Any | None = None,
         cache_policy: str = "none",
+        cache_key: str | None = None,
         deadline_ms: int | None = None,
     ) -> LLMGatewayResponse:
         """Call an OpenAI-compatible ``/chat/completions`` endpoint."""
@@ -213,13 +216,15 @@ class LLMGateway:
         )
         stage_name = str(stage or "chat")
         completion_limit = int(max_tokens or 0)
-        estimated_tokens = _estimate_tokens(messages) + completion_limit
-        cache_key = _cache_key(payload, stage=stage_name)
+        prompt_tokens_estimated = _estimate_tokens(messages)
+        estimated_tokens = prompt_tokens_estimated + completion_limit
+        budget_estimated_tokens = int((extra_body or {}).get("budget_estimated_tokens") or estimated_tokens) if isinstance(extra_body, Mapping) else estimated_tokens
+        resolved_cache_key = str(cache_key or "").strip() or _cache_key(payload, stage=stage_name)
         normalized_cache_policy = str(cache_policy or "none").strip().lower()
         budget_item_count = max(1, int((extra_body or {}).get("budget_item_count") or 1)) if isinstance(extra_body, Mapping) else 1
 
-        if normalized_cache_policy in {"read", "read_write"} and cache_key in self._cache:
-            cached = self._cache[cache_key]
+        if normalized_cache_policy in {"read", "read_write"} and resolved_cache_key in self._cache:
+            cached = self._cache[resolved_cache_key]
             response = LLMGatewayResponse(
                 ok=cached.ok,
                 model=cached.model,
@@ -244,11 +249,11 @@ class LLMGateway:
             try:
                 allowed = budget.allow_llm_call(
                     stage=stage_name,
-                    estimated_tokens=estimated_tokens,
+                    estimated_tokens=budget_estimated_tokens,
                     item_count=budget_item_count,
                 )
             except TypeError:
-                allowed = budget.allow_llm_call(stage=stage_name, estimated_tokens=estimated_tokens)
+                allowed = budget.allow_llm_call(stage=stage_name, estimated_tokens=budget_estimated_tokens)
             if not allowed:
                 response = self._blocked_response("budget_exhausted", f"LLM budget denied for stage={stage_name}")
                 self._record_stats(
@@ -267,13 +272,13 @@ class LLMGateway:
                 try:
                     budget.consume_llm(
                         stage=stage_name,
-                        estimated_tokens=estimated_tokens,
+                        estimated_tokens=budget_estimated_tokens,
                         item_count=budget_item_count,
                     )
                 except TypeError:
-                    budget.consume_llm(stage=stage_name, estimated_tokens=estimated_tokens)
+                    budget.consume_llm(stage=stage_name, estimated_tokens=budget_estimated_tokens)
             if normalized_cache_policy in {"write", "read_write"}:
-                self._cache[cache_key] = response
+                self._cache[resolved_cache_key] = response
             self._record_stats(
                 stage=stage_name,
                 started_at=started_at,
@@ -431,13 +436,13 @@ class LLMGateway:
             try:
                 budget.consume_llm(
                     stage=stage_name,
-                    estimated_tokens=estimated_tokens,
+                    estimated_tokens=budget_estimated_tokens,
                     item_count=budget_item_count,
                 )
             except TypeError:
-                budget.consume_llm(stage=stage_name, estimated_tokens=estimated_tokens)
+                budget.consume_llm(stage=stage_name, estimated_tokens=budget_estimated_tokens)
         if normalized_cache_policy in {"write", "read_write"}:
-            self._cache[cache_key] = response
+            self._cache[resolved_cache_key] = response
         self._record_stats(
             stage=stage_name,
             started_at=started_at,
@@ -452,6 +457,21 @@ class LLMGateway:
         """Return call statistics accumulated by this gateway instance."""
 
         return [item.model_dump() for item in self._stats]
+
+    def stats_count(self) -> int:
+        """Return the current stats cursor for run-scoped telemetry."""
+
+        return len(self._stats)
+
+    def stats_since(self, start_index: int) -> list[dict[str, Any]]:
+        """Return call statistics recorded after ``start_index``."""
+
+        try:
+            index = int(start_index)
+        except (TypeError, ValueError):
+            index = 0
+        index = max(0, min(index, len(self._stats)))
+        return [item.model_dump() for item in self._stats[index:]]
 
     def clear_cache(self) -> None:
         self._cache.clear()
@@ -507,6 +527,7 @@ class LLMGateway:
             payload.update(dict(self.config.extra_body))
         runtime_extra_body = dict(extra_body or {})
         runtime_extra_body.pop("budget_item_count", None)
+        runtime_extra_body.pop("budget_estimated_tokens", None)
         if max_tokens is not None:
             payload[self.config.max_tokens_param] = max_tokens
         if self.config.service_tier:

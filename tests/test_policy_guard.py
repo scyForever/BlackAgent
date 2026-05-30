@@ -27,6 +27,21 @@ def test_policy_guard_allows_review_only_sandbox_actions():
     assert guard.assert_review_only({"requires_human_review": True, "target_repo": "review_repo"})
 
 
+def test_policy_guard_allows_local_review_repo_to_store_contact_evidence():
+    guard = PolicyGuard()
+
+    assert guard.check_action_safety(
+        {
+            "type": "write",
+            "target": "review_repo",
+            "payload": {
+                "requires_human_review": True,
+                "hypothesis_summary": "样本进入受控探索：实体线索 contact:core01，来源 external public source。",
+            },
+        }
+    )
+
+
 def test_policy_guard_rejects_non_review_hypothesis():
     with pytest.raises(SafetyPolicyViolation):
         PolicyGuard().assert_review_only({"requires_human_review": False, "target_repo": "review_repo"})
@@ -53,4 +68,3 @@ def test_budget_manager_stops_when_limits_are_exceeded():
     manager.reset()
     with pytest.raises(BudgetExceeded):
         manager.consume(tokens=11)
-

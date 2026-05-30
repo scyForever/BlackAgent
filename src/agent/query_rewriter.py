@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 from src.backend import LLMGateway
 from src.safety import PromptGuard
+from src.safety.prompt_sanitizer import sanitize_source_for_llm
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class LLMSourceQueryRewriter:
         deadline_ms: int | None = None,
     ) -> tuple[dict[str, Any], QueryRewriteTrace]:
         source_payload = dict(source)
+        source_prompt_card = sanitize_source_for_llm(source_payload)
         runtime_context = dict(runtime_context or {})
         guarded_query = PromptGuard().wrap_untrusted_text(query)
         source_name = str(source_payload.get("source_name") or "unknown_source")
@@ -80,7 +82,7 @@ class LLMSourceQueryRewriter:
                         f"user_query={guarded_query}\n"
                         f"intent={dict(intent)}\n"
                         f"plan={dict(plan)}\n"
-                        f"source={source_payload}\n"
+                        f"source={source_prompt_card}\n"
                         f"runtime_slang_terms={runtime_context.get('slang_terms', [])[:12]}\n"
                         f"runtime_few_shot_examples={runtime_context.get('few_shot_examples', [])[:4]}"
                     ),

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
 from src.backend import LLMGateway
 from src.safety import OutputValidator, PIIMasker, PromptGuard
+from src.safety.prompt_sanitizer import sanitize_clue_for_llm, stable_clue_card_id, stable_clue_refine_cache_key, stable_json_dumps
 
 
 @dataclass(frozen=True)
@@ -43,8 +43,9 @@ class LLMClueRefiner:
         few_shot_examples = runtime_context.get("few_shot_examples") if isinstance(runtime_context.get("few_shot_examples"), list) else []
         slang_terms = runtime_context.get("slang_terms") if isinstance(runtime_context.get("slang_terms"), list) else []
         prompt_guard = PromptGuard()
+        clue_card = sanitize_clue_for_llm(clue, stable_id=False)
         guarded_query = prompt_guard.wrap_untrusted_text(query)
-        guarded_clue = prompt_guard.wrap_untrusted_text(json.dumps(dict(clue), ensure_ascii=False, default=str))
+        guarded_clue = prompt_guard.wrap_untrusted_text(stable_json_dumps(clue_card))
         response = self.llm_gateway.chat(
             [
                 {
@@ -61,7 +62,7 @@ class LLMClueRefiner:
                     "content": (
                         f"query={guarded_query}\n"
                         f"intent={dict(intent)}\n"
-                        f"clue={guarded_clue}\n"
+                        f"clue_card={guarded_clue}\n"
                         f"runtime_slang_terms={slang_terms[:12]}\n"
                         f"runtime_few_shot_examples={few_shot_examples[:4]}"
                     ),
@@ -121,8 +122,13 @@ class LLMClueRefiner:
         few_shot_examples = runtime_context.get("few_shot_examples") if isinstance(runtime_context.get("few_shot_examples"), list) else []
         slang_terms = runtime_context.get("slang_terms") if isinstance(runtime_context.get("slang_terms"), list) else []
         prompt_guard = PromptGuard()
+        clue_cards = [sanitize_clue_for_llm(clue, stable_id=True) for clue in materialized]
+        card_id_by_clue_id = {
+            str(clue.get("clue_id") or "unknown_clue"): str(card.get("clue_id") or stable_clue_card_id(clue))
+            for clue, card in zip(materialized, clue_cards, strict=False)
+        }
         guarded_query = prompt_guard.wrap_untrusted_text(query)
-        guarded_clues = prompt_guard.wrap_untrusted_text(json.dumps(materialized, ensure_ascii=False, default=str))
+        guarded_clues = prompt_guard.wrap_untrusted_text(stable_json_dumps(clue_cards))
         response = self.llm_gateway.chat(
             [
                 {
@@ -138,7 +144,7 @@ class LLMClueRefiner:
                     "content": (
                         f"query={guarded_query}\n"
                         f"intent={dict(intent)}\n"
-                        f"clues={guarded_clues}\n"
+                        f"clue_cards={guarded_clues}\n"
                         f"runtime_slang_terms={slang_terms[:12]}\n"
                         f"runtime_few_shot_examples={few_shot_examples[:4]}"
                     ),
@@ -150,6 +156,7 @@ class LLMClueRefiner:
             stage="clue_refine",
             budget=budget,
             cache_policy="read_write",
+            cache_key=stable_clue_refine_cache_key(materialized, query=query, intent=intent),
             deadline_ms=deadline_ms,
             extra_body={"budget_item_count": len(materialized)},
         )
@@ -165,7 +172,8 @@ class LLMClueRefiner:
         traces: list[dict[str, Any]] = []
         for clue in materialized:
             clue_id = str(clue.get("clue_id") or "unknown_clue")
-            candidate_payload = payload_by_id.get(clue_id)
+            card_id = card_id_by_clue_id.get(clue_id, clue_id)
+            candidate_payload = payload_by_id.get(card_id) or payload_by_id.get(clue_id)
             usable = isinstance(candidate_payload, Mapping) and isinstance(candidate_payload.get("refined_summary"), str)
             payload = _fallback_refinement(clue) if not usable else _normalize_payload(candidate_payload, clue)
             payload["refined_summary"] = _safe_summary(payload["refined_summary"])
@@ -189,6 +197,7 @@ class LLMClueRefiner:
                     "stage": "clue_refine",
                     "mode": "batch",
                     "clue_id": clue_id,
+                    "prompt_card_id": card_id,
                     "llm_ok": response.ok,
                     "used_fallback": not usable,
                     "runtime_slang_term_count": len(slang_terms),

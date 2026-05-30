@@ -6,7 +6,16 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
 from src.agent.model_router import ModelRouter
-from src.pipeline.stages import ClassifyStage, CleanStage, CorrelateStage, DedupStage, ExtractStage, PassThroughStage, ScoreStage
+from src.pipeline.stages import (
+    ClassifyStage,
+    CleanStage,
+    CorrelateStage,
+    DedupStage,
+    ExtractStage,
+    LLMEnrichStage,
+    PassThroughStage,
+    ScoreStage,
+)
 
 
 @dataclass
@@ -33,15 +42,21 @@ class IntelligencePipeline:
         triage_stage: Any | None = None,
         classify_stage: Any | None = None,
         extract_stage: Any | None = None,
+        llm_enrich_stage: Any | None = None,
         correlate_stage: Any | None = None,
         score_stage: Any | None = None,
         model_router: Any | None = None,
+        llm_gateway: Any | None = None,
+        budget_controller: Any | None = None,
     ) -> None:
         self.clean_stage = clean_stage or CleanStage()
         self.dedup_stage = dedup_stage or DedupStage()
         self.triage_stage = triage_stage or PassThroughStage()
         self.classify_stage = classify_stage or ClassifyStage()
         self.extract_stage = extract_stage or ExtractStage()
+        self.llm_enrich_stage = llm_enrich_stage
+        if self.llm_enrich_stage is None and llm_gateway is not None:
+            self.llm_enrich_stage = LLMEnrichStage(llm_gateway=llm_gateway, budget_controller=budget_controller)
         self.correlate_stage = correlate_stage or CorrelateStage()
         self.score_stage = score_stage or ScoreStage()
         self.model_router = model_router or ModelRouter()
@@ -55,10 +70,11 @@ class IntelligencePipeline:
         classified = self.classify_stage.run_batch(triaged, context=context)
         extracted = self.extract_stage.run_batch(classified, context=context)
         routed = [self._route_item(item) for item in extracted]
-        classifications = [dict(item.get("classification") or {}) for item in extracted if isinstance(item.get("classification"), Mapping)]
-        entities = [dict(entity) for item in extracted for entity in (item.get("entities") or []) if isinstance(entity, Mapping)]
+        enriched = self._run_llm_enrichment(extracted, routed=routed, context=context)
+        classifications = [dict(item.get("classification") or {}) for item in enriched if isinstance(item.get("classification"), Mapping)]
+        entities = [dict(entity) for item in enriched for entity in (item.get("entities") or []) if isinstance(entity, Mapping)]
         stage_context = {**context, "classifications": classifications, "entities": entities}
-        correlated = self.correlate_stage.run_batch(extracted, routed=routed, context=stage_context)
+        correlated = self.correlate_stage.run_batch(enriched, routed=routed, context=stage_context)
         scored = self.score_stage.run_batch(correlated, context=stage_context)
         return PipelineResult(
             cleaned=[dict(item) for item in cleaned],
@@ -73,6 +89,9 @@ class IntelligencePipeline:
                 "classified_count": len(classifications),
                 "entity_count": len(entities),
                 "clue_count": len(scored),
+                "llm_enrich_count": sum(1 for item in enriched if item.get("llm_enrichment")),
+                "llm_enrich_skipped_count": sum(1 for item in enriched if item.get("llm_enrich_skipped_reason")),
+                "llm_enrich_trace_count": len(getattr(self.llm_enrich_stage, "traces", []) or []),
                 "stage_mode": "real_components",
             },
         )
@@ -90,6 +109,24 @@ class IntelligencePipeline:
             quality_score=float(item.get("quality_score") or 0.0),
         )
         return decision.model_dump()
+
+    def _run_llm_enrichment(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        routed: list[dict[str, Any]],
+        context: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        if self.llm_enrich_stage is None:
+            return [dict(item) for item in items]
+        return self.llm_enrich_stage.run_batch(
+            items,
+            routed=routed,
+            context={
+                **dict(context),
+                "allowed_risk_types": [str(item.get("risk_category") or "") for item in items if item.get("risk_category")],
+            },
+        )
 
 
 __all__ = ["IntelligencePipeline", "PipelineResult"]

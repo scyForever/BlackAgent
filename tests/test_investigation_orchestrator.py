@@ -1872,6 +1872,54 @@ def test_high_recall_routing_profile_expands_pool_hit_live_collection_budget():
     assert len(seen) == 3
 
 
+
+def test_high_recall_profile_not_tightened_by_fallback_plan():
+    orchestrator = InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
+
+    result = orchestrator.run(
+        "找接码群控线索",
+        records=[],
+        routing_profile="high_recall",
+    )
+
+    assert result.execution_summary["routing_profile"] == "high_recall"
+    assert result.execution_summary["budget"]["max_raw_records"] == 20000
+    assert result.execution_summary["budget"]["max_candidate_clues"] == 200
+
+
+def test_run_scoped_llm_telemetry_does_not_accumulate_across_runs():
+    orchestrator = InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
+    records = [
+        {
+            "trace_id": "scoped-1",
+            "source_name": "tg-scoped-a",
+            "source_type": "IM",
+            "legal_basis": "AUTHORIZED_PARTNER",
+            "content_text": "群控脚本接码上车，联系 TG:scoped01，落地 https://risk.example/scoped 第一条",
+        },
+        {
+            "trace_id": "scoped-2",
+            "source_name": "forum-scoped-b",
+            "source_type": "Forum",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "群控脚本接码上车，联系 TG:scoped01，落地 https://risk.example/scoped 第二条",
+        },
+        {
+            "trace_id": "scoped-3",
+            "source_name": "feed-scoped-c",
+            "source_type": "THREAT_INTEL",
+            "legal_basis": "THIRD_PARTY_AUTHORIZED_FEED",
+            "content_text": "群控脚本接码上车，联系 TG:scoped01，落地 https://risk.example/scoped 第三条",
+        },
+    ]
+
+    first = orchestrator.run("找接码群控线索", records=records)
+    second = orchestrator.run("找接码群控线索", records=records)
+
+    assert len(orchestrator.llm_gateway.stats()) > second.execution_summary["llm_gateway"]["call_count"]
+    assert second.execution_summary["llm_gateway"]["call_count"] == first.execution_summary["llm_gateway"]["call_count"]
+
+
 def test_request_policy_override_can_disable_live_collection():
     orchestrator = InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
     result = orchestrator.run(
