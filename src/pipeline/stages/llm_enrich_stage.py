@@ -122,11 +122,13 @@ class LLMEnrichStage:
     def _merge_response(self, item: Mapping[str, Any], parsed: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
         payload = dict(item)
         classification = dict(payload.get("classification") or {})
+        payload.setdefault("rule_classification", dict(classification))
         raw_classification = parsed.get("enhanced_classification")
         enhanced_classification = raw_classification if isinstance(raw_classification, Mapping) else {}
         usable_classification = bool(enhanced_classification.get("risk_category"))
         if usable_classification:
             merged_classification = {**classification, **_normalized_classification(enhanced_classification, fallback=classification)}
+            payload["llm_classification"] = _normalized_classification(enhanced_classification, fallback=classification)
             payload["classification"] = merged_classification
             payload["enhanced_classification"] = merged_classification
             payload["risk_category"] = merged_classification.get("risk_category", payload.get("risk_category"))
@@ -134,9 +136,11 @@ class LLMEnrichStage:
 
         raw_entities = parsed.get("enhanced_entities")
         normalized_entities = _normalized_entities(raw_entities, trace_id=str(payload.get("source_trace_id") or payload.get("trace_id") or "unknown"))
+        payload.setdefault("rule_entities", [dict(entity) for entity in (payload.get("entities") or []) if isinstance(entity, Mapping)])
         if normalized_entities:
             existing = [dict(entity) for entity in (payload.get("entities") or []) if isinstance(entity, Mapping)]
             payload["entities"] = _merge_entities(existing, normalized_entities)
+            payload["llm_entities"] = normalized_entities
             payload["enhanced_entities"] = normalized_entities
             payload["entity_count"] = len(payload["entities"])
             entity_types = {str(entity.get("entity_type") or "").lower() for entity in payload["entities"]}
@@ -148,6 +152,8 @@ class LLMEnrichStage:
             "llm_ok": bool(parsed),
             "used_enhanced_classification": usable_classification,
             "used_enhanced_entities": bool(normalized_entities),
+            "preserved_rule_classification": "rule_classification" in payload,
+            "preserved_rule_entities": "rule_entities" in payload,
         }
         return payload, not (usable_classification or normalized_entities)
 

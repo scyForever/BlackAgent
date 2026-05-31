@@ -1,4 +1,4 @@
-"""Offline candidate clue builder over the phase2/3 engine."""
+"""Offline candidate clue builder over the canonical intelligence pipeline."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Any, Iterable, Mapping
 from src.enhancement.clue_quality import ClueQualityEvaluator
 from src.enhancement.engine import PhaseTwoThreeEngine
 from src.enhancement.strategy import RiskClue
+from src.domain import RunPolicyContext
 from src.pipeline.intelligence_pipeline import IntelligencePipeline
 from storage import ClueRepo, InMemoryClueRepo
 
@@ -41,15 +42,29 @@ class OfflineClueBuilder:
         self.phase_engine = phase_engine or PhaseTwoThreeEngine()
         self.quality_evaluator = quality_evaluator or ClueQualityEvaluator()
         self.clue_repo = clue_repo if clue_repo is not None else InMemoryClueRepo()
-        self.intelligence_pipeline = IntelligencePipeline(llm_gateway=llm_gateway, budget_controller=budget_controller)
+        self.run_policy = RunPolicyContext()
+        self.intelligence_pipeline = IntelligencePipeline(
+            llm_gateway=llm_gateway,
+            budget_controller=budget_controller,
+            policy=self.run_policy,
+        )
 
-    def set_runtime_controls(self, *, llm_gateway: Any | None = None, budget_controller: Any | None = None) -> None:
+    def set_runtime_controls(
+        self,
+        *,
+        llm_gateway: Any | None = None,
+        budget_controller: Any | None = None,
+        policy: RunPolicyContext | Mapping[str, Any] | None = None,
+    ) -> None:
         """Refresh per-run LLM/budget controls before building fresh clues."""
 
-        if llm_gateway is not None or budget_controller is not None:
+        if policy is not None:
+            self.run_policy = policy if isinstance(policy, RunPolicyContext) else RunPolicyContext.model_validate(dict(policy))
+        if llm_gateway is not None or budget_controller is not None or policy is not None:
             self.intelligence_pipeline = IntelligencePipeline(
                 llm_gateway=llm_gateway,
                 budget_controller=budget_controller,
+                policy=self.run_policy,
             )
 
     def build(
@@ -61,7 +76,10 @@ class OfflineClueBuilder:
         quality_profile: str = "balanced",
         require_cross_source: bool = False,
         require_evidence_chain: bool = True,
+        policy: RunPolicyContext | Mapping[str, Any] | None = None,
     ) -> OfflineClueBuildResult:
+        if policy is not None:
+            self.set_runtime_controls(policy=policy)
         materialized_records = [dict(record) if isinstance(record, Mapping) else record for record in records]
         record_by_trace = {
             str(record.get("source_trace_id") or record.get("trace_id") or record.get("hash_id") or ""): record
@@ -74,11 +92,14 @@ class OfflineClueBuilder:
                 "quality_profile": quality_profile,
                 "require_cross_source": require_cross_source,
                 "require_evidence_chain": require_evidence_chain,
+                "policy": self.run_policy.model_dump(),
             },
         )
         payload = {
             "status": "completed",
             "mode": "intelligence_pipeline",
+            "pipeline_backend": "intelligence_pipeline",
+            "fallback_backend": None,
             "input_count": len(materialized_records),
             "accepted_count": pipeline_result.execution_summary.get("cleaned_count", 0),
             "dropped_count": max(0, len(materialized_records) - int(pipeline_result.execution_summary.get("cleaned_count", 0) or 0)),
@@ -92,19 +113,16 @@ class OfflineClueBuilder:
             "entities": pipeline_result.entities,
             "risk_clues": pipeline_result.clues,
             "pipeline_summary": pipeline_result.execution_summary,
+            "no_clue_reason": None if pipeline_result.clues else "aggregation_threshold_not_met",
         }
-        if not payload["risk_clues"]:
-            result = self.phase_engine.run(materialized_records, prompt_text=prompt_text, source_candidates=source_candidates)
-            payload = result.model_dump()
-        else:
-            risk_clues = _to_risk_clues(payload["risk_clues"])
-            playbooks = self.phase_engine.playbook_builder.build(risk_clues, materialized_records)
-            strategies = self.phase_engine.strategy_planner.plan(risk_clues, playbooks)
-            payload["playbooks"] = [item.model_dump() if hasattr(item, "model_dump") else dict(item) for item in playbooks]
-            payload["strategies"] = [item.model_dump() if hasattr(item, "model_dump") else dict(item) for item in strategies]
-            payload["playbook_count"] = len(playbooks)
-            payload["strategy_count"] = len(strategies)
-            self.phase_engine._last_run_payload = payload
+        risk_clues = _to_risk_clues(payload["risk_clues"])
+        playbooks = self.phase_engine.playbook_builder.build(risk_clues, materialized_records)
+        strategies = self.phase_engine.strategy_planner.plan(risk_clues, playbooks)
+        payload["playbooks"] = [item.model_dump() if hasattr(item, "model_dump") else dict(item) for item in playbooks]
+        payload["strategies"] = [item.model_dump() if hasattr(item, "model_dump") else dict(item) for item in strategies]
+        payload["playbook_count"] = len(playbooks)
+        payload["strategy_count"] = len(strategies)
+        self.phase_engine._last_run_payload = payload
         assessments = self.quality_evaluator.evaluate_many(
             payload.get("risk_clues", []),
             classifications=payload.get("classifications", []),
@@ -158,6 +176,9 @@ class OfflineClueBuilder:
                 in {
                     "status",
                     "mode",
+                    "pipeline_backend",
+                    "fallback_backend",
+                    "no_clue_reason",
                     "input_count",
                     "accepted_count",
                     "dropped_count",

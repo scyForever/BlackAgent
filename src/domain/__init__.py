@@ -6,6 +6,15 @@ here lets application and pipeline code depend on a stable domain namespace
 while the storage package is split further in later migrations.
 """
 
+from .contracts import (
+    CleanedRecord,
+    ExtractedEntity,
+    IntelRecord,
+    PipelineItem,
+    RiskClassification,
+    RoutedRecord,
+    RunPolicyContext,
+)
 from .models import (
     AuditEvent,
     BudgetConsumed,
@@ -25,13 +34,20 @@ __all__ = [
     "AuditEvent",
     "BudgetConsumed",
     "ClassificationResult",
+    "CleanedRecord",
     "CleanedText",
     "EntityExtractionResult",
+    "ExtractedEntity",
     "ExplorationHypothesis",
     "HypothesisType",
+    "IntelRecord",
     "LegalBasis",
+    "PipelineItem",
     "RawIntelligence",
     "ReviewDecision",
+    "RiskClassification",
     "RiskClue",
+    "RoutedRecord",
+    "RunPolicyContext",
     "utc_now",
 ]

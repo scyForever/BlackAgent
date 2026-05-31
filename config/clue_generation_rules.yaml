@@ -1,0 +1,8 @@
+clue_generation_rules:
+  shared_contact_48h:
+    min_observations: 3
+    window_hours: 48
+  shared_domain_multi_source:
+    min_sources: 2
+  high_frequency_template:
+    min_records: 3

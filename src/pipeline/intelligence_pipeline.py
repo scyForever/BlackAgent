@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
 from src.agent.model_router import ModelRouter
+from src.domain import RunPolicyContext
 from src.pipeline.stages import (
     ClassifyStage,
     CleanStage,
@@ -16,6 +17,7 @@ from src.pipeline.stages import (
     PassThroughStage,
     ScoreStage,
 )
+from src.rules import RuleRegistry
 
 
 @dataclass
@@ -24,6 +26,7 @@ class PipelineResult:
     classified: list[dict[str, Any]] = field(default_factory=list)
     entities: list[dict[str, Any]] = field(default_factory=list)
     routed: list[dict[str, Any]] = field(default_factory=list)
+    enriched: list[dict[str, Any]] = field(default_factory=list)
     clues: list[dict[str, Any]] = field(default_factory=list)
     execution_summary: dict[str, Any] = field(default_factory=dict)
 
@@ -48,8 +51,11 @@ class IntelligencePipeline:
         model_router: Any | None = None,
         llm_gateway: Any | None = None,
         budget_controller: Any | None = None,
+        policy: RunPolicyContext | Mapping[str, Any] | None = None,
     ) -> None:
+        self.policy = _coerce_policy(policy)
         self.clean_stage = clean_stage or CleanStage()
+        self.rule_registry = RuleRegistry()
         self.dedup_stage = dedup_stage or DedupStage()
         self.triage_stage = triage_stage or PassThroughStage()
         self.classify_stage = classify_stage or ClassifyStage()
@@ -59,10 +65,17 @@ class IntelligencePipeline:
             self.llm_enrich_stage = LLMEnrichStage(llm_gateway=llm_gateway, budget_controller=budget_controller)
         self.correlate_stage = correlate_stage or CorrelateStage()
         self.score_stage = score_stage or ScoreStage()
-        self.model_router = model_router or ModelRouter()
+        self.model_router = model_router or ModelRouter(profile=self.policy.routing_profile)
 
     def run(self, raw_items: Iterable[Mapping[str, Any]], context: Mapping[str, Any] | None = None) -> PipelineResult:
         context = dict(context or {})
+        policy = _coerce_policy(context.get("policy") or self.policy)
+        self.policy = policy
+        if hasattr(self.model_router, "with_profile"):
+            self.model_router = self.model_router.with_profile(policy.routing_profile)
+        context["policy"] = policy.model_dump()
+        context["routing_profile"] = policy.routing_profile
+        context["llm_stage_policy"] = dict(policy.llm_stage_policy)
         materialized_raw = [dict(item) for item in raw_items]
         cleaned = self.clean_stage.run_batch(materialized_raw, context=context)
         deduped = self.dedup_stage.run_batch(cleaned, context=context)
@@ -76,11 +89,20 @@ class IntelligencePipeline:
         stage_context = {**context, "classifications": classifications, "entities": entities}
         correlated = self.correlate_stage.run_batch(enriched, routed=routed, context=stage_context)
         scored = self.score_stage.run_batch(correlated, context=stage_context)
+        entity_graph_summary = {}
+        graph_store = getattr(self.correlate_stage, "entity_graph", None)
+        if graph_store is not None and hasattr(graph_store, "snapshot"):
+            graph_snapshot = graph_store.snapshot()
+            entity_graph_summary = {
+                key: graph_snapshot.get(key)
+                for key in ("entity_count", "observation_count", "relation_count", "cross_source_entity_count")
+            }
         return PipelineResult(
             cleaned=[dict(item) for item in cleaned],
             classified=classifications,
             entities=entities,
             routed=routed,
+            enriched=[dict(item) for item in enriched],
             clues=[dict(item) for item in scored],
             execution_summary={
                 "status": "completed",
@@ -93,6 +115,13 @@ class IntelligencePipeline:
                 "llm_enrich_skipped_count": sum(1 for item in enriched if item.get("llm_enrich_skipped_reason")),
                 "llm_enrich_trace_count": len(getattr(self.llm_enrich_stage, "traces", []) or []),
                 "stage_mode": "real_components",
+                "pipeline_backend": "intelligence_pipeline",
+                "routing_profile": policy.routing_profile,
+                "model_router_profile": getattr(self.model_router, "profile", None),
+                "llm_stage_policy": dict(policy.llm_stage_policy),
+                "domain_contract_version": "pipeline_item_v1",
+                "entity_graph": entity_graph_summary,
+                "rule_version": self.rule_registry.version_hash(),
             },
         )
 
@@ -117,8 +146,15 @@ class IntelligencePipeline:
         routed: list[dict[str, Any]],
         context: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
-        if self.llm_enrich_stage is None:
-            return [dict(item) for item in items]
+        policy = _coerce_policy(context.get("policy") or self.policy)
+        if self.llm_enrich_stage is None or not policy.enable_llm_record_enrich:
+            reason = "policy_disabled_record_enrich" if not policy.enable_llm_record_enrich else None
+            output = [dict(item) for item in items]
+            if reason:
+                for item, route in zip(output, routed, strict=False):
+                    if str(route.get("action") or "") == "llm_classify_extract":
+                        item["llm_enrich_skipped_reason"] = reason
+            return output
         return self.llm_enrich_stage.run_batch(
             items,
             routed=routed,
@@ -127,6 +163,14 @@ class IntelligencePipeline:
                 "allowed_risk_types": [str(item.get("risk_category") or "") for item in items if item.get("risk_category")],
             },
         )
+
+
+def _coerce_policy(value: RunPolicyContext | Mapping[str, Any] | None) -> RunPolicyContext:
+    if isinstance(value, RunPolicyContext):
+        return value
+    if isinstance(value, Mapping):
+        return RunPolicyContext.model_validate(dict(value))
+    return RunPolicyContext()
 
 
 __all__ = ["IntelligencePipeline", "PipelineResult"]

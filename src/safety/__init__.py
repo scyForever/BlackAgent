@@ -11,6 +11,7 @@ from .prompt_sanitizer import (
     stable_clue_card_id,
     stable_clue_refine_cache_key,
 )
+from .source_policy_guard import SourcePolicyGuard
 
 __all__ = [
     "OutputValidator",
@@ -18,6 +19,7 @@ __all__ = [
     "PolicyGuard",
     "PromptGuard",
     "SafetyPolicyViolation",
+    "SourcePolicyGuard",
     "sanitize_clue_for_llm",
     "sanitize_entity_for_llm",
     "sanitize_source_for_llm",

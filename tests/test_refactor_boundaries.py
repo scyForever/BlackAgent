@@ -1,4 +1,5 @@
 from src.agent import (
+    BudgetLedger,
     BudgetController,
     ClueMergeService,
     ClueRanker,
@@ -7,6 +8,14 @@ from src.agent import (
     ModelRouter,
     RuntimeBudget,
     SourceSelectionService,
+)
+from src.domain import (
+    CleanedRecord,
+    ExtractedEntity,
+    IntelRecord,
+    PipelineItem,
+    RiskClassification,
+    RunPolicyContext,
 )
 from src.agent.query_rewriter import LLMSourceQueryRewriter
 from src.enhancement.llm_clue_refiner import LLMClueRefiner
@@ -17,8 +26,12 @@ from src.infra import RuntimeContainer
 from src.pipeline import IntelligencePipeline, PipelineResult
 from src.pipeline.stages import LLMEnrichStage, PassThroughStage
 from src.safety import OutputValidator, PIIMasker, PromptGuard
+from src.safety.source_policy_guard import SourcePolicyGuard
+from src.rules import RuleRegistry
 from src.agent import InvestigationOrchestrator
 from src.config_loader import Settings
+from blackagent.pipeline import IntelligencePipeline as ProductPipeline
+from blackagent.domain import IntelRecord as ProductIntelRecord
 
 
 def test_domain_namespace_exposes_storage_contracts_and_new_risk_clue_contract():
@@ -43,6 +56,14 @@ def test_domain_namespace_exposes_storage_contracts_and_new_risk_clue_contract()
     assert raw.source_name == "authorized"
     assert clue.review_status == "pending"
     assert clue.model_dump()["quality_score"] == 0.82
+
+    item = PipelineItem(
+        record=IntelRecord(trace_id="contract-1", source_name="src", source_type="IM", legal_basis="PUBLIC_COMPLIANT_DATA", content_text="群控接码"),
+        cleaned=CleanedRecord(trace_id="contract-1", raw_text="群控接码", clean_text="群控接码", normalized_text="群控接码", quality_score=0.8, noise_score=0.1),
+        classification=RiskClassification(trace_id="contract-1", risk_category="工具交易", confidence=0.9, classifier_version="test"),
+        entities=[ExtractedEntity(entity_id="e1", trace_id="contract-1", entity_type="tool_name", raw_value="群控", normalized_value="群控", confidence=0.9, sensitivity_level="normal", extraction_method="test")],
+    )
+    assert item.record.trace_id == "contract-1"
 
 
 def test_model_router_budget_controller_and_clue_ranker_control_refinement_spend():
@@ -79,6 +100,10 @@ def test_model_router_budget_controller_and_clue_ranker_control_refinement_spend
     assert not budget.allow_llm_call(stage="clue_refine", estimated_tokens=1)
     assert ranked[0]["clue_id"] == "strong"
     assert ranked[0]["refine_priority_score"] > ranked[1]["refine_priority_score"]
+    ledger = budget.snapshot()["llm_budget"]
+    assert ledger["attempted_calls"] >= 2
+    assert ledger["allowed_calls"] == 1
+    assert ledger["denied_calls"] >= 1
 
 
 def test_application_service_and_runtime_container_wrap_existing_runtime_dependencies():
@@ -114,6 +139,7 @@ def test_application_service_and_runtime_container_wrap_existing_runtime_depende
 
 
 def test_intelligence_pipeline_boundary_runs_composable_stages():
+    policy = RunPolicyContext.from_profile_config(routing_profile="fast", profile_config={"enable_llm_record_enrich": False})
     pipeline = IntelligencePipeline(
         clean_stage=PassThroughStage(),
         dedup_stage=PassThroughStage(),
@@ -123,6 +149,7 @@ def test_intelligence_pipeline_boundary_runs_composable_stages():
         correlate_stage=PassThroughStage(),
         score_stage=PassThroughStage(),
         model_router=ModelRouter(),
+        policy=policy,
     )
 
     result = pipeline.run(
@@ -141,6 +168,9 @@ def test_intelligence_pipeline_boundary_runs_composable_stages():
     assert isinstance(result, PipelineResult)
     assert result.execution_summary["input_count"] == 1
     assert result.routed[0]["action"] == "llm_classify_extract"
+    assert result.execution_summary["routing_profile"] == "fast"
+    assert result.execution_summary["model_router_profile"] == "fast"
+    assert result.execution_summary["llm_stage_policy"]["record_enrich"] is False
 
 
 def test_intelligence_pipeline_default_stages_run_real_components():
@@ -174,6 +204,9 @@ def test_intelligence_pipeline_default_stages_run_real_components():
     )
 
     assert result.execution_summary["stage_mode"] == "real_components"
+    assert result.execution_summary["pipeline_backend"] == "intelligence_pipeline"
+    assert result.execution_summary["domain_contract_version"] == "pipeline_item_v1"
+    assert result.execution_summary["entity_graph"]["observation_count"] >= 1
     assert result.execution_summary["classified_count"] >= 1
     assert result.execution_summary["entity_count"] >= 1
     assert result.clues
@@ -204,6 +237,63 @@ def test_orchestrator_split_services_are_importable_and_operational():
     )
     assert merged[0]["source_names"] == ["a", "b"]
     assert InvestigationTelemetryService().summarize_llm([{"stage": "clue_refine", "ok": True}])["by_stage_count"] == {"clue_refine": 1}
+
+
+def test_source_policy_guard_blocks_unauthorized_sources_before_custom_collector():
+    guard = SourcePolicyGuard()
+    allowed = {
+        "source_name": "public",
+        "source_type": "Forum",
+        "source_url": "https://example.com/feed",
+        "legal_basis": "PUBLIC_COMPLIANT_DATA",
+    }
+    assert guard.allowed(allowed)
+    assert not guard.allowed({**allowed, "legal_basis": "UNAUTHORIZED_PRIVATE_GROUP"})
+    assert not guard.allowed({**allowed, "allow_login_bypass": True})
+    assert not guard.allowed({**allowed, "allow_interaction": True})
+    assert not guard.allowed({**allowed, "source_url": "https://example.com/feed?token=secret"})
+
+
+def test_orchestrator_source_policy_cannot_be_bypassed_by_injected_collector():
+    called = []
+
+    def collect_source(source):  # noqa: ANN001
+        called.append(source)
+        return [{"trace_id": "bad-1", "content_text": "不应被采集"}]
+
+    result = InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True)).run(
+        "找接码群控相关线索",
+        available_sources=[
+            {
+                "source_name": "bad",
+                "source_type": "forum",
+                "source_url": "https://example.com/q",
+                "query_url_template": "https://example.com/search?q={query}",
+                "legal_basis": "UNAUTHORIZED_PRIVATE_GROUP",
+                "allow_login_bypass": True,
+                "allow_interaction": True,
+            }
+        ],
+        collect_source_records=collect_source,
+    )
+
+    assert called == []
+    assert result.collection_runs[0]["status"] == "blocked_by_source_policy"
+    assert result.collection_runs[0]["reason"] in {"missing_authorized_legal_basis", "allow_interaction_forbidden", "allow_login_bypass_forbidden"}
+    assert result.execution_summary["used_live_collection"] is False
+
+
+def test_rule_registry_loads_config_and_versions_rules():
+    registry = RuleRegistry()
+    assert "tool_trade" in registry.load_taxonomy()
+    assert registry.load_slang_dictionary()["飞机"] == "Telegram"
+    assert "警方" in registry.load_context_polarity()["defensive_markers"]
+    assert len(registry.version_hash()) == 16
+
+
+def test_product_package_namespace_exports_pipeline_and_domain_contracts():
+    assert ProductPipeline is IntelligencePipeline
+    assert ProductIntelRecord(trace_id="pkg-1", content_text="ok").trace_id == "pkg-1"
 
 
 def test_extracted_orchestrator_services_can_run_assigned_boundaries():
@@ -389,6 +479,12 @@ def test_llm_enrich_stage_uses_model_router_budget_and_preserves_rule_fallback()
 
     assert result.routed[0]["action"] == "llm_classify_extract"
     assert result.classified[0]["risk_category"] == "工具交易"
+    enriched_item = result.enriched[0]
+    assert enriched_item["rule_classification"]["risk_category"] == "unknown"
+    assert enriched_item["llm_classification"]["risk_category"] == "工具交易"
+    assert enriched_item["llm_enrichment"]["preserved_rule_entities"] is True
+    assert enriched_item["rule_entities"][0]["entity_value"] == "TG:plain01"
+    assert enriched_item["llm_entities"][0]["entity_type"] == "tool_name"
     assert result.execution_summary["llm_enrich_count"] == 1
     assert result.execution_summary["llm_enrich_trace_count"] == 1
     assert budget.snapshot()["classified_by_llm"] == 1

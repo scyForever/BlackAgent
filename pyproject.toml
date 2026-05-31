@@ -24,10 +24,14 @@ dev = [
     "pytest>=7.4,<9.0",
 ]
 
+[project.scripts]
+blackagent = "blackagent.interfaces.cli.main:main"
+
 [tool.setuptools.packages.find]
+where = ["."]
 include = ["src*", "storage*"]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = [".", "src"]
 testpaths = ["tests"]
 addopts = "-q"

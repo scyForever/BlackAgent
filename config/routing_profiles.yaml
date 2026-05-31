@@ -13,6 +13,14 @@ routing_profiles:
     enable_llm_intent_parse: false
     enable_query_rewrite: false
     enable_live_collection: false
+    enable_llm_record_enrich: false
+    enable_llm_clue_refine: true
+    llm_stage_policy:
+      intent_parse: false
+      investigation_plan: false
+      source_query_rewrite: false
+      record_enrich: false
+      clue_refine: true
     prefer_clue_pool: true
     min_rule_confidence_for_auto_accept: 0.82
 
@@ -30,6 +38,14 @@ routing_profiles:
     enable_llm_intent_parse: true
     enable_query_rewrite: true
     enable_live_collection: true
+    enable_llm_record_enrich: true
+    enable_llm_clue_refine: true
+    llm_stage_policy:
+      intent_parse: true
+      investigation_plan: true
+      source_query_rewrite: true
+      record_enrich: true
+      clue_refine: true
     prefer_clue_pool: true
     min_rule_confidence_for_auto_accept: 0.85
 
@@ -47,5 +63,13 @@ routing_profiles:
     enable_llm_intent_parse: true
     enable_query_rewrite: true
     enable_live_collection: true
+    enable_llm_record_enrich: true
+    enable_llm_clue_refine: true
+    llm_stage_policy:
+      intent_parse: true
+      investigation_plan: true
+      source_query_rewrite: true
+      record_enrich: true
+      clue_refine: true
     prefer_clue_pool: false
     min_rule_confidence_for_auto_accept: 0.78

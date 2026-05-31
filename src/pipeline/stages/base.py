@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping
 
 from src.cleaner.pipeline import CleanerPipeline
+from src.domain import CleanedRecord, ExtractedEntity, IntelRecord, PipelineItem, RiskClassification
 from src.enhancement.clue_quality import ClueQualityEvaluator
 from src.enhancement.source_intake import MultimodalTextExtractor
 from src.enhancement.strategy import RiskClueAggregator
 from src.enhancement.text_intelligence import AdaptiveEntropyFilter, AdvancedEntityExtractor, FineGrainedIntentClassifier
+from src.storage.entity_graph import EntityGraphStore
 
 
 class PassThroughStage:
@@ -40,6 +42,28 @@ class CleanStage:
             merged.update(payload)
             merged.setdefault("trace_id", trace_id)
             merged.setdefault("content_text", payload.get("clean_text") or merged.get("content_text"))
+            pipeline_item = PipelineItem(
+                record=IntelRecord(
+                    trace_id=str(merged.get("trace_id") or trace_id),
+                    source_name=_optional_str(merged.get("source_name")),
+                    source_type=_optional_str(merged.get("source_type")),
+                    legal_basis=_optional_str(merged.get("legal_basis")),
+                    content_text=str(merged.get("content_text") or merged.get("clean_text") or ""),
+                    publish_time=_optional_str(merged.get("publish_time")),
+                    metadata={key: value for key, value in merged.items() if key not in {"content_text", "clean_text"}},
+                ),
+                cleaned=CleanedRecord(
+                    trace_id=str(merged.get("trace_id") or trace_id),
+                    raw_text=str((raw_by_trace.get(trace_id, {}) or {}).get("content_text") or ""),
+                    clean_text=str(merged.get("clean_text") or merged.get("content_text") or ""),
+                    normalized_text=str(merged.get("normalized_text") or merged.get("clean_text") or merged.get("content_text") or ""),
+                    quality_score=float(merged.get("quality_score") or 0.0),
+                    noise_score=float(merged.get("noise_score") or 0.0),
+                    dedup_group_id=_optional_str(merged.get("dedup_group_id")),
+                ),
+                payload=merged,
+            )
+            merged["domain_contract"] = pipeline_item.model_dump()
             output.append(merged)
         return output
 
@@ -59,6 +83,7 @@ class DedupStage:
             elif group_id:
                 seen[group_id] = str(payload.get("source_trace_id") or payload.get("trace_id") or "")
                 payload["is_duplicate"] = False
+            _sync_cleaned_contract(payload)
             output.append(payload)
         return output
 
@@ -78,6 +103,7 @@ class ClassifyStage:
             payload["confidence"] = classification.get("confidence", payload.get("confidence"))
             payload["risk_category"] = classification.get("risk_category")
             payload["has_conflict"] = classification.get("conflict_status") == "CONFLICT_REVIEW"
+            _sync_classification_contract(payload, classification)
             output.append(payload)
         return output
 
@@ -99,6 +125,7 @@ class ExtractStage:
             payload["has_contact"] = bool(entity_types.intersection({"contact", "account"}))
             payload["has_url"] = bool(entity_types.intersection({"url", "domain"}))
             payload["has_tool"] = "tool_name" in entity_types
+            _sync_entity_contracts(payload, entities)
             output.append(payload)
         return output
 
@@ -106,17 +133,46 @@ class ExtractStage:
 class CorrelateStage:
     """Use RiskClueAggregator over classified/extracted stage records."""
 
-    def __init__(self, aggregator: RiskClueAggregator | None = None) -> None:
+    def __init__(self, aggregator: RiskClueAggregator | None = None, entity_graph: EntityGraphStore | None = None) -> None:
         self.aggregator = aggregator or RiskClueAggregator()
+        self.entity_graph = entity_graph or EntityGraphStore()
 
     def run_batch(self, items: Iterable[Mapping[str, Any]], **_: Any) -> list[dict[str, Any]]:
         records = [dict(item) for item in items]
         classifications = [dict(item.get("classification") or {}) for item in records if isinstance(item.get("classification"), Mapping)]
         entities = [dict(entity) for item in records for entity in (item.get("entities") or []) if isinstance(entity, Mapping)]
+        record_by_trace = {str(record.get("trace_id") or record.get("source_trace_id") or ""): record for record in records}
+        for entity in entities:
+            trace_id = str(entity.get("source_trace_id") or entity.get("trace_id") or "")
+            self.entity_graph.add_observation(entity, record_by_trace.get(trace_id, {}))
+        for record in records:
+            item_entities = [entity for entity in (record.get("entities") or []) if isinstance(entity, Mapping)]
+            entity_ids = [
+                self.entity_graph.add_observation(entity, record).entity_id
+                for entity in item_entities
+                if str(entity.get("normalized_value") or entity.get("entity_value") or "").strip()
+            ]
+            for index, src_id in enumerate(entity_ids):
+                for dst_id in entity_ids[index + 1 :]:
+                    self.entity_graph.add_relation(
+                        src_id,
+                        dst_id,
+                        "CO_OCCURS_IN_RECORD",
+                        evidence_trace_ids=[str(record.get("trace_id") or record.get("source_trace_id") or "")],
+                        confidence=0.72,
+                    )
         clues = [
             clue.model_dump() if hasattr(clue, "model_dump") else dict(clue)
             for clue in self.aggregator.aggregate(records=records, classifications=classifications, entities=entities)
         ]
+        graph_snapshot = self.entity_graph.snapshot()
+        for clue in clues:
+            clue["entity_observation_refs"] = [
+                observation["observation_id"]
+                for observation in graph_snapshot["observations"]
+                if observation["trace_id"] in set(clue.get("evidence_trace_ids") or [])
+            ]
+            clue["entity_graph_backend"] = "entity_graph_store"
         return clues
 
 
@@ -159,6 +215,97 @@ def _dump(value: Any) -> dict[str, Any]:
     if hasattr(value, "__dict__"):
         return dict(value.__dict__)
     return {"value": value}
+
+
+def _optional_str(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def _contract_payload(item: dict[str, Any]) -> dict[str, Any]:
+    existing = item.get("domain_contract") if isinstance(item.get("domain_contract"), Mapping) else {}
+    if existing:
+        return dict(existing)
+    trace_id = str(item.get("trace_id") or item.get("source_trace_id") or item.get("hash_id") or "unknown")
+    contract = PipelineItem(
+        record=IntelRecord(
+            trace_id=trace_id,
+            source_name=_optional_str(item.get("source_name")),
+            source_type=_optional_str(item.get("source_type")),
+            legal_basis=_optional_str(item.get("legal_basis")),
+            content_text=str(item.get("content_text") or item.get("clean_text") or ""),
+            publish_time=_optional_str(item.get("publish_time")),
+            metadata={},
+        ),
+        payload=dict(item),
+    )
+    return contract.model_dump()
+
+
+def _sync_cleaned_contract(item: dict[str, Any]) -> None:
+    contract = _contract_payload(item)
+    trace_id = str(item.get("trace_id") or item.get("source_trace_id") or contract.get("record", {}).get("trace_id") or "unknown")
+    cleaned = dict(contract.get("cleaned") or {})
+    cleaned.update(
+        CleanedRecord(
+            trace_id=trace_id,
+            raw_text=str(cleaned.get("raw_text") or item.get("content_text") or ""),
+            clean_text=str(item.get("clean_text") or item.get("content_text") or ""),
+            normalized_text=str(item.get("normalized_text") or item.get("clean_text") or item.get("content_text") or ""),
+            quality_score=float(item.get("quality_score") or cleaned.get("quality_score") or 0.0),
+            noise_score=float(item.get("noise_score") or cleaned.get("noise_score") or 0.0),
+            dedup_group_id=_optional_str(item.get("dedup_group_id")),
+            is_duplicate=bool(item.get("is_duplicate")),
+            duplicate_of=_optional_str(item.get("duplicate_of")),
+        ).model_dump()
+    )
+    contract["cleaned"] = cleaned
+    contract["payload"] = dict(item)
+    item["domain_contract"] = contract
+
+
+def _sync_classification_contract(item: dict[str, Any], classification: Mapping[str, Any]) -> None:
+    contract = _contract_payload(item)
+    trace_id = str(item.get("trace_id") or item.get("source_trace_id") or classification.get("source_trace_id") or "unknown")
+    contract["classification"] = RiskClassification(
+        trace_id=trace_id,
+        risk_category=str(classification.get("risk_category") or "unknown"),
+        secondary_label=str(classification.get("secondary_label") or "待研判"),
+        confidence=float(classification.get("confidence") or 0.0),
+        conflict_status=_optional_str(classification.get("conflict_status")),
+        evidence=[str(value) for value in (classification.get("evidence") or [])],
+        review_required=bool(classification.get("review_required")),
+        classifier_version=str(classification.get("classifier_version") or classification.get("decision_version") or "unknown"),
+    ).model_dump()
+    contract["payload"] = dict(item)
+    item["domain_contract"] = contract
+
+
+def _sync_entity_contracts(item: dict[str, Any], entities: Iterable[Mapping[str, Any]]) -> None:
+    contract = _contract_payload(item)
+    trace_id = str(item.get("trace_id") or item.get("source_trace_id") or contract.get("record", {}).get("trace_id") or "unknown")
+    normalized_entities: list[dict[str, Any]] = []
+    for index, entity in enumerate(entities):
+        value = str(entity.get("normalized_value") or entity.get("entity_value") or "")
+        if not value:
+            continue
+        normalized_entities.append(
+            ExtractedEntity(
+                entity_id=str(entity.get("entity_id") or f"{trace_id}:{index}:{entity.get('entity_type') or 'entity'}"),
+                trace_id=str(entity.get("source_trace_id") or trace_id),
+                entity_type=str(entity.get("entity_type") or "unknown"),
+                raw_value=_optional_str(entity.get("entity_value") or entity.get("raw_value")),
+                normalized_value=value,
+                masked_value=_optional_str(entity.get("masked_value")),
+                confidence=float(entity.get("confidence") or 0.0),
+                sensitivity_level=str(entity.get("sensitivity_level") or "normal"),
+                extraction_method=str(entity.get("extraction_method") or entity.get("extractor_version") or "unknown"),
+            ).model_dump()
+        )
+    contract["entities"] = normalized_entities
+    contract["payload"] = dict(item)
+    item["domain_contract"] = contract
 
 
 __all__ = ["ClassifyStage", "CleanStage", "CorrelateStage", "DedupStage", "ExtractStage", "PassThroughStage", "ScoreStage"]

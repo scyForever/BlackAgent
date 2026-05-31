@@ -1,0 +1,19 @@
+model_stage_policy:
+  fast:
+    intent_parse: false
+    investigation_plan: false
+    source_query_rewrite: false
+    record_enrich: false
+    clue_refine: true
+  balanced:
+    intent_parse: true
+    investigation_plan: true
+    source_query_rewrite: true
+    record_enrich: true
+    clue_refine: true
+  high_recall:
+    intent_parse: true
+    investigation_plan: true
+    source_query_rewrite: true
+    record_enrich: true
+    clue_refine: true

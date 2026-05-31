@@ -39,3 +39,39 @@ def test_offline_clue_builder_persists_candidate_clues_to_repo():
     assert result.saved_clue_count >= 2
     assert len(repo.list()) >= 2
     assert repo.list()[0]["clue_id"].startswith("clue_")
+    assert result.execution_summary["pipeline_backend"] == "intelligence_pipeline"
+    assert result.execution_summary["fallback_backend"] is None
+
+
+def test_offline_clue_builder_does_not_fallback_to_phase_engine_when_pipeline_has_no_clues():
+    class _FailIfRun:
+        def __init__(self) -> None:
+            from src.enhancement.engine import PhaseTwoThreeEngine
+
+            engine = PhaseTwoThreeEngine()
+            self.playbook_builder = engine.playbook_builder
+            self.strategy_planner = engine.strategy_planner
+            self._last_run_payload = None
+
+        def run(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("PhaseTwoThreeEngine.run must not be used as fallback")
+
+    builder = OfflineClueBuilder(phase_engine=_FailIfRun())
+    result = builder.build(
+        [
+            {
+                "trace_id": "no-clue-1",
+                "source_name": "public",
+                "source_type": "Forum",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "content_text": "普通安全研究复盘，不提供任何联系方式。",
+            }
+        ],
+        require_evidence_chain=False,
+    )
+
+    assert result.status == "completed"
+    assert result.saved_clue_count == 0
+    assert result.execution_summary["pipeline_backend"] == "intelligence_pipeline"
+    assert result.execution_summary["fallback_backend"] is None
+    assert result.execution_summary["no_clue_reason"] == "aggregation_threshold_not_met"

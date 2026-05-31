@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.pipeline import IntelligencePipeline
+from src.domain import RunPolicyContext
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -22,6 +23,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--entities-gold", default=None, help="Optional JSONL focused on entity extraction.")
     parser.add_argument("--clues-gold", default=None, help="Optional JSONL focused on clue aggregation.")
     parser.add_argument("--hard-negative", default=None, help="Optional JSONL where no risk prediction is expected.")
+    parser.add_argument("--profile", default="high_recall", choices=["fast", "balanced", "high_recall"], help="Routing profile to evaluate.")
+    parser.add_argument("--min-classification-f1", type=float, default=None, help="Fail if classification F1 is below this threshold.")
+    parser.add_argument("--min-entity-f1", type=float, default=None, help="Fail if entity F1 is below this threshold.")
+    parser.add_argument("--max-hard-negative-fpr", type=float, default=None, help="Fail if hard-negative false-positive rate is above this threshold.")
+    parser.add_argument("--max-llm-calls-per-1000", type=float, default=None, help="Fail if profile LLM calls per 1000 records exceed this threshold.")
     parser.add_argument("--output", default="data/eval_report.json", help="Where to write JSON metrics.")
     return parser.parse_args(argv)
 
@@ -51,9 +57,11 @@ def evaluate(
     entity_records: list[dict[str, Any]] | None = None,
     clue_records: list[dict[str, Any]] | None = None,
     hard_negative_records: list[dict[str, Any]] | None = None,
+    profile: str = "high_recall",
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    pipeline = IntelligencePipeline()
+    policy = RunPolicyContext.from_profile_config(routing_profile=profile, profile_config=_profile_config(profile))
+    pipeline = IntelligencePipeline(policy=policy)
     classification_records = list(records)
     entity_eval_records = list(entity_records or records)
     hard_negative_records = list(hard_negative_records or [])
@@ -61,10 +69,10 @@ def evaluate(
 
     classification_result = pipeline.run(
         [*classification_records, *hard_negative_records],
-        context={"quality_profile": "high_recall", "require_evidence_chain": False},
+        context={"quality_profile": profile, "require_evidence_chain": False, "policy": policy.model_dump()},
     )
-    entity_result = pipeline.run(entity_eval_records, context={"quality_profile": "high_recall", "require_evidence_chain": False})
-    clue_result = pipeline.run(clue_eval_records, context={"quality_profile": "high_recall", "require_evidence_chain": False}) if clue_eval_records else None
+    entity_result = pipeline.run(entity_eval_records, context={"quality_profile": profile, "require_evidence_chain": False, "policy": policy.model_dump()})
+    clue_result = pipeline.run(clue_eval_records, context={"quality_profile": profile, "require_evidence_chain": False, "policy": policy.model_dump()}) if clue_eval_records else None
     elapsed_ms = (time.perf_counter() - started) * 1000
 
     classification_metrics = evaluate_classification(
@@ -73,8 +81,12 @@ def evaluate(
     )
     entity_metrics = evaluate_entities(entity_eval_records, entity_result.entities)
     clue_metrics = evaluate_clues(clue_eval_records, clue_result.clues if clue_result is not None else [])
+    llm_calls = int(classification_result.execution_summary.get("llm_enrich_trace_count") or 0)
+    llm_calls_per_1000 = round(llm_calls / max(len(classification_records) + len(hard_negative_records), 1) * 1000, 4)
+    valid_clues = max(1, clue_metrics["overall"]["tp"])
     report = {
         "status": "completed",
+        "profile": profile,
         "record_count": len(classification_records),
         "classification_record_count": len(classification_records),
         "entity_record_count": len(entity_eval_records),
@@ -95,13 +107,34 @@ def evaluate(
         "high_risk_recall": classification_metrics["overall"]["recall"],
         "false_positive_rate": classification_metrics["false_positive_rate"],
         "hard_negative": classification_metrics["hard_negative"],
-        "llm_calls_per_1000_records": 0.0,
-        "estimated_tokens_per_valid_clue": 0.0,
+        "llm_calls_per_1000_records": llm_calls_per_1000,
+        "estimated_tokens_per_valid_clue": round(float(classification_result.execution_summary.get("estimated_tokens") or 0.0) / valid_clues, 4),
         "p50_latency_ms": round(elapsed_ms, 2),
         "p95_latency_ms": round(elapsed_ms, 2),
         "pipeline_summary": classification_result.execution_summary,
+        "rule_version": classification_result.execution_summary.get("rule_version"),
+        "profile_comparison_dimensions": {
+            "llm_calls": llm_calls,
+            "llm_calls_per_1000_records": llm_calls_per_1000,
+            "classification_recall": classification_metrics["overall"]["recall"],
+            "false_positive_rate": classification_metrics["false_positive_rate"],
+            "p95_latency_ms": round(elapsed_ms, 2),
+        },
     }
     return report
+
+
+def quality_gate_failures(report: Mapping[str, Any], args: argparse.Namespace) -> list[str]:
+    failures: list[str] = []
+    if args.min_classification_f1 is not None and float(report["classification_f1"]) < args.min_classification_f1:
+        failures.append(f"classification_f1_below_threshold:{report['classification_f1']}<{args.min_classification_f1}")
+    if args.min_entity_f1 is not None and float(report["entity_f1"]) < args.min_entity_f1:
+        failures.append(f"entity_f1_below_threshold:{report['entity_f1']}<{args.min_entity_f1}")
+    if args.max_hard_negative_fpr is not None and float(report["false_positive_rate"]) > args.max_hard_negative_fpr:
+        failures.append(f"hard_negative_fpr_above_threshold:{report['false_positive_rate']}>{args.max_hard_negative_fpr}")
+    if args.max_llm_calls_per_1000 is not None and float(report["llm_calls_per_1000_records"]) > args.max_llm_calls_per_1000:
+        failures.append(f"llm_calls_per_1000_above_threshold:{report['llm_calls_per_1000_records']}>{args.max_llm_calls_per_1000}")
+    return failures
 
 
 def evaluate_classification(records: list[dict[str, Any]], actual_items: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
@@ -269,14 +302,46 @@ def main(argv: list[str] | None = None) -> int:
         entity_records=load_jsonl(args.entities_gold) if args.entities_gold else None,
         clue_records=load_jsonl(args.clues_gold) if args.clues_gold else None,
         hard_negative_records=load_jsonl(args.hard_negative) if args.hard_negative else None,
+        profile=args.profile,
     )
+    failures = quality_gate_failures(report, args)
+    if failures:
+        report["status"] = "failed_quality_gate"
+        report["quality_gate_failures"] = failures
     output_path = Path(args.output)
     if not output_path.is_absolute():
         output_path = PROJECT_ROOT / output_path
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0
+    return 1 if failures else 0
+
+
+def _profile_config(profile: str) -> dict[str, Any]:
+    defaults = {
+        "fast": {
+            "enable_llm_intent_parse": False,
+            "enable_query_rewrite": False,
+            "enable_live_collection": False,
+            "enable_llm_record_enrich": False,
+            "enable_llm_clue_refine": True,
+        },
+        "balanced": {
+            "enable_llm_intent_parse": True,
+            "enable_query_rewrite": True,
+            "enable_live_collection": True,
+            "enable_llm_record_enrich": True,
+            "enable_llm_clue_refine": True,
+        },
+        "high_recall": {
+            "enable_llm_intent_parse": True,
+            "enable_query_rewrite": True,
+            "enable_live_collection": True,
+            "enable_llm_record_enrich": True,
+            "enable_llm_clue_refine": True,
+        },
+    }
+    return defaults.get(profile, defaults["balanced"])
 
 
 if __name__ == "__main__":

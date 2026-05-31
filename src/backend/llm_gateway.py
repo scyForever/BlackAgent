@@ -235,6 +235,18 @@ class LLMGateway:
                 error=cached.error,
                 status_code=cached.status_code,
             )
+            if budget is not None and hasattr(budget, "consume_llm"):
+                try:
+                    budget.consume_llm(
+                        stage=stage_name,
+                        estimated_tokens=budget_estimated_tokens,
+                        item_count=budget_item_count,
+                        cache_hit=True,
+                        ok=response.ok,
+                        network=False,
+                    )
+                except TypeError:
+                    budget.consume_llm(stage=stage_name, estimated_tokens=budget_estimated_tokens)
             self._record_stats(
                 stage=stage_name,
                 started_at=started_at,
@@ -274,6 +286,9 @@ class LLMGateway:
                         stage=stage_name,
                         estimated_tokens=budget_estimated_tokens,
                         item_count=budget_item_count,
+                        cache_hit=False,
+                        ok=response.ok,
+                        network=False,
                     )
                 except TypeError:
                     budget.consume_llm(stage=stage_name, estimated_tokens=budget_estimated_tokens)
@@ -434,11 +449,14 @@ class LLMGateway:
         )
         if budget is not None and hasattr(budget, "consume_llm"):
             try:
-                budget.consume_llm(
-                    stage=stage_name,
-                    estimated_tokens=budget_estimated_tokens,
-                    item_count=budget_item_count,
-                )
+                    budget.consume_llm(
+                        stage=stage_name,
+                        estimated_tokens=budget_estimated_tokens,
+                        item_count=budget_item_count,
+                        cache_hit=False,
+                        ok=response.ok,
+                        network=response.network_attempted,
+                    )
             except TypeError:
                 budget.consume_llm(stage=stage_name, estimated_tokens=budget_estimated_tokens)
         if normalized_cache_policy in {"write", "read_write"}:

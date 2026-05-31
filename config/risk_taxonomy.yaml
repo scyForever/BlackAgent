@@ -1,0 +1,25 @@
+risk_taxonomy:
+  account_trade:
+    name: 账号买卖
+    severity: high
+    primary_terms:
+      - 批量出号
+      - 成品号
+      - 实名号
+      - 老号
+    required_entity_any_of:
+      - contact
+      - price
+      - platform
+  tool_trade:
+    name: 工具交易
+    severity: high
+    primary_terms:
+      - 群控
+      - 脚本
+      - 协议号
+      - 卡密
+    required_entity_any_of:
+      - contact
+      - url
+      - tool_name

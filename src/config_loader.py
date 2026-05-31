@@ -217,6 +217,9 @@ class RoutingProfileConfig(BaseModel):
     enable_llm_intent_parse: bool = True
     enable_query_rewrite: bool = True
     enable_live_collection: bool = True
+    enable_llm_record_enrich: bool = True
+    enable_llm_clue_refine: bool = True
+    llm_stage_policy: dict[str, bool] = Field(default_factory=dict)
     prefer_clue_pool: bool = True
     min_rule_confidence_for_auto_accept: float = Field(default=0.85, ge=0.0, le=1.0)
 
@@ -242,6 +245,8 @@ class InvestigationPolicyOverride(BaseModel):
     max_raw_records: int | None = Field(default=None, ge=1)
     max_candidate_clues: int | None = Field(default=None, ge=1)
     max_llm_refine_clues: int | None = Field(default=None, ge=1)
+    enable_llm_record_enrich: bool | None = None
+    enable_llm_clue_refine: bool | None = None
     max_elapsed_seconds: int | None = Field(default=None, ge=1)
 
 

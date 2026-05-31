@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 
 
@@ -48,6 +48,92 @@ class RuntimeBudget:
         return asdict(self)
 
 
+@dataclass
+class StageBudgetStats:
+    attempted_calls: int = 0
+    allowed_calls: int = 0
+    denied_calls: int = 0
+    cache_hit_calls: int = 0
+    network_calls: int = 0
+    successful_calls: int = 0
+    failed_calls: int = 0
+    attempted_tokens: int = 0
+    consumed_tokens: int = 0
+    denied_tokens: int = 0
+    cached_tokens: int = 0
+
+    def model_dump(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class BudgetLedger:
+    attempted_calls: int = 0
+    allowed_calls: int = 0
+    denied_calls: int = 0
+    cache_hit_calls: int = 0
+    network_calls: int = 0
+    successful_calls: int = 0
+    failed_calls: int = 0
+    attempted_tokens: int = 0
+    consumed_tokens: int = 0
+    denied_tokens: int = 0
+    cached_tokens: int = 0
+    by_stage: dict[str, StageBudgetStats] = field(default_factory=dict)
+
+    def model_dump(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["by_stage"] = {stage: stats.model_dump() for stage, stats in self.by_stage.items()}
+        return payload
+
+    def _stage(self, stage: str) -> StageBudgetStats:
+        return self.by_stage.setdefault(str(stage or "unknown"), StageBudgetStats())
+
+    def record_allowance(self, *, stage: str, estimated_tokens: int, allowed: bool) -> None:
+        tokens = max(0, int(estimated_tokens or 0))
+        bucket = self._stage(stage)
+        self.attempted_calls += 1
+        self.attempted_tokens += tokens
+        bucket.attempted_calls += 1
+        bucket.attempted_tokens += tokens
+        if allowed:
+            self.allowed_calls += 1
+            bucket.allowed_calls += 1
+        else:
+            self.denied_calls += 1
+            self.denied_tokens += tokens
+            bucket.denied_calls += 1
+            bucket.denied_tokens += tokens
+
+    def record_consumed(
+        self,
+        *,
+        stage: str,
+        estimated_tokens: int,
+        cache_hit: bool = False,
+        ok: bool = True,
+        network: bool = False,
+    ) -> None:
+        tokens = max(0, int(estimated_tokens or 0))
+        bucket = self._stage(stage)
+        self.consumed_tokens += tokens
+        bucket.consumed_tokens += tokens
+        if cache_hit:
+            self.cache_hit_calls += 1
+            self.cached_tokens += tokens
+            bucket.cache_hit_calls += 1
+            bucket.cached_tokens += tokens
+        if network:
+            self.network_calls += 1
+            bucket.network_calls += 1
+        if ok:
+            self.successful_calls += 1
+            bucket.successful_calls += 1
+        else:
+            self.failed_calls += 1
+            bucket.failed_calls += 1
+
+
 class BudgetController:
     """Hard budget checks for LLM call count and estimated tokens."""
 
@@ -60,24 +146,36 @@ class BudgetController:
         self.classified_by_llm = 0
         self.extracted_by_llm = 0
         self.started_at = time.perf_counter()
+        self.ledger = BudgetLedger()
 
     def allow_llm_call(self, *, stage: str, estimated_tokens: int, item_count: int = 1) -> bool:
         item_count = max(1, int(item_count or 1))
+        allowed = True
         if self.elapsed_seconds() > self.budget.max_elapsed_seconds:
-            return False
-        if self.llm_calls + 1 > self.budget.max_llm_calls:
-            return False
-        if self.estimated_tokens + max(0, int(estimated_tokens or 0)) > self.budget.max_llm_tokens:
-            return False
-        if stage == "clue_refine" and self.refined_clues + item_count > self.budget.max_llm_refine_clues:
-            return False
-        if stage == "llm_classify" and self.classified_by_llm + item_count > self.budget.max_llm_classify_records:
-            return False
-        if stage == "llm_extract" and self.extracted_by_llm + item_count > self.budget.max_llm_extract_records:
-            return False
-        return True
+            allowed = False
+        elif self.llm_calls + 1 > self.budget.max_llm_calls:
+            allowed = False
+        elif self.estimated_tokens + max(0, int(estimated_tokens or 0)) > self.budget.max_llm_tokens:
+            allowed = False
+        elif stage == "clue_refine" and self.refined_clues + item_count > self.budget.max_llm_refine_clues:
+            allowed = False
+        elif stage == "llm_classify" and self.classified_by_llm + item_count > self.budget.max_llm_classify_records:
+            allowed = False
+        elif stage == "llm_extract" and self.extracted_by_llm + item_count > self.budget.max_llm_extract_records:
+            allowed = False
+        self.ledger.record_allowance(stage=stage, estimated_tokens=estimated_tokens, allowed=allowed)
+        return allowed
 
-    def consume_llm(self, *, stage: str, estimated_tokens: int, item_count: int = 1) -> None:
+    def consume_llm(
+        self,
+        *,
+        stage: str,
+        estimated_tokens: int,
+        item_count: int = 1,
+        cache_hit: bool = False,
+        ok: bool = True,
+        network: bool = False,
+    ) -> None:
         item_count = max(1, int(item_count or 1))
         self.llm_calls += 1
         self.estimated_tokens += max(0, int(estimated_tokens or 0))
@@ -88,6 +186,13 @@ class BudgetController:
             self.classified_by_llm += item_count
         elif stage == "llm_extract":
             self.extracted_by_llm += item_count
+        self.ledger.record_consumed(
+            stage=stage,
+            estimated_tokens=estimated_tokens,
+            cache_hit=cache_hit,
+            ok=ok,
+            network=network,
+        )
 
     def elapsed_seconds(self) -> float:
         return time.perf_counter() - self.started_at
@@ -103,6 +208,7 @@ class BudgetController:
             "classified_by_llm": self.classified_by_llm,
             "extracted_by_llm": self.extracted_by_llm,
             "elapsed_seconds": round(self.elapsed_seconds(), 4),
+            "llm_budget": self.ledger.model_dump(),
         }
 
 
@@ -124,4 +230,4 @@ def _optional_positive_int(value: Any) -> int | None:
     return parsed if parsed > 0 else None
 
 
-__all__ = ["BudgetController", "RuntimeBudget"]
+__all__ = ["BudgetController", "BudgetLedger", "RuntimeBudget", "StageBudgetStats"]

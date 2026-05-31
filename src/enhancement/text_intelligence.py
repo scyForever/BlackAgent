@@ -20,6 +20,7 @@ from src.classifier.nlp_rule_matcher import (
 )
 from src.collector.base_collector import get_record_field
 from src.extractor.entity_extractor import ACCOUNT, CONTACT, TOOL_NAME, URL, BasicEntityExtractor
+from src.rules import RuleRegistry
 
 
 @dataclass(frozen=True)
@@ -306,8 +307,16 @@ class FineGrainedIntentClassifier:
         UNKNOWN: 0,
     }
 
-    def __init__(self) -> None:
+    def __init__(self, rule_registry: RuleRegistry | None = None) -> None:
+        self.rule_registry = rule_registry or RuleRegistry()
         self.fast_classifier = RuleFastTrackClassifier()
+        polarity = self.rule_registry.load_context_polarity()
+        configured_markers = tuple(str(item) for item in polarity.get("defensive_markers", []) if str(item).strip())
+        if configured_markers:
+            self.defensive_context_markers = tuple(dict.fromkeys([*self.DEFENSIVE_CONTEXT_MARKERS, *configured_markers]))
+        else:
+            self.defensive_context_markers = self.DEFENSIVE_CONTEXT_MARKERS
+        self.rule_version = self.rule_registry.version_hash()
 
     def classify(self, record: Mapping[str, Any] | Any) -> FineClassificationResult:
         text = _text(record)
@@ -374,7 +383,7 @@ class FineGrainedIntentClassifier:
         )
 
     def _is_defensive_context(self, text: str) -> bool:
-        defensive_hits = self._marker_hits(text, self.DEFENSIVE_CONTEXT_MARKERS)
+        defensive_hits = self._marker_hits(text, self.defensive_context_markers)
         if not defensive_hits:
             return False
         solicitation_hits = self._marker_hits(text, self.SOLICITATION_MARKERS)
@@ -541,10 +550,13 @@ class SlangDictionary:
         "➕V": "加v",
     }
 
-    def __init__(self, initial_terms: Mapping[str, str] | None = None) -> None:
+    def __init__(self, initial_terms: Mapping[str, str] | None = None, rule_registry: RuleRegistry | None = None) -> None:
+        self.rule_registry = rule_registry or RuleRegistry()
         self._terms = dict(self.DEFAULT)
+        self._terms.update(self.rule_registry.load_slang_dictionary())
         if initial_terms:
             self._terms.update({str(k): str(v) for k, v in initial_terms.items()})
+        self.rule_version = self.rule_registry.version_hash()
 
     def normalize(self, value: str) -> str:
         lowered = value.lower()

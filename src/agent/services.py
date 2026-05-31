@@ -7,6 +7,7 @@ from collections import Counter
 from typing import Any, Iterable, Mapping
 
 from src.agent.budget_controller import BudgetController, RuntimeBudget
+from src.domain import RunPolicyContext
 from src.enhancement.llm_clue_refiner import LLMClueRefiner
 from src.agent.clue_ranker import ClueRanker
 from src.agent.model_router import ModelRouter
@@ -72,8 +73,32 @@ class RunStatePreparationService:
 
     name = "run_state_preparation"
 
-    def __init__(self, owner: Any) -> None:
-        self.owner = owner
+    def __init__(self, orchestrator: Any | None = None, **dependencies: Any) -> None:
+        if orchestrator is not None:
+            self._bind_orchestrator(orchestrator)
+        else:
+            for name, value in dependencies.items():
+                setattr(self, name, value)
+
+    def _bind_orchestrator(self, orchestrator: Any) -> None:
+        self.routing_profiles = orchestrator.routing_profiles
+        self.intent_parser = orchestrator.intent_parser
+        self.planner = orchestrator.planner
+        self.gateway_stats_count = orchestrator._gateway_stats_count
+        self.normalize_policy_override = orchestrator._normalize_policy_override
+        self.normalize_routing_profile = orchestrator._normalize_routing_profile
+        self.routing_profile_config = orchestrator._routing_profile_config
+        self.effective_investigation_config = orchestrator._effective_investigation_config
+        self.planner_runtime_context = orchestrator._planner_runtime_context
+        self.profile_budget_defaults = orchestrator._profile_budget_defaults
+        self.stage_deadline_ms = orchestrator._stage_deadline_ms
+        self.disabled_llm_trace = orchestrator._disabled_llm_trace
+        self.runtime_quality_gate = orchestrator._runtime_quality_gate
+        self.apply_profile_execution_controls = orchestrator._apply_profile_execution_controls
+        self.plan_execution_controls = orchestrator._plan_execution_controls
+        self.resolve_budget = orchestrator._resolve_budget
+        self.select_sources = orchestrator._select_sources
+        self.deadline_at = orchestrator._deadline_at
 
     def prepare(
         self,
@@ -87,26 +112,26 @@ class RunStatePreparationService:
         run_state_type: type[Any],
     ) -> Any:
         started_at = time.perf_counter()
-        gateway_stats_start = self.owner._gateway_stats_count()
-        normalized_policy_override = self.owner._normalize_policy_override(policy_override)
-        profile = self.owner._normalize_routing_profile(routing_profile)
-        profile_config = self.owner._routing_profile_config(profile) if (routing_profile is not None or self.owner.routing_profiles) else {}
-        effective_config = self.owner._effective_investigation_config(
+        gateway_stats_start = self.gateway_stats_count()
+        normalized_policy_override = self.normalize_policy_override(policy_override)
+        profile = self.normalize_routing_profile(routing_profile)
+        profile_config = self.routing_profile_config(profile) if (routing_profile is not None or self.routing_profiles) else {}
+        effective_config = self.effective_investigation_config(
             routing_profile=routing_profile,
             policy_override=normalized_policy_override,
         )
-        initial_runtime_context = self.owner._planner_runtime_context()
-        budget_controller = BudgetController(RuntimeBudget.from_mapping(self.owner._profile_budget_defaults(profile_config)))
+        initial_runtime_context = self.planner_runtime_context()
+        budget_controller = BudgetController(RuntimeBudget.from_mapping(self.profile_budget_defaults(profile_config)))
         if bool(profile_config.get("enable_llm_intent_parse", True)):
-            intent, intent_trace = self.owner.intent_parser.parse(
+            intent, intent_trace = self.intent_parser.parse(
                 query,
                 runtime_context=initial_runtime_context,
                 budget=budget_controller,
-                deadline_ms=self.owner._stage_deadline_ms(profile_config, default=1500),
+                deadline_ms=self.stage_deadline_ms(profile_config, default=1500),
             )
         else:
             intent = _fallback_intent(query, runtime_context=initial_runtime_context)
-            intent_trace = self.owner._disabled_llm_trace(
+            intent_trace = self.disabled_llm_trace(
                 "intent_parse",
                 reason="profile_disabled_llm_intent_parse",
                 runtime_context=initial_runtime_context,
@@ -115,32 +140,32 @@ class RunStatePreparationService:
         available_sources_list = [dict(source) for source in available_sources]
         if profile == "fast":
             plan = _fallback_plan(intent, runtime_context=initial_runtime_context)
-            plan_trace = self.owner._disabled_llm_trace(
+            plan_trace = self.disabled_llm_trace(
                 "investigation_plan",
                 reason="profile_fast_uses_deterministic_fallback_plan",
                 runtime_context=initial_runtime_context,
             )
         else:
-            plan, plan_trace = self.owner.planner.plan(
+            plan, plan_trace = self.planner.plan(
                 query,
                 intent,
                 available_sources=available_sources_list,
                 runtime_context=initial_runtime_context,
                 budget=budget_controller,
-                deadline_ms=self.owner._stage_deadline_ms(profile_config, default=2500),
+                deadline_ms=self.stage_deadline_ms(profile_config, default=2500),
             )
         plan_payload = plan.model_dump()
-        runtime_quality_gate = self.owner._runtime_quality_gate(
+        runtime_quality_gate = self.runtime_quality_gate(
             intent=intent_payload,
             plan=plan_payload,
             policy_override=normalized_policy_override,
         )
-        plan_execution_controls = self.owner._apply_profile_execution_controls(
-            self.owner._plan_execution_controls(plan_payload),
+        plan_execution_controls = self.apply_profile_execution_controls(
+            self.plan_execution_controls(plan_payload),
             profile_config=profile_config,
             profile=profile,
         )
-        budget = self.owner._resolve_budget(
+        budget = self.resolve_budget(
             plan_payload,
             explicit_max_sources=max_sources,
             available_source_count=len(available_sources_list),
@@ -148,7 +173,28 @@ class RunStatePreparationService:
             profile_config=profile_config,
         )
         budget_controller.budget = RuntimeBudget.from_mapping(budget)
-        selected_sources = self.owner._select_sources(
+        run_policy = RunPolicyContext.from_profile_config(
+            routing_profile=profile,
+            profile_config=profile_config,
+            budget=budget,
+            quality_profile=str(intent_payload.get("quality_profile") or "balanced"),
+        )
+        if normalized_policy_override is not None:
+            override_payload = normalized_policy_override.model_dump(exclude_none=True)
+            if "enable_llm_record_enrich" in override_payload:
+                run_policy = run_policy.model_copy(update={"enable_llm_record_enrich": bool(override_payload["enable_llm_record_enrich"])})
+            if "enable_llm_clue_refine" in override_payload:
+                run_policy = run_policy.model_copy(update={"enable_llm_clue_refine": bool(override_payload["enable_llm_clue_refine"])})
+            run_policy = run_policy.model_copy(
+                update={
+                    "llm_stage_policy": {
+                        **run_policy.llm_stage_policy,
+                        "record_enrich": run_policy.enable_llm_record_enrich,
+                        "clue_refine": run_policy.enable_llm_clue_refine,
+                    }
+                }
+            )
+        selected_sources = self.select_sources(
             plan_payload,
             available_sources_list,
             max_sources=budget["max_sources"],
@@ -170,7 +216,8 @@ class RunStatePreparationService:
             runtime_quality_gate=runtime_quality_gate,
             plan_execution_controls=plan_execution_controls,
             budget=budget,
-            deadline_at=self.owner._deadline_at(started_at, budget["max_elapsed_seconds"]),
+            run_policy=run_policy,
+            deadline_at=self.deadline_at(started_at, budget["max_elapsed_seconds"]),
             gateway_stats_start=gateway_stats_start,
             available_sources_list=available_sources_list,
             retrieval_filters=dict(retrieval_filters or {}),
@@ -183,8 +230,16 @@ class InitialCandidateRetrievalService:
 
     name = "initial_candidate_retrieval"
 
-    def __init__(self, owner: Any) -> None:
-        self.owner = owner
+    def __init__(self, orchestrator: Any | None = None, **dependencies: Any) -> None:
+        if orchestrator is not None:
+            self.clue_retriever = orchestrator.clue_retriever
+            self.clue_repo = orchestrator.clue_repo
+            self.optional_positive_int = orchestrator._optional_positive_int
+            self.optional_float = orchestrator._optional_float
+            self.summarize_retrieved_clues = orchestrator._summarize_retrieved_clues
+        else:
+            for name, value in dependencies.items():
+                setattr(self, name, value)
 
     def retrieve(
         self,
@@ -194,20 +249,20 @@ class InitialCandidateRetrievalService:
         run_state: Any,
         retrieval_state_type: type[Any],
     ) -> Any:
-        retrieved_clues = self.owner.clue_retriever.retrieve(
-            self.owner.clue_repo.list(),
+        retrieved_clues = self.clue_retriever.retrieve(
+            self.clue_repo.list(),
             query=query,
             intent=run_state.intent_payload,
             limit=run_state.budget["max_candidate_clues"],
-            time_range_hours=self.owner._optional_positive_int(run_state.retrieval_filters.get("time_range_hours")),
+            time_range_hours=self.optional_positive_int(run_state.retrieval_filters.get("time_range_hours")),
             allowed_source_types=run_state.retrieval_filters.get("source_types") or (),
             allowed_risk_types=run_state.retrieval_filters.get("risk_types") or (),
-            min_quality_score=self.owner._optional_float(run_state.retrieval_filters.get("min_quality_score")),
+            min_quality_score=self.optional_float(run_state.retrieval_filters.get("min_quality_score")),
         )
-        retrieved_summary = self.owner._summarize_retrieved_clues(
+        retrieved_summary = self.summarize_retrieved_clues(
             retrieved_clues,
-            time_range_hours=self.owner._optional_positive_int(run_state.retrieval_filters.get("time_range_hours"))
-            or self.owner._optional_positive_int(run_state.intent_payload.get("time_range_hours")),
+            time_range_hours=self.optional_positive_int(run_state.retrieval_filters.get("time_range_hours"))
+            or self.optional_positive_int(run_state.intent_payload.get("time_range_hours")),
             quality_gate=run_state.runtime_quality_gate,
         )
         provided_records = [dict(record) if isinstance(record, Mapping) else record for record in records]

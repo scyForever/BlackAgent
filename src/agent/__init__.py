@@ -1,7 +1,7 @@
 """Current investigation-agent components for BlackAgent."""
 
 from .budget_manager import BudgetExceeded, BudgetManager, BudgetSnapshot
-from .budget_controller import BudgetController, RuntimeBudget
+from .budget_controller import BudgetController, BudgetLedger, RuntimeBudget, StageBudgetStats
 from .clue_ranker import ClueRanker, RankedClue
 from .exploration_agent import ExplorationAgent
 from .model_router import ModelRouteDecision, ModelRouter, RouteAction
@@ -22,6 +22,7 @@ from .user_request_parser import InvestigationPlan, LLMDecisionTrace, LLMInvesti
 __all__ = [
     "BudgetExceeded",
     "BudgetController",
+    "BudgetLedger",
     "BudgetManager",
     "BudgetSnapshot",
     "ClueRanker",
@@ -45,6 +46,7 @@ __all__ = [
     "RankedClue",
     "RouteAction",
     "RuntimeBudget",
+    "StageBudgetStats",
     "SafetyPolicyViolation",
     "RunStatePreparationService",
     "SourceSelectionService",
