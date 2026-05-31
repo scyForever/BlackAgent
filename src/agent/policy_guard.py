@@ -112,6 +112,12 @@ class PolicyGuard:
         "群组id",
         "用户id",
     )
+    _LOCAL_REVIEW_TARGETS = (
+        "review_repo",
+        "review_queue",
+        "human_review",
+        "local_sandbox",
+    )
     _UNAUTHORIZED_COLLECTION = (
         "unauthorized",
         "bypass",
@@ -158,7 +164,16 @@ class PolicyGuard:
                 action,
             )
 
-        if self._contains_any(text, self._OUTBOUND_WORDS) and self._contains_any(text, self._PII_WORDS):
+        is_local_review_write = (
+            self._contains_any(target, self._LOCAL_REVIEW_TARGETS)
+            or self._contains_any(text, self._LOCAL_REVIEW_TARGETS)
+            or normalized.get("destination", "") in self._LOCAL_REVIEW_TARGETS
+        )
+        if (
+            not is_local_review_write
+            and self._contains_any(text, self._OUTBOUND_WORDS)
+            and self._contains_any(text, self._PII_WORDS)
+        ):
             self._raise(
                 "Account/contact PII must not be sent to external or unauthorized destinations.",
                 "pii_exfiltration",
@@ -216,9 +231,10 @@ class PolicyGuard:
                 text = json.dumps(data, ensure_ascii=False, sort_keys=True).lower()
             except TypeError:
                 text = str(data).lower()
-            return {"type": action_type.lower(), "target": target.lower(), "text": text}
+            destination = self._join_values(data.get("destination"), data.get("target_repo")).lower()
+            return {"type": action_type.lower(), "target": target.lower(), "destination": destination, "text": text}
         text = str(action).lower()
-        return {"type": text, "target": text, "text": text}
+        return {"type": text, "target": text, "destination": text, "text": text}
 
     def _to_mapping(self, value: Any) -> dict[str, Any]:
         if isinstance(value, Mapping):
@@ -244,4 +260,3 @@ class PolicyGuard:
 
     def _raise(self, message: str, rule: str, action: Any) -> None:
         raise SafetyPolicyViolation(message, rule=rule, action=action)
-

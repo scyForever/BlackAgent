@@ -1,0 +1,18 @@
+clue_generation_rules:
+  shared_contact_48h:
+    min_observations: 3
+    window_hours: 48
+    promotion:
+      require_min_sources: 2
+      require_min_observations: 3
+  shared_domain_multi_source:
+    min_sources: 2
+    promotion:
+      require_any_entity: [contact, account, tool_name]
+  high_frequency_template:
+    min_records: 3
+    promotion:
+      reject_risk_categories: [normal_noise, 正常业务白噪声]
+  tool_slang:
+    promotion:
+      require_any_entity: [contact, account, price, url, domain]

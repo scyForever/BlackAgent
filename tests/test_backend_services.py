@@ -1,5 +1,7 @@
 import json
+import urllib.error
 
+from src.agent import BudgetController, RuntimeBudget
 from src.backend import LLMGateway, TaskBackend, TaskStatus
 from src.backend import llm_gateway
 
@@ -90,6 +92,38 @@ def test_llm_gateway_missing_api_key_does_not_attempt_network(monkeypatch):
     assert response.error == "missing_api_key"
     assert response.network_attempted is False
     assert response.parsed_json["error"] == "missing_api_key"
+
+
+def test_llm_gateway_failure_after_reserve_updates_failed_budget_ledger(monkeypatch):
+    def raise_http_error(*_args, **_kwargs):
+        body = type("Body", (), {"read": lambda self: b'{"error":"rate"}', "close": lambda self: None})()
+        raise urllib.error.HTTPError(
+            url="https://llm.example/v1/chat/completions",
+            code=429,
+            msg="too many requests",
+            hdrs=None,
+            fp=body,
+        )
+
+    monkeypatch.setattr(llm_gateway.urllib_request, "urlopen", raise_http_error)
+    gateway = LLMGateway(base_url="https://llm.example/v1", api_key="sk-test", model="real-model", dry_run=False)
+    budget = BudgetController(RuntimeBudget(max_llm_calls=2, max_llm_tokens=2000))
+
+    response = gateway.chat(
+        [{"role": "user", "content": "hello"}],
+        stage="llm_classify",
+        max_tokens=16,
+        budget=budget,
+    )
+    ledger = budget.snapshot()["llm_budget"]
+
+    assert response.ok is False
+    assert response.error == "http_error:429"
+    assert response.network_attempted is True
+    assert ledger["attempted_calls"] == 1
+    assert ledger["allowed_calls"] == 1
+    assert ledger["failed_calls"] == 1
+    assert ledger["network_calls"] == 1
 
 
 def test_llm_gateway_builds_openai_compatible_urllib_request(monkeypatch):
@@ -304,3 +338,48 @@ def test_llm_gateway_timeout_returns_normalized_error(monkeypatch):
     assert response.ok is False
     assert response.network_attempted is True
     assert response.error.startswith("timeout:")
+
+
+def test_llm_gateway_records_stage_stats_uses_cache_and_respects_budget():
+    gateway = LLMGateway(
+        base_url="https://llm.invalid/v1",
+        api_key=None,
+        model="mock-risk-model",
+        mock=True,
+    )
+    budget = BudgetController(RuntimeBudget(max_llm_calls=1, max_llm_tokens=200, max_llm_refine_clues=1))
+    messages = [{"role": "user", "content": "提取风险实体并返回 JSON"}]
+
+    first = gateway.chat(
+        messages,
+        stage="clue_refine",
+        max_tokens=16,
+        budget=budget,
+        cache_policy="read_write",
+        deadline_ms=1000,
+    )
+    second = gateway.chat(
+        messages,
+        stage="clue_refine",
+        max_tokens=16,
+        budget=budget,
+        cache_policy="read_write",
+        deadline_ms=1000,
+    )
+    denied = gateway.chat(
+        [{"role": "user", "content": "another uncached call"}],
+        stage="clue_refine",
+        max_tokens=16,
+        budget=budget,
+        cache_policy="none",
+    )
+
+    stats = gateway.stats()
+    assert first.ok is True
+    assert second.ok is True
+    assert second.raw["cache_hit"] is True
+    assert denied.ok is False
+    assert denied.error == "budget_exhausted"
+    assert stats[0]["stage"] == "clue_refine"
+    assert stats[1]["cache_hit"] is True
+    assert stats[2]["error"] == "budget_exhausted"

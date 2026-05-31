@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
+DEFAULT_ROUTING_PROFILES_PATH = PROJECT_ROOT / "config" / "routing_profiles.yaml"
 ENV_PLACEHOLDER_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 ENV_OVERRIDE_MAP: dict[str, tuple[str, ...]] = {
     "BLACKAGENT_LLM_PROVIDER": ("llm", "provider"),
@@ -71,6 +72,7 @@ class StorageConfig(BaseModel):
     dsn: str | None = None
     auto_create_schema: bool = True
     connect_timeout_seconds: float = Field(default=5.0, gt=0)
+    entity_graph: dict[str, Any] = Field(default_factory=lambda: {"enabled": False, "db_path": "data/entity_graph.db"})
 
 
 class TaskConfig(BaseModel):
@@ -198,6 +200,31 @@ class InvestigationConfig(BaseModel):
     telemetry_enabled: bool = True
 
 
+class RoutingProfileConfig(BaseModel):
+    """Runtime trade-off profile for effect/cost/latency control."""
+
+    model_config = ConfigDict(extra="allow")
+
+    max_elapsed_seconds: int = Field(default=30, ge=1)
+    max_sources: int | None = Field(default=None, ge=1)
+    max_raw_records: int = Field(default=3000, ge=1)
+    max_candidate_clues: int = Field(default=50, ge=1)
+    max_llm_calls: int = Field(default=10, ge=0)
+    max_llm_tokens: int = Field(default=10_000, ge=0)
+    max_llm_classify_records: int = Field(default=20, ge=0)
+    max_llm_extract_records: int = Field(default=20, ge=0)
+    max_llm_refine_clues: int = Field(default=6, ge=0)
+    max_query_rewrite_sources: int = Field(default=2, ge=0)
+    enable_llm_intent_parse: bool = True
+    enable_query_rewrite: bool = True
+    enable_live_collection: bool = True
+    enable_llm_record_enrich: bool = True
+    enable_llm_clue_refine: bool = True
+    llm_stage_policy: dict[str, bool] = Field(default_factory=dict)
+    prefer_clue_pool: bool = True
+    min_rule_confidence_for_auto_accept: float = Field(default=0.85, ge=0.0, le=1.0)
+
+
 class InvestigationPolicyOverride(BaseModel):
     """Request-scoped routing/budget overrides for one investigation run."""
 
@@ -219,6 +246,8 @@ class InvestigationPolicyOverride(BaseModel):
     max_raw_records: int | None = Field(default=None, ge=1)
     max_candidate_clues: int | None = Field(default=None, ge=1)
     max_llm_refine_clues: int | None = Field(default=None, ge=1)
+    enable_llm_record_enrich: bool | None = None
+    enable_llm_clue_refine: bool | None = None
     max_elapsed_seconds: int | None = Field(default=None, ge=1)
 
 
@@ -255,6 +284,7 @@ class Settings(BaseModel):
     enforcement: EnforcementConfig = Field(default_factory=EnforcementConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     investigation: InvestigationConfig = Field(default_factory=InvestigationConfig)
+    routing_profiles: dict[str, RoutingProfileConfig] = Field(default_factory=dict)
     labels: LabelConfig = Field(default_factory=LabelConfig)
     prompts: PromptConfig = Field(default_factory=PromptConfig)
 
@@ -369,6 +399,14 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     """Load and validate project settings from YAML."""
 
     raw = load_yaml_file(config_path or DEFAULT_CONFIG_PATH)
+    if config_path is None and DEFAULT_ROUTING_PROFILES_PATH.exists():
+        profile_raw = load_yaml_file(DEFAULT_ROUTING_PROFILES_PATH)
+        configured_profiles = raw.get("routing_profiles")
+        if not isinstance(configured_profiles, dict):
+            configured_profiles = {}
+        external_profiles = profile_raw.get("routing_profiles")
+        if isinstance(external_profiles, dict):
+            raw["routing_profiles"] = {**external_profiles, **configured_profiles}
     raw = _apply_env_overrides(raw)
     return Settings.model_validate(raw)
 

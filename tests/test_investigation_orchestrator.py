@@ -727,6 +727,9 @@ def test_investigation_orchestrator_emits_telemetry_summary():
     assert telemetry["refined_clue_count"] >= 1
     assert "retrieval_fill_ratio" in telemetry
     assert "refine_budget_utilization" in telemetry
+    assert telemetry["llm"]["by_stage"]["clue_refine"]["call_count"] == 1
+    assert result.execution_summary["budget_controller"]["llm_refine_calls"] == 1
+    assert result.execution_summary["budget_controller"]["llm_refined_clue_count"] == telemetry["refined_clue_count"]
 
 
 def test_investigation_orchestrator_builds_review_only_exploration_hypotheses_when_no_high_quality_clues():
@@ -1808,7 +1811,14 @@ def test_fast_routing_profile_caps_pool_hit_live_collection_more_aggressively():
 
     assert result.status == "completed"
     assert result.execution_summary["routing_profile"] == "fast"
-    assert len(seen) == 1
+    assert len(seen) == 0
+    assert result.execution_summary["budget"]["max_raw_records"] == 500
+    assert result.execution_summary["budget"]["max_llm_refine_clues"] == 2
+    assert result.execution_summary["budget"]["max_llm_calls"] == 3
+    assert result.execution_summary["budget"]["max_elapsed_seconds"] == 8
+    assert result.execution_summary["plan_execution_controls"]["collection_mode"] == "pool_only"
+    assert not any(trace.get("stage") == "intent_parse" and trace.get("llm_ok") for trace in result.llm_traces)
+    assert not any(trace.get("stage") == "investigation_plan" and trace.get("llm_ok") for trace in result.llm_traces)
 
 
 def test_high_recall_routing_profile_expands_pool_hit_live_collection_budget():
@@ -1860,6 +1870,54 @@ def test_high_recall_routing_profile_expands_pool_hit_live_collection_budget():
     assert result.status == "completed"
     assert result.execution_summary["routing_profile"] == "high_recall"
     assert len(seen) == 3
+
+
+
+def test_high_recall_profile_not_tightened_by_fallback_plan():
+    orchestrator = InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
+
+    result = orchestrator.run(
+        "找接码群控线索",
+        records=[],
+        routing_profile="high_recall",
+    )
+
+    assert result.execution_summary["routing_profile"] == "high_recall"
+    assert result.execution_summary["budget"]["max_raw_records"] == 20000
+    assert result.execution_summary["budget"]["max_candidate_clues"] == 200
+
+
+def test_run_scoped_llm_telemetry_does_not_accumulate_across_runs():
+    orchestrator = InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
+    records = [
+        {
+            "trace_id": "scoped-1",
+            "source_name": "tg-scoped-a",
+            "source_type": "IM",
+            "legal_basis": "AUTHORIZED_PARTNER",
+            "content_text": "群控脚本接码上车，联系 TG:scoped01，落地 https://risk.example/scoped 第一条",
+        },
+        {
+            "trace_id": "scoped-2",
+            "source_name": "forum-scoped-b",
+            "source_type": "Forum",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "群控脚本接码上车，联系 TG:scoped01，落地 https://risk.example/scoped 第二条",
+        },
+        {
+            "trace_id": "scoped-3",
+            "source_name": "feed-scoped-c",
+            "source_type": "THREAT_INTEL",
+            "legal_basis": "THIRD_PARTY_AUTHORIZED_FEED",
+            "content_text": "群控脚本接码上车，联系 TG:scoped01，落地 https://risk.example/scoped 第三条",
+        },
+    ]
+
+    first = orchestrator.run("找接码群控线索", records=records)
+    second = orchestrator.run("找接码群控线索", records=records)
+
+    assert len(orchestrator.llm_gateway.stats()) > second.execution_summary["llm_gateway"]["call_count"]
+    assert second.execution_summary["llm_gateway"]["call_count"] == first.execution_summary["llm_gateway"]["call_count"]
 
 
 def test_request_policy_override_can_disable_live_collection():
@@ -2291,6 +2349,96 @@ def test_llm_plan_can_disable_query_rewrite_for_live_collection_sources():
     assert result.execution_summary["query_rewrite_count"] == 0
     assert result.execution_summary["plan_execution_controls"]["query_rewrite_policy"] == "off"
     assert result.llm_traces[2]["applied"] is False
+
+
+def test_query_rewrite_respects_max_query_rewrite_sources_budget():
+    seen_urls: list[str] = []
+
+    class _RewriteGateway:
+        def __init__(self) -> None:
+            self._fallback = LLMGateway(dry_run=True, mock=True)
+
+        def chat(self, messages, **kwargs):  # noqa: ANN001
+            user_message = str(messages[-1].get("content") or "")
+            if "source=" in user_message:
+                return type(
+                    "Resp",
+                    (),
+                    {
+                        "ok": True,
+                        "parsed_json": {
+                            "search_query": "site:t.me/s 接码 群控",
+                            "query_theme": "接码",
+                            "query_term": "群控",
+                            "query_term_stage": "core",
+                            "rewrite_reason": "budgeted_single_rewrite",
+                        },
+                        "error": None,
+                    },
+                )()
+            return self._fallback.chat(messages, **kwargs)
+
+        def stats(self):  # noqa: ANN001
+            return []
+
+    orchestrator = InvestigationOrchestrator(
+        llm_gateway=_RewriteGateway(),
+        routing_profiles={"balanced": {"max_sources": 3, "max_query_rewrite_sources": 1}},
+    )
+
+    def collect_source(source: dict[str, object]) -> list[dict[str, object]]:
+        seen_urls.append(str(source["source_url"]))
+        return [
+            {
+                "trace_id": f"rewrite-budget-{source['source_name']}",
+                "source_name": str(source["source_name"]),
+                "source_type": source.get("source_type") or "IM",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "publish_time": "2026-05-23T03:00:00+00:00",
+                "content_text": "接码群控 TG:rewrite01 https://risk.example/rewrite",
+            }
+        ]
+
+    result = orchestrator.run(
+        "找最近接码群控相关线索",
+        available_sources=[
+            {
+                "source_name": "rewrite-a",
+                "source_type": "IM",
+                "source_url": "https://search.example/a?q=old",
+                "query_url_template": "https://search.example/a?q={query}",
+                "search_query": "site:t.me/s 接码",
+                "query_theme": "接码",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            },
+            {
+                "source_name": "rewrite-b",
+                "source_type": "Forum",
+                "source_url": "https://search.example/b?q=old",
+                "query_url_template": "https://search.example/b?q={query}",
+                "search_query": "site:forum.example 接码",
+                "query_theme": "接码",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            },
+            {
+                "source_name": "rewrite-c",
+                "source_type": "THREAT_INTEL",
+                "source_url": "https://search.example/c?q=old",
+                "query_url_template": "https://search.example/c?q={query}",
+                "search_query": "site:feed.example 接码",
+                "query_theme": "接码",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            },
+        ],
+        collect_source_records=collect_source,
+        policy_override=InvestigationPolicyOverride(max_sources=2, max_raw_records=10, max_candidate_clues=5, max_llm_refine_clues=1),
+    )
+
+    assert result.status == "completed"
+    assert result.execution_summary["budget"]["max_query_rewrite_sources"] == 1
+    assert result.execution_summary["query_rewrite_count"] == 1
+    assert len(seen_urls) == 2
+    assert any(trace.get("error") == "query_rewrite_source_limit_reached" for trace in result.llm_traces)
 
 
 def test_llm_plan_can_disable_llm_refine_while_preserving_candidate_output():

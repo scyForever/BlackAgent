@@ -85,3 +85,82 @@ def test_clue_retriever_applies_time_source_and_quality_filters():
         min_quality_score=0.8,
     )
     assert [item["clue_id"] for item in results] == ["recent-good"]
+
+
+def test_clue_retriever_reads_cross_run_entity_graph_clues(tmp_path):
+    from storage.entity_graph import EntityGraphStore
+
+    db_path = tmp_path / "entity_graph.db"
+    first_run = EntityGraphStore(db_path=db_path)
+    first_run.add_observation(
+        {"entity_type": "contact", "entity_value": "TG:graph01", "confidence": 0.91},
+        {"trace_id": "run-a", "source_name": "telegram_feed", "source_type": "IM"},
+    )
+    first_run.close()
+
+    second_run = EntityGraphStore(db_path=db_path)
+    try:
+        second_run.add_observation(
+            {"entity_type": "contact", "entity_value": "TG:graph01", "confidence": 0.93},
+            {"trace_id": "run-b", "source_name": "forum_feed", "source_type": "Forum"},
+        )
+
+        results = ClueRetriever().retrieve(
+            [],
+            query="找 TG graph01 跨源实体图谱线索",
+            intent={"require_cross_source": True},
+            entity_graph=second_run,
+            limit=5,
+        )
+
+        assert results
+        assert results[0]["retrieval_source"] == "entity_graph"
+        assert results[0]["entity_graph_backend"] == "entity_graph_store"
+        assert len(results[0]["entity_observation_refs"]) == 2
+        assert set(results[0]["evidence_trace_ids"]) == {"run-a", "run-b"}
+    finally:
+        second_run.close()
+
+
+def test_entity_graph_persists_assets_observations_and_query_apis(tmp_path):
+    from storage.entity_graph import EntityGraphStore
+
+    db_path = tmp_path / "persistent-graph.db"
+    first = EntityGraphStore(db_path=db_path)
+    obs1 = first.add_observation(
+        {"entity_type": "contact", "entity_value": "TG:core01", "normalized_value": "tg:core01"},
+        {"trace_id": "run-1", "source_name": "tg-a", "source_type": "IM", "publish_time": "2026-05-30T00:00:00+00:00"},
+    )
+    first.close()
+    second = EntityGraphStore(db_path=db_path)
+    try:
+        obs2 = second.add_observation(
+            {"entity_type": "contact", "entity_value": "TG:core01", "normalized_value": "tg:core01"},
+            {"trace_id": "run-2", "source_name": "forum-b", "source_type": "Forum", "publish_time": "2026-05-31T00:00:00+00:00"},
+        )
+
+        assert obs1.entity_id == obs2.entity_id
+        assert len(second.observations_for_entity(obs1.entity_id)) == 2
+        assert second.cross_source_entities(min_sources=2)[0].entity_id == obs1.entity_id
+        assert second.entities_seen_since(days=7)
+        assert second.related_clues(obs1.entity_id)
+        neighborhood = second.neighborhood(obs1.entity_id, depth=1)
+        assert neighborhood["entities"][0]["entity_id"] == obs1.entity_id
+        assert {item["trace_id"] for item in neighborhood["observations"]} == {"run-1", "run-2"}
+    finally:
+        second.close()
+
+
+def test_entity_graph_close_releases_sqlite_file_for_windows_cleanup(tmp_path):
+    from storage.entity_graph import EntityGraphStore
+
+    db_path = tmp_path / "close-check.db"
+    graph = EntityGraphStore(db_path=db_path)
+    graph.add_observation(
+        {"entity_type": "contact", "entity_value": "TG:close01", "normalized_value": "tg:close01"},
+        {"trace_id": "close-run", "source_name": "tg-a", "source_type": "IM"},
+    )
+
+    graph.close()
+    db_path.unlink()
+    assert not db_path.exists()

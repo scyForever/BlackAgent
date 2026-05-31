@@ -1,0 +1,318 @@
+"""Source selection and collection helpers for investigation runtime."""
+
+
+from __future__ import annotations
+
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Iterable, Mapping
+
+from src.config_loader import InvestigationConfig, InvestigationPolicyOverride
+from src.domain import RunPolicyContext
+from src.scheduling.layered_collection import (
+    group_sources_by_collection_layer,
+    prioritize_sources_for_investigation,
+)
+from src.safety import PIIMasker
+from src.workflows import WorkflowContext
+
+from .budget_controller import RuntimeBudget
+from .investigation_contracts import (
+    InvestigationRunResult,
+    PlanExecutionControls,
+    RuntimeQualityGate,
+    SourceCollector,
+    _FreshProcessingState,
+    _LiveCollectionState,
+    _RefinementState,
+    _RetrievalState,
+    _RunPlanningState,
+    _SemanticLocalState,
+)
+from .user_request_parser import DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS
+
+
+
+
+
+
+
+def _normalize_source_pref(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"telegram", "tg", "电报"}:
+        return "telegram"
+    if text in {"forum", "论坛", "贴吧"}:
+        return "forum"
+    if text in {"im", "chat", "群", "私聊"}:
+        return "im"
+    return text
+
+class InvestigationCollectionMixin:
+    """Extracted helper group; state is supplied by InvestigationRuntime."""
+
+    def _select_sources(
+            self,
+            plan: Mapping[str, Any],
+            available_sources: list[dict[str, Any]],
+            *,
+            max_sources: int | None,
+            risk_types: Iterable[str] = (),
+        ) -> list[dict[str, Any]]:
+            if not available_sources:
+                return []
+            selected_names = {item.lower() for item in (plan.get("selected_source_names") or []) if str(item).strip()}
+            strategy = plan.get("source_selection_strategy") or {}
+            preferred_types = {
+                _normalize_source_pref(item)
+                for item in (strategy.get("preferred_source_types") or [])
+                if _normalize_source_pref(item)
+            }
+            match_keywords = {str(item).lower() for item in (strategy.get("match_query_keywords") or []) if str(item).strip()}
+    
+            scored: list[tuple[int, dict[str, Any]]] = []
+            for source in available_sources:
+                score = 0
+                source_name = str(source.get("source_name") or "").strip()
+                source_type = _normalize_source_pref(source.get("source_type"))
+                source_theme = str(source.get("query_theme") or "").lower()
+                source_query = str(source.get("search_query") or "").lower()
+                if source_name.lower() in selected_names:
+                    score += 4
+                if source_type and source_type in preferred_types:
+                    score += 3
+                if any(keyword in source_theme or keyword in source_query or keyword in source_name.lower() for keyword in match_keywords):
+                    score += 1
+                scored.append((score, source))
+    
+            scored.sort(key=lambda item: (item[0], str(item[1].get("source_name") or "")), reverse=True)
+            fallback = [dict(source) for _, source in scored]
+            if max_sources is None or max_sources >= len(fallback):
+                selected = fallback
+            else:
+                chosen = [dict(source) for score, source in scored if score > 0][:max_sources]
+                if chosen:
+                    selected = chosen
+                else:
+                    selected = fallback[:max_sources] if max_sources is not None and max_sources > 0 else fallback
+            return prioritize_sources_for_investigation(
+                selected,
+                risk_types=risk_types,
+                preferred_source_types=preferred_types,
+                selected_source_names=selected_names,
+            )
+
+
+    def _collect_records_from_sources(
+            self,
+            selected_sources: list[dict[str, Any]],
+            *,
+            collect_source_records: SourceCollector,
+            max_raw_records: int,
+            max_concurrent_sources: int,
+            deadline_at: float | None = None,
+        ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+            collection_runs: list[dict[str, Any]] = []
+            collected_records: list[dict[str, Any]] = []
+            if not selected_sources or max_raw_records <= 0:
+                return collected_records, collection_runs
+    
+            grouped_sources = []
+            for layer_name, layer_sources in group_sources_by_collection_layer(selected_sources):
+                allowed_sources, blocked_runs = self._filter_sources_for_collection(layer_sources)
+                collection_runs.extend(blocked_runs)
+                grouped_sources.append((layer_name, allowed_sources))
+            worker_count = max(1, int(max_concurrent_sources or 1))
+    
+            for layer_name, layer_sources in grouped_sources:
+                if self._deadline_exhausted(deadline_at):
+                    break
+                if len(collected_records) >= max_raw_records:
+                    break
+                layer_records, layer_runs = self._collect_layer_records(
+                    layer_name,
+                    layer_sources,
+                    collect_source_records=collect_source_records,
+                    remaining_budget=max_raw_records - len(collected_records),
+                    max_concurrent_sources=worker_count,
+                    deadline_at=deadline_at,
+                )
+                collected_records.extend(layer_records)
+                collection_runs.extend(layer_runs)
+                if len(collected_records) >= max_raw_records:
+                    break
+            return collected_records, collection_runs
+
+
+    def _collect_layer_records(
+            self,
+            layer_name: str,
+            layer_sources: list[dict[str, Any]],
+            *,
+            collect_source_records: SourceCollector,
+            remaining_budget: int,
+            max_concurrent_sources: int,
+            deadline_at: float | None = None,
+        ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+            if not layer_sources or remaining_budget <= 0 or self._deadline_exhausted(deadline_at):
+                return [], []
+    
+            worker_count = max(1, min(int(max_concurrent_sources or 1), len(layer_sources)))
+            if worker_count == 1:
+                results = [
+                    self._collect_one_source(
+                        layer_name,
+                        source,
+                        collect_source_records=collect_source_records,
+                    )
+                    for source in layer_sources
+                    if not self._deadline_exhausted(deadline_at)
+                ]
+            else:
+                with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                    futures = [
+                        executor.submit(
+                            self._collect_one_source,
+                            layer_name,
+                            source,
+                            collect_source_records=collect_source_records,
+                        )
+                        for source in layer_sources
+                    ]
+                    results = [future.result() for future in futures]
+    
+            layer_records: list[dict[str, Any]] = []
+            layer_runs: list[dict[str, Any]] = []
+            for records, run in results:
+                if len(layer_records) >= remaining_budget:
+                    break
+                allowed = remaining_budget - len(layer_records)
+                accepted_records = records[:allowed]
+                run["fetched_count"] = len(accepted_records)
+                layer_records.extend(accepted_records)
+                layer_runs.append(run)
+            return layer_records, layer_runs
+
+
+    def _collect_one_source(
+            self,
+            layer_name: str,
+            source: Mapping[str, Any],
+            *,
+            collect_source_records: SourceCollector,
+        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            source_payload = dict(source)
+            source_payload.setdefault("collection_layer", layer_name)
+            run = {
+                "source_name": str(source_payload.get("source_name") or "unknown_source"),
+                "source_type": str(source_payload.get("source_type") or ""),
+                "collection_layer": layer_name,
+                "fetched_count": 0,
+                "error": None,
+            }
+            try:
+                self.source_policy_guard.validate_for_collection(source_payload)
+            except Exception as exc:
+                run["status"] = "blocked_by_source_policy"
+                run["error"] = str(exc)
+                run["reason"] = getattr(exc, "rule", None) or str(exc)
+                return [], run
+            try:
+                raw_records = collect_source_records(source_payload)
+            except Exception as exc:  # pragma: no cover - exercised through API collectors.
+                run["error"] = str(exc)
+                return [], run
+    
+            records: list[dict[str, Any]] = []
+            for record in raw_records or []:
+                item = dict(record) if isinstance(record, Mapping) else {"value": record}
+                item.setdefault("source_name", source_payload.get("source_name"))
+                item.setdefault("source_type", source_payload.get("source_type"))
+                item.setdefault("source_url", source_payload.get("source_url"))
+                records.append(item)
+            run["fetched_count"] = len(records)
+            run["status"] = "completed"
+            return records, run
+
+
+    def _filter_sources_for_collection(
+            self,
+            selected_sources: list[dict[str, Any]],
+        ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+            allowed: list[dict[str, Any]] = []
+            blocked: list[dict[str, Any]] = []
+            for source in selected_sources:
+                payload = dict(source)
+                decision = self.source_policy_guard.check(payload)
+                if decision.allowed:
+                    allowed.append(payload)
+                    continue
+                blocked.append(
+                    {
+                        "source_name": str(payload.get("source_name") or "unknown_source"),
+                        "source_type": str(payload.get("source_type") or ""),
+                        "collection_layer": str(payload.get("collection_layer") or ""),
+                        "fetched_count": 0,
+                        "status": "blocked_by_source_policy",
+                        "reason": decision.reason,
+                        "error": decision.reason,
+                    }
+                )
+            return allowed, blocked
+
+
+    def _resolve_max_sources(
+            self,
+            value: Any,
+            *,
+            explicit_max_sources: int | None,
+            available_source_count: int,
+        ) -> int | None:
+            if explicit_max_sources is not None:
+                return explicit_max_sources
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                parsed = None
+            if parsed is not None and parsed > 0:
+                return parsed
+            if available_source_count > 0:
+                return available_source_count
+            return None
+
+
+    def _rewrite_selected_sources(
+            self,
+            selected_sources: list[dict[str, Any]],
+            *,
+            query: str,
+            intent: Mapping[str, Any],
+            plan: Mapping[str, Any],
+            runtime_context: Mapping[str, Any] | None = None,
+            max_rewrite_sources: int | None = None,
+            budget: BudgetController | None = None,
+            deadline_ms: int | None = None,
+        ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+            rewritten_sources: list[dict[str, Any]] = []
+            traces: list[dict[str, Any]] = []
+            rewrite_limit = max(0, int(max_rewrite_sources if max_rewrite_sources is not None else len(selected_sources)))
+            rewrite_targets = selected_sources[:rewrite_limit]
+            untouched_sources = selected_sources[rewrite_limit:]
+            for source in rewrite_targets:
+                rewritten_source, trace = self.query_rewriter.rewrite(
+                    source,
+                    query=query,
+                    intent=intent,
+                    plan=plan,
+                    runtime_context=runtime_context,
+                    budget=budget,
+                    deadline_ms=deadline_ms,
+                )
+                rewritten_sources.append(rewritten_source)
+                traces.append(trace.model_dump())
+            if untouched_sources:
+                rewritten_sources.extend(untouched_sources)
+                traces.extend(self._query_rewrite_skipped_traces(untouched_sources, reason="query_rewrite_source_limit_reached"))
+            return rewritten_sources, traces
+
+
+__all__ = ["InvestigationCollectionMixin"]

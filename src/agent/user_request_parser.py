@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
 from src.backend import LLMGateway
+from src.safety import PromptGuard
 
 
 DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS = 180
@@ -68,8 +69,11 @@ class LLMUserRequestParser:
         query: str,
         *,
         runtime_context: Mapping[str, Any] | None = None,
+        budget: Any | None = None,
+        deadline_ms: int | None = None,
     ) -> tuple[UserIntent, LLMDecisionTrace]:
         runtime_context = dict(runtime_context or {})
+        guarded_query = PromptGuard().wrap_untrusted_text(query)
         response = self.llm_gateway.chat(
             [
                 {
@@ -86,7 +90,7 @@ class LLMUserRequestParser:
                 {
                     "role": "user",
                     "content": (
-                        f"query={query}\n"
+                        f"query={guarded_query}\n"
                         f"runtime_slang_terms={runtime_context.get('slang_terms', [])[:12]}\n"
                         f"runtime_few_shot_examples={runtime_context.get('few_shot_examples', [])[:4]}"
                     ),
@@ -95,6 +99,10 @@ class LLMUserRequestParser:
             temperature=0.0,
             max_tokens=400,
             response_format={"type": "json_object"},
+            stage="intent_parse",
+            budget=budget,
+            cache_policy="read_write",
+            deadline_ms=deadline_ms,
         )
         parsed = response.parsed_json or {}
         intent = self._intent_from_payload(parsed, query=query, runtime_context=runtime_context)
@@ -157,8 +165,11 @@ class LLMInvestigationPlanner:
         *,
         available_sources: Iterable[Mapping[str, Any]] = (),
         runtime_context: Mapping[str, Any] | None = None,
+        budget: Any | None = None,
+        deadline_ms: int | None = None,
     ) -> tuple[InvestigationPlan, LLMDecisionTrace]:
         runtime_context = dict(runtime_context or {})
+        guarded_query = PromptGuard().wrap_untrusted_text(query)
         source_brief = [
             {
                 "source_name": str(source.get("source_name") or source.get("name") or ""),
@@ -185,7 +196,7 @@ class LLMInvestigationPlanner:
                 {
                     "role": "user",
                     "content": (
-                        f"user_query={query}\n"
+                        f"user_query={guarded_query}\n"
                         f"intent={intent.model_dump()}\n"
                         f"available_sources={source_brief}\n"
                         f"runtime_slang_terms={runtime_context.get('slang_terms', [])[:12]}\n"
@@ -196,6 +207,10 @@ class LLMInvestigationPlanner:
             temperature=0.0,
             max_tokens=700,
             response_format={"type": "json_object"},
+            stage="investigation_plan",
+            budget=budget,
+            cache_policy="read_write",
+            deadline_ms=deadline_ms,
         )
         parsed = response.parsed_json or {}
         plan = self._plan_from_payload(parsed, intent=intent, runtime_context=runtime_context)
