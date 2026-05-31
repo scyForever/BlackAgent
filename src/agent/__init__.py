@@ -1,12 +1,19 @@
 """Current investigation-agent components for BlackAgent."""
 
 from .budget_manager import BudgetExceeded, BudgetManager, BudgetSnapshot
-from .budget_controller import BudgetController, BudgetLedger, RuntimeBudget, StageBudgetStats
+from .budget_controller import BudgetController, BudgetLedger, BudgetLease, RuntimeBudget, StageBudgetStats
 from .clue_ranker import ClueRanker, RankedClue
 from .exploration_agent import ExplorationAgent
 from .model_router import ModelRouteDecision, ModelRouter, RouteAction
 from .policy_guard import PolicyGuard, SafetyPolicyViolation
 from .query_rewriter import LLMSourceQueryRewriter, QueryRewriteTrace
+from .runtime_services import (
+    ExecutionSummaryService,
+    FreshProcessingService,
+    LiveCollectionService,
+    ResultRenderService,
+    SemanticLocalRetrievalService,
+)
 from .services import (
     ClueMergeService,
     ClueRefinementService,
@@ -23,12 +30,15 @@ __all__ = [
     "BudgetExceeded",
     "BudgetController",
     "BudgetLedger",
+    "BudgetLease",
     "BudgetManager",
     "BudgetSnapshot",
     "ClueRanker",
     "ClueMergeService",
     "ClueRefinementService",
     "ExplorationAgent",
+    "ExecutionSummaryService",
+    "FreshProcessingService",
     "InitialCandidateRetrievalService",
     "InvestigationOrchestrator",
     "InvestigationPlan",
@@ -39,15 +49,18 @@ __all__ = [
     "LLMInvestigationPlanner",
     "LLMSourceQueryRewriter",
     "LLMUserRequestParser",
+    "LiveCollectionService",
     "ModelRouteDecision",
     "ModelRouter",
     "PolicyGuard",
     "QueryRewriteTrace",
     "RankedClue",
+    "ResultRenderService",
     "RouteAction",
     "RuntimeBudget",
     "StageBudgetStats",
     "SafetyPolicyViolation",
+    "SemanticLocalRetrievalService",
     "RunStatePreparationService",
     "SourceSelectionService",
     "ToolRegistry",

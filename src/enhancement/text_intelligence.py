@@ -20,6 +20,8 @@ from src.classifier.nlp_rule_matcher import (
 )
 from src.collector.base_collector import get_record_field
 from src.extractor.entity_extractor import ACCOUNT, CONTACT, TOOL_NAME, URL, BasicEntityExtractor
+from src.enhancement.context_polarity import NEGATIVE_RISK_ASSERTION, polarity_from_config
+from src.intelligence.entity_normalizer import EntityNormalizer
 from src.rules import RuleRegistry
 
 
@@ -316,6 +318,7 @@ class FineGrainedIntentClassifier:
             self.defensive_context_markers = tuple(dict.fromkeys([*self.DEFENSIVE_CONTEXT_MARKERS, *configured_markers]))
         else:
             self.defensive_context_markers = self.DEFENSIVE_CONTEXT_MARKERS
+        self.polarity_scorer = polarity_from_config(polarity)
         self.rule_version = self.rule_registry.version_hash()
 
     def classify(self, record: Mapping[str, Any] | Any) -> FineClassificationResult:
@@ -329,16 +332,18 @@ class FineGrainedIntentClassifier:
 
         if not category_scores:
             return FineClassificationResult(trace_id, UNKNOWN, "待研判", 0.35, True, "UNKNOWN", [], [])
-        if self._is_defensive_context(text):
+        topic_terms = [term for values in category_evidence.values() for term in values if not str(term).startswith("theme:")]
+        polarity = self.polarity_scorer.score(text, topic_terms=topic_terms)
+        if self._is_defensive_context(text) or polarity.polarity == NEGATIVE_RISK_ASSERTION:
             return FineClassificationResult(
                 trace_id,
-                UNKNOWN,
-                "防御语境",
-                0.12,
+                NORMAL_NOISE,
+                "研究讨论" if polarity.actor_intent == "research" else "防御语境",
+                max(0.8, polarity.confidence),
                 False,
-                "DEFENSIVE_CONTEXT",
+                "NEGATIVE_RISK_ASSERTION",
                 [],
-                ["defensive_context"],
+                polarity.evidence or ["defensive_context"],
             )
 
         ordered = sorted(
@@ -517,6 +522,10 @@ class AdvancedEntity:
     confidence: float = 1.0
     context_relevance: float = 0.5
     extraction_method: str = "advanced_rule_v2"
+    canonical_hash: str | None = None
+    masked_value: str | None = None
+    normalizer_version: str = "entity_normalizer_v1"
+    sensitivity_level: str = "normal"
 
     def model_dump(self) -> dict[str, Any]:
         return asdict(self)
@@ -580,12 +589,17 @@ class AdvancedEntityExtractor:
     """Phase II normalization + Phase III hidden entity discovery."""
 
     OBFUSCATED_URL_RE = re.compile(r"(?i)(?:hxxps?|https?)[:：]//[^\s]+|[a-z0-9-]+\s*\[\.\]\s*(?:com|cn|net|top|xyz)(?:/[^\s]*)?")
-    INVITE_CODE_RE = re.compile(r"(?:邀请码|暗号|口令|code)[:：\s]*([A-Za-z0-9_-]{4,24})", re.IGNORECASE)
+    INVITE_CODE_RE = re.compile(
+        r"(?:邀请码|暗号|口令)[:：\s]*(?:code[:：\s]*)?([A-Za-z0-9_-]{3,24})"
+        r"|\bcode[:：\s]*([A-Za-z0-9_-]{3,24})",
+        re.IGNORECASE,
+    )
     SETTLEMENT_RE = re.compile(r"(跑分|代付|虚拟币|USDT|银行卡|支付宝|微信收款)", re.IGNORECASE)
 
     def __init__(self, slang_dictionary: SlangDictionary | None = None) -> None:
         self.basic = BasicEntityExtractor()
         self.slang_dictionary = slang_dictionary or SlangDictionary()
+        self.entity_normalizer = EntityNormalizer()
 
     def extract(self, record: Mapping[str, Any] | Any) -> list[AdvancedEntity]:
         text = _text(record)
@@ -594,14 +608,21 @@ class AdvancedEntityExtractor:
         seen: set[tuple[str, str, int, int]] = set()
 
         def add(entity_type: str, value: str, start: int, end: int, *, method: str = "advanced_rule_v2", confidence: float = 1.0) -> None:
-            normalized = self.slang_dictionary.normalize(_normalize_obfuscation(value))
-            key = (entity_type, normalized, start, end)
+            slang_normalized = self.slang_dictionary.normalize(_normalize_obfuscation(value))
+            normalized_entity = self.entity_normalizer.normalize(
+                entity_type=entity_type,
+                raw_value=slang_normalized,
+                confidence=confidence,
+            )
+            normalized = normalized_entity.normalized_value
+            final_type = normalized_entity.entity_type
+            key = (final_type, normalized, start, end)
             if key in seen or not normalized:
                 return
             seen.add(key)
             entities.append(
                 AdvancedEntity(
-                    entity_type=entity_type,
+                    entity_type=final_type,
                     entity_value=value.strip(),
                     normalized_value=normalized,
                     start_offset=start,
@@ -610,6 +631,10 @@ class AdvancedEntityExtractor:
                     confidence=confidence,
                     context_relevance=context_relevance(text, start, end),
                     extraction_method=method,
+                    canonical_hash=normalized_entity.canonical_hash,
+                    masked_value=normalized_entity.masked_value,
+                    normalizer_version=normalized_entity.normalizer_version,
+                    sensitivity_level=normalized_entity.sensitivity_level,
                 )
             )
 
@@ -625,10 +650,18 @@ class AdvancedEntityExtractor:
             (self.SETTLEMENT_RE, "settlement", "hidden_settlement_term"),
         ):
             for match in regex.finditer(text):
-                value = match.group(1) if match.groups() and match.group(1) else match.group(0)
-                start = match.start(1) if match.groups() and match.group(1) else match.start()
+                group_index = _first_group_index(match)
+                value = match.group(group_index) if group_index is not None else match.group(0)
+                start = match.start(group_index) if group_index is not None else match.start()
                 add(entity_type, value, start, start + len(value), method=method, confidence=0.82)
         return sorted(entities, key=lambda item: (item.source_trace_id, item.start_offset, item.entity_type))
+
+
+def _first_group_index(match: re.Match[str]) -> int | None:
+    for index, value in enumerate(match.groups(), start=1):
+        if value:
+            return index
+    return None
 
 def context_relevance(text: str, start: int, end: int) -> float:
     window = text[max(0, start - 18) : min(len(text), end + 18)]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections import Counter
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from src.agent.budget_controller import BudgetController, RuntimeBudget
 from src.domain import RunPolicyContext
@@ -69,36 +69,50 @@ class InvestigationTelemetryService:
 
 
 class RunStatePreparationService:
-    """Delegate preparation to the existing orchestrator helpers while owning the step boundary."""
+    """Prepare run state from explicit collaborators."""
 
     name = "run_state_preparation"
 
-    def __init__(self, orchestrator: Any | None = None, **dependencies: Any) -> None:
-        if orchestrator is not None:
-            self._bind_orchestrator(orchestrator)
-        else:
-            for name, value in dependencies.items():
-                setattr(self, name, value)
-
-    def _bind_orchestrator(self, orchestrator: Any) -> None:
-        self.routing_profiles = orchestrator.routing_profiles
-        self.intent_parser = orchestrator.intent_parser
-        self.planner = orchestrator.planner
-        self.gateway_stats_count = orchestrator._gateway_stats_count
-        self.normalize_policy_override = orchestrator._normalize_policy_override
-        self.normalize_routing_profile = orchestrator._normalize_routing_profile
-        self.routing_profile_config = orchestrator._routing_profile_config
-        self.effective_investigation_config = orchestrator._effective_investigation_config
-        self.planner_runtime_context = orchestrator._planner_runtime_context
-        self.profile_budget_defaults = orchestrator._profile_budget_defaults
-        self.stage_deadline_ms = orchestrator._stage_deadline_ms
-        self.disabled_llm_trace = orchestrator._disabled_llm_trace
-        self.runtime_quality_gate = orchestrator._runtime_quality_gate
-        self.apply_profile_execution_controls = orchestrator._apply_profile_execution_controls
-        self.plan_execution_controls = orchestrator._plan_execution_controls
-        self.resolve_budget = orchestrator._resolve_budget
-        self.select_sources = orchestrator._select_sources
-        self.deadline_at = orchestrator._deadline_at
+    def __init__(
+        self,
+        *,
+        routing_profiles: Mapping[str, Any],
+        intent_parser: Any,
+        planner: Any,
+        gateway_stats_count: Callable[[], int],
+        normalize_policy_override: Callable[..., Any],
+        normalize_routing_profile: Callable[[str | None], str],
+        routing_profile_config: Callable[[str], dict[str, Any]],
+        effective_investigation_config: Callable[..., Any],
+        planner_runtime_context: Callable[[], dict[str, Any]],
+        profile_budget_defaults: Callable[[Mapping[str, Any]], dict[str, Any]],
+        stage_deadline_ms: Callable[..., int],
+        disabled_llm_trace: Callable[..., Any],
+        runtime_quality_gate: Callable[..., Any],
+        apply_profile_execution_controls: Callable[..., Any],
+        plan_execution_controls: Callable[[Mapping[str, Any]], Any],
+        resolve_budget: Callable[..., dict[str, Any]],
+        select_sources: Callable[..., list[dict[str, Any]]],
+        deadline_at: Callable[[float, int | None], float | None],
+    ) -> None:
+        self.routing_profiles = routing_profiles
+        self.intent_parser = intent_parser
+        self.planner = planner
+        self.gateway_stats_count = gateway_stats_count
+        self.normalize_policy_override = normalize_policy_override
+        self.normalize_routing_profile = normalize_routing_profile
+        self.routing_profile_config = routing_profile_config
+        self.effective_investigation_config = effective_investigation_config
+        self.planner_runtime_context = planner_runtime_context
+        self.profile_budget_defaults = profile_budget_defaults
+        self.stage_deadline_ms = stage_deadline_ms
+        self.disabled_llm_trace = disabled_llm_trace
+        self.runtime_quality_gate = runtime_quality_gate
+        self.apply_profile_execution_controls = apply_profile_execution_controls
+        self.plan_execution_controls = plan_execution_controls
+        self.resolve_budget = resolve_budget
+        self.select_sources = select_sources
+        self.deadline_at = deadline_at
 
     def prepare(
         self,
@@ -230,16 +244,20 @@ class InitialCandidateRetrievalService:
 
     name = "initial_candidate_retrieval"
 
-    def __init__(self, orchestrator: Any | None = None, **dependencies: Any) -> None:
-        if orchestrator is not None:
-            self.clue_retriever = orchestrator.clue_retriever
-            self.clue_repo = orchestrator.clue_repo
-            self.optional_positive_int = orchestrator._optional_positive_int
-            self.optional_float = orchestrator._optional_float
-            self.summarize_retrieved_clues = orchestrator._summarize_retrieved_clues
-        else:
-            for name, value in dependencies.items():
-                setattr(self, name, value)
+    def __init__(
+        self,
+        *,
+        clue_retriever: Any,
+        clue_repo: Any,
+        optional_positive_int: Callable[[Any], int | None],
+        optional_float: Callable[[Any], float | None],
+        summarize_retrieved_clues: Callable[..., dict[str, int]],
+    ) -> None:
+        self.clue_retriever = clue_retriever
+        self.clue_repo = clue_repo
+        self.optional_positive_int = optional_positive_int
+        self.optional_float = optional_float
+        self.summarize_retrieved_clues = summarize_retrieved_clues
 
     def retrieve(
         self,
@@ -335,7 +353,8 @@ class ClueRefinementService:
                 route_decision.action == "llm_refine_only"
                 and len(pending_refine) < max_refine
                 and not self.deadline_checker(deadline_at)
-                and active_budget_controller.allow_llm_call(
+                and _budget_peek(
+                    active_budget_controller,
                     stage="clue_refine",
                     estimated_tokens=route_decision.max_tokens,
                     item_count=1,
@@ -394,3 +413,9 @@ __all__ = [
     "RunStatePreparationService",
     "SourceSelectionService",
 ]
+
+
+def _budget_peek(budget: BudgetController, *, stage: str, estimated_tokens: int, item_count: int = 1) -> bool:
+    if hasattr(budget, "peek"):
+        return bool(budget.peek(stage=stage, estimated_tokens=estimated_tokens, item_count=item_count))
+    return bool(budget.allow_llm_call(stage=stage, estimated_tokens=estimated_tokens, item_count=item_count))

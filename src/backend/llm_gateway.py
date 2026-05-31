@@ -222,6 +222,7 @@ class LLMGateway:
         resolved_cache_key = str(cache_key or "").strip() or _cache_key(payload, stage=stage_name)
         normalized_cache_policy = str(cache_policy or "none").strip().lower()
         budget_item_count = max(1, int((extra_body or {}).get("budget_item_count") or 1)) if isinstance(extra_body, Mapping) else 1
+        budget_lease = None
 
         if normalized_cache_policy in {"read", "read_write"} and resolved_cache_key in self._cache:
             cached = self._cache[resolved_cache_key]
@@ -235,7 +236,9 @@ class LLMGateway:
                 error=cached.error,
                 status_code=cached.status_code,
             )
-            if budget is not None and hasattr(budget, "consume_llm"):
+            if budget_lease is not None and budget is not None and hasattr(budget, "consume"):
+                budget.consume(budget_lease, cache_hit=True, ok=response.ok, network=False)
+            elif budget is not None and hasattr(budget, "consume_llm"):
                 try:
                     budget.consume_llm(
                         stage=stage_name,
@@ -257,7 +260,27 @@ class LLMGateway:
             )
             return response
 
-        if budget is not None and hasattr(budget, "allow_llm_call"):
+        if budget is not None and hasattr(budget, "reserve"):
+            try:
+                budget_lease = budget.reserve(
+                    stage=stage_name,
+                    estimated_tokens=budget_estimated_tokens,
+                    item_count=budget_item_count,
+                )
+            except TypeError:
+                budget_lease = budget.reserve(stage=stage_name, estimated_tokens=budget_estimated_tokens)
+            if budget_lease is None:
+                response = self._blocked_response("budget_exhausted", f"LLM budget denied for stage={stage_name}")
+                self._record_stats(
+                    stage=stage_name,
+                    started_at=started_at,
+                    prompt_tokens_estimated=estimated_tokens,
+                    completion_tokens_limit=completion_limit,
+                    cache_hit=False,
+                    response=response,
+                )
+                return response
+        elif budget is not None and hasattr(budget, "allow_llm_call"):
             try:
                 allowed = budget.allow_llm_call(
                     stage=stage_name,
@@ -280,7 +303,9 @@ class LLMGateway:
 
         if self.config.mock or self.config.dry_run:
             response = self._mock_response(payload)
-            if budget is not None and hasattr(budget, "consume_llm"):
+            if budget_lease is not None and budget is not None and hasattr(budget, "consume"):
+                budget.consume(budget_lease, cache_hit=False, ok=response.ok, network=False)
+            elif budget is not None and hasattr(budget, "consume_llm"):
                 try:
                     budget.consume_llm(
                         stage=stage_name,
@@ -447,16 +472,18 @@ class LLMGateway:
             network_attempted=True,
             status_code=status_code,
         )
-        if budget is not None and hasattr(budget, "consume_llm"):
+        if budget_lease is not None and budget is not None and hasattr(budget, "consume"):
+            budget.consume(budget_lease, cache_hit=False, ok=response.ok, network=response.network_attempted)
+        elif budget is not None and hasattr(budget, "consume_llm"):
             try:
-                    budget.consume_llm(
-                        stage=stage_name,
-                        estimated_tokens=budget_estimated_tokens,
-                        item_count=budget_item_count,
-                        cache_hit=False,
-                        ok=response.ok,
-                        network=response.network_attempted,
-                    )
+                budget.consume_llm(
+                    stage=stage_name,
+                    estimated_tokens=budget_estimated_tokens,
+                    item_count=budget_item_count,
+                    cache_hit=False,
+                    ok=response.ok,
+                    network=response.network_attempted,
+                )
             except TypeError:
                 budget.consume_llm(stage=stage_name, estimated_tokens=budget_estimated_tokens)
         if normalized_cache_policy in {"write", "read_write"}:

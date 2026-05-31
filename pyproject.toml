@@ -28,8 +28,13 @@ dev = [
 blackagent = "blackagent.interfaces.cli.main:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["src*", "storage*"]
+where = ["src", "."]
+include = ["blackagent*", "src*", "storage*", "config*"]
+exclude = ["src.storage*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+config = ["*.yaml", "*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = [".", "src"]

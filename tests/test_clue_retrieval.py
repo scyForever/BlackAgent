@@ -85,3 +85,34 @@ def test_clue_retriever_applies_time_source_and_quality_filters():
         min_quality_score=0.8,
     )
     assert [item["clue_id"] for item in results] == ["recent-good"]
+
+
+def test_clue_retriever_reads_cross_run_entity_graph_clues(tmp_path):
+    from storage.entity_graph import EntityGraphStore
+
+    db_path = tmp_path / "entity_graph.db"
+    first_run = EntityGraphStore(db_path=db_path)
+    first_run.add_observation(
+        {"entity_type": "contact", "entity_value": "TG:graph01", "confidence": 0.91},
+        {"trace_id": "run-a", "source_name": "telegram_feed", "source_type": "IM"},
+    )
+
+    second_run = EntityGraphStore(db_path=db_path)
+    second_run.add_observation(
+        {"entity_type": "contact", "entity_value": "TG:graph01", "confidence": 0.93},
+        {"trace_id": "run-b", "source_name": "forum_feed", "source_type": "Forum"},
+    )
+
+    results = ClueRetriever().retrieve(
+        [],
+        query="找 TG graph01 跨源实体图谱线索",
+        intent={"require_cross_source": True},
+        entity_graph=second_run,
+        limit=5,
+    )
+
+    assert results
+    assert results[0]["retrieval_source"] == "entity_graph"
+    assert results[0]["entity_graph_backend"] == "entity_graph_store"
+    assert len(results[0]["entity_observation_refs"]) == 2
+    assert set(results[0]["evidence_trace_ids"]) == {"run-a", "run-b"}

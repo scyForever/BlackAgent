@@ -95,12 +95,13 @@ class LLMEnrichStage:
         ]
 
     def _allow(self, *, estimated_tokens: int) -> bool:
-        if self.budget is None or not hasattr(self.budget, "allow_llm_call"):
+        if self.budget is None:
             return True
-        return bool(
-            self.budget.allow_llm_call(stage="llm_classify", estimated_tokens=0, item_count=1)
-            and self.budget.allow_llm_call(stage="llm_classify", estimated_tokens=estimated_tokens, item_count=0)
-        )
+        if hasattr(self.budget, "peek"):
+            return bool(self.budget.peek(stage="llm_classify", estimated_tokens=estimated_tokens, item_count=1))
+        if hasattr(self.budget, "allow_llm_call"):
+            return bool(self.budget.allow_llm_call(stage="llm_classify", estimated_tokens=estimated_tokens, item_count=1))
+        return True
 
     def _budget_counter(self) -> tuple[int | None, int | None]:
         if self.budget is None or not hasattr(self.budget, "snapshot"):
@@ -154,6 +155,13 @@ class LLMEnrichStage:
             "used_enhanced_entities": bool(normalized_entities),
             "preserved_rule_classification": "rule_classification" in payload,
             "preserved_rule_entities": "rule_entities" in payload,
+            "classification_resolution": {
+                "rule": dict(payload.get("rule_classification") or classification),
+                "llm": dict(payload.get("llm_classification") or {}),
+                "final": dict(payload.get("classification") or classification),
+                "strategy": "prefer_llm_when_structured_response_present" if usable_classification else "preserve_rule_when_llm_low_evidence",
+                "reason": "llm_enrichment_structured_json" if usable_classification else "no_usable_llm_classification",
+            },
         }
         return payload, not (usable_classification or normalized_entities)
 

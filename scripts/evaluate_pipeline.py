@@ -15,6 +15,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.pipeline import IntelligencePipeline
 from src.domain import RunPolicyContext
+from src.agent.budget_controller import BudgetController, RuntimeBudget
+from src.backend import LLMGateway, LLMGatewayConfig
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -24,10 +26,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clues-gold", default=None, help="Optional JSONL focused on clue aggregation.")
     parser.add_argument("--hard-negative", default=None, help="Optional JSONL where no risk prediction is expected.")
     parser.add_argument("--profile", default="high_recall", choices=["fast", "balanced", "high_recall"], help="Routing profile to evaluate.")
+    parser.add_argument("--llm-mode", default="off", choices=["off", "mock"], help="Use mock LLM enrichment so profile cost/latency tradeoffs are visible.")
+    parser.add_argument("--with-budget", action="store_true", help="Attach BudgetController to the evaluation pipeline.")
     parser.add_argument("--min-classification-f1", type=float, default=None, help="Fail if classification F1 is below this threshold.")
     parser.add_argument("--min-entity-f1", type=float, default=None, help="Fail if entity F1 is below this threshold.")
     parser.add_argument("--max-hard-negative-fpr", type=float, default=None, help="Fail if hard-negative false-positive rate is above this threshold.")
     parser.add_argument("--max-llm-calls-per-1000", type=float, default=None, help="Fail if profile LLM calls per 1000 records exceed this threshold.")
+    parser.add_argument("--max-clue-overgeneration-ratio", type=float, default=None, help="Fail if actual clue count greatly exceeds expected count.")
     parser.add_argument("--output", default="data/eval_report.json", help="Where to write JSON metrics.")
     return parser.parse_args(argv)
 
@@ -58,10 +63,14 @@ def evaluate(
     clue_records: list[dict[str, Any]] | None = None,
     hard_negative_records: list[dict[str, Any]] | None = None,
     profile: str = "high_recall",
+    llm_mode: str = "off",
+    with_budget: bool = False,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    policy = RunPolicyContext.from_profile_config(routing_profile=profile, profile_config=_profile_config(profile))
-    pipeline = IntelligencePipeline(policy=policy)
+    policy = RunPolicyContext.from_profile_config(routing_profile=profile, profile_config=_profile_config(profile), budget=_budget_profile(profile))
+    gateway = LLMGateway(LLMGatewayConfig(dry_run=True, mock=True)) if llm_mode == "mock" else None
+    budget_controller = BudgetController(RuntimeBudget.from_mapping(policy.budget or _budget_profile(profile))) if (with_budget or gateway is not None) else None
+    pipeline = IntelligencePipeline(policy=policy, llm_gateway=gateway, budget_controller=budget_controller)
     classification_records = list(records)
     entity_eval_records = list(entity_records or records)
     hard_negative_records = list(hard_negative_records or [])
@@ -81,7 +90,8 @@ def evaluate(
     )
     entity_metrics = evaluate_entities(entity_eval_records, entity_result.entities)
     clue_metrics = evaluate_clues(clue_eval_records, clue_result.clues if clue_result is not None else [])
-    llm_calls = int(classification_result.execution_summary.get("llm_enrich_trace_count") or 0)
+    llm_budget = budget_controller.snapshot() if budget_controller is not None else {}
+    llm_calls = int((llm_budget or {}).get("llm_calls") or classification_result.execution_summary.get("llm_enrich_trace_count") or 0)
     llm_calls_per_1000 = round(llm_calls / max(len(classification_records) + len(hard_negative_records), 1) * 1000, 4)
     valid_clues = max(1, clue_metrics["overall"]["tp"])
     report = {
@@ -108,7 +118,9 @@ def evaluate(
         "false_positive_rate": classification_metrics["false_positive_rate"],
         "hard_negative": classification_metrics["hard_negative"],
         "llm_calls_per_1000_records": llm_calls_per_1000,
-        "estimated_tokens_per_valid_clue": round(float(classification_result.execution_summary.get("estimated_tokens") or 0.0) / valid_clues, 4),
+        "estimated_tokens_per_valid_clue": round(float((llm_budget or {}).get("estimated_tokens") or classification_result.execution_summary.get("estimated_tokens") or 0.0) / valid_clues, 4),
+        "llm_mode": llm_mode,
+        "budget_controller": llm_budget,
         "p50_latency_ms": round(elapsed_ms, 2),
         "p95_latency_ms": round(elapsed_ms, 2),
         "pipeline_summary": classification_result.execution_summary,
@@ -119,6 +131,7 @@ def evaluate(
             "classification_recall": classification_metrics["overall"]["recall"],
             "false_positive_rate": classification_metrics["false_positive_rate"],
             "p95_latency_ms": round(elapsed_ms, 2),
+            "estimated_tokens": int((llm_budget or {}).get("estimated_tokens") or 0),
         },
     }
     return report
@@ -134,6 +147,8 @@ def quality_gate_failures(report: Mapping[str, Any], args: argparse.Namespace) -
         failures.append(f"hard_negative_fpr_above_threshold:{report['false_positive_rate']}>{args.max_hard_negative_fpr}")
     if args.max_llm_calls_per_1000 is not None and float(report["llm_calls_per_1000_records"]) > args.max_llm_calls_per_1000:
         failures.append(f"llm_calls_per_1000_above_threshold:{report['llm_calls_per_1000_records']}>{args.max_llm_calls_per_1000}")
+    if getattr(args, "max_clue_overgeneration_ratio", None) is not None and float(report["clue"]["clue_overgeneration_ratio"]) > args.max_clue_overgeneration_ratio:
+        failures.append(f"clue_overgeneration_ratio_above_threshold:{report['clue']['clue_overgeneration_ratio']}>{args.max_clue_overgeneration_ratio}")
     return failures
 
 
@@ -201,18 +216,29 @@ def evaluate_clues(records: list[dict[str, Any]], actual_clues: Iterable[Mapping
     actual = [dict(item) for item in actual_clues]
     actual_types = {str(item.get("clue_type") or "").strip() for item in actual if str(item.get("clue_type") or "").strip()}
     if expected_types:
-        tp = len(expected_types & actual_types)
-        fp = len(actual_types - expected_types)
-        fn = len(expected_types - actual_types)
+        type_tp = len(expected_types & actual_types)
+        type_fp = len(actual_types - expected_types)
+        type_fn = len(expected_types - actual_types)
+        count_fp = max(0, len(actual) - max(expected_count, type_tp))
+        count_fn = max(0, expected_count - len(actual))
+        tp = min(type_tp, expected_count or type_tp)
+        fp = type_fp + count_fp
+        fn = type_fn + count_fn
     else:
         tp = min(len(actual), expected_count)
         fp = max(0, len(actual) - expected_count)
         fn = max(0, expected_count - len(actual))
     overall = prf(tp, fp, fn)
+    overgeneration_ratio = round(len(actual) / max(expected_count, 1), 4)
+    duplicate_rate = _duplicate_clue_rate(actual)
     return {
         "overall": {**overall, "tp": tp, "fp": fp, "fn": fn},
         "expected_clue_count": expected_count,
         "actual_clue_count": len(actual),
+        "clue_overgeneration_ratio": overgeneration_ratio,
+        "valid_clue_precision_by_count": round(min(expected_count, len(actual)) / max(len(actual), 1), 4),
+        "review_load_per_100_records": round(len(actual) / max(len(records), 1) * 100, 4),
+        "duplicate_clue_rate": duplicate_rate,
         "actual_clue_types": sorted(actual_types),
     }
 
@@ -303,6 +329,8 @@ def main(argv: list[str] | None = None) -> int:
         clue_records=load_jsonl(args.clues_gold) if args.clues_gold else None,
         hard_negative_records=load_jsonl(args.hard_negative) if args.hard_negative else None,
         profile=args.profile,
+        llm_mode=args.llm_mode,
+        with_budget=args.with_budget,
     )
     failures = quality_gate_failures(report, args)
     if failures:
@@ -342,6 +370,46 @@ def _profile_config(profile: str) -> dict[str, Any]:
         },
     }
     return defaults.get(profile, defaults["balanced"])
+
+
+def _budget_profile(profile: str) -> dict[str, Any]:
+    return {
+        "fast": {
+            "max_candidate_clues": 4,
+            "max_llm_calls": 2,
+            "max_llm_tokens": 4000,
+            "max_llm_classify_records": 2,
+            "max_llm_refine_clues": 1,
+        },
+        "balanced": {
+            "max_candidate_clues": 6,
+            "max_llm_calls": 20,
+            "max_llm_tokens": 20000,
+            "max_llm_classify_records": 20,
+            "max_llm_refine_clues": 10,
+        },
+        "high_recall": {
+            "max_candidate_clues": 6,
+            "max_llm_calls": 40,
+            "max_llm_tokens": 40000,
+            "max_llm_classify_records": 40,
+            "max_llm_refine_clues": 20,
+        },
+    }.get(profile, {})
+
+
+def _duplicate_clue_rate(actual: list[dict[str, Any]]) -> float:
+    if not actual:
+        return 0.0
+    keys = [
+        (
+            str(item.get("clue_type") or ""),
+            str(item.get("key") or ""),
+            str(item.get("risk_category") or ""),
+        )
+        for item in actual
+    ]
+    return round(1.0 - (len(set(keys)) / len(keys)), 4)
 
 
 if __name__ == "__main__":

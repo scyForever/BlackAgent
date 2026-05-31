@@ -101,9 +101,15 @@ def test_model_router_budget_controller_and_clue_ranker_control_refinement_spend
     assert ranked[0]["clue_id"] == "strong"
     assert ranked[0]["refine_priority_score"] > ranked[1]["refine_priority_score"]
     ledger = budget.snapshot()["llm_budget"]
-    assert ledger["attempted_calls"] >= 2
+    assert ledger["attempted_calls"] == 1
     assert ledger["allowed_calls"] == 1
-    assert ledger["denied_calls"] >= 1
+    assert ledger["denied_calls"] == 0
+
+    denied_budget = BudgetController(RuntimeBudget(max_llm_calls=0))
+    assert denied_budget.reserve(stage="clue_refine", estimated_tokens=1) is None
+    denied_ledger = denied_budget.snapshot()["llm_budget"]
+    assert denied_ledger["attempted_calls"] == 1
+    assert denied_ledger["denied_calls"] == 1
 
 
 def test_application_service_and_runtime_container_wrap_existing_runtime_dependencies():
@@ -210,6 +216,12 @@ def test_intelligence_pipeline_default_stages_run_real_components():
     assert result.execution_summary["classified_count"] >= 1
     assert result.execution_summary["entity_count"] >= 1
     assert result.clues
+    assert result.items
+    assert all(isinstance(item, PipelineItem) for item in result.items)
+    assert result.items[0].cleaned is not None
+    assert result.items[0].classification is not None
+    assert result.items[0].route is not None
+    assert result.items[0].payload
 
 
 def test_safety_helpers_wrap_untrusted_text_mask_pii_and_validate_output():
@@ -635,3 +647,98 @@ def test_query_rewrite_prompt_sanitizes_source_secrets():
     assert "Authorization" not in captured["prompt"]
     assert "Cookie" not in captured["prompt"]
     assert "secret-source" in captured["prompt"]
+
+
+def test_product_cli_entrypoint_is_packaged_not_scripts_wrapper():
+    import inspect
+    from blackagent.interfaces.cli import main as cli_main
+
+    source = inspect.getsource(cli_main)
+    assert "from scripts.run_agent_cli import main" not in source
+    assert callable(cli_main.main)
+    assert cli_main.parse_args(["--query", "x", "--show", "json"]).show == "json"
+
+
+def test_pyproject_packages_runtime_config_resources():
+    text = __import__("pathlib").Path("pyproject.toml").read_text(encoding="utf-8")
+    assert '"config*"' in text
+    assert "[tool.setuptools.package-data]" in text
+    assert 'config = ["*.yaml", "*.json"]' in text
+
+
+
+def test_pr4_runtime_shell_workflow_and_services_meet_decomposition_contracts():
+    import ast
+    from pathlib import Path
+
+    runtime_lines = Path("src/agent/investigation_runtime.py").read_text(encoding="utf-8").splitlines()
+    workflow_text = Path("src/workflows/investigation_workflow.py").read_text(encoding="utf-8")
+    services_text = Path("src/agent/services.py").read_text(encoding="utf-8")
+    runtime_services_text = Path("src/agent/runtime_services.py").read_text(encoding="utf-8")
+
+    assert len(runtime_lines) <= 300
+    assert "orchestrator._" not in services_text
+    assert "self.orchestrator" not in workflow_text
+    assert "runtime._" not in runtime_services_text
+    assert "self.orchestrator" not in runtime_services_text
+
+    tree = ast.parse(workflow_text)
+    run_node = next(
+        item
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name == "InvestigationWorkflow"
+        for item in node.body
+        if isinstance(item, ast.FunctionDef) and item.name == "run"
+    )
+    assert run_node.end_lineno - run_node.lineno + 1 <= 60
+
+    from src.workflows import InvestigationWorkflow
+
+    workflow = InvestigationWorkflow(
+        run_state_preparation=type("RunPrep", (), {"prepare": lambda self, **kwargs: "run"})(),
+        initial_candidate_retrieval=type("Retrieve", (), {"retrieve": lambda self, **kwargs: "retrieval"})(),
+        semantic_local_retrieval=type("Semantic", (), {"run": lambda self, **kwargs: "semantic"})(),
+        live_collection_service=type("Live", (), {"run": lambda self, **kwargs: "live"})(),
+        fresh_processing_service=type("Fresh", (), {"run": lambda self, **kwargs: "fresh"})(),
+        refinement_service=type("Refine", (), {"run": lambda self, **kwargs: "refine"})(),
+        execution_summary_service=type("Summary", (), {"build": lambda self, **kwargs: {"ok": True}})(),
+        result_render_service=type("Render", (), {"render": lambda self, context: {"query": context.query, "summary": context.execution_summary}})(),
+        run_state_type=object,
+        retrieval_state_type=object,
+    )
+    result = workflow.run("q")
+    assert result.payload == {"query": "q", "summary": {"ok": True}}
+    assert result.context.semantic_state == "semantic"
+    assert result.context.refinement_state == "refine"
+
+
+def test_runtime_wiring_uses_public_service_factories_for_legacy_phase_callbacks():
+    import ast
+    from pathlib import Path
+
+    runtime_text = Path("src/agent/investigation_runtime.py").read_text(encoding="utf-8")
+    tree = ast.parse(runtime_text)
+    factory_names = {
+        "semantic_local_retrieval_service",
+        "live_collection_service",
+        "fresh_processing_service",
+        "refinement_orchestration_service",
+        "execution_summary_service",
+        "result_render_service",
+    }
+    calls = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert factory_names.issubset(calls)
+
+    forbidden_direct_classes = {
+        "SemanticLocalRetrievalService",
+        "LiveCollectionService",
+        "FreshProcessingService",
+        "RefinementOrchestrationService",
+        "ExecutionSummaryService",
+        "ResultRenderService",
+    }
+    assert not forbidden_direct_classes.intersection(calls)

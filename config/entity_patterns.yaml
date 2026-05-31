@@ -1,7 +1,9 @@
 entity_patterns:
   invite_code:
-    pattern: "(?:邀请码|暗号|口令|code)[:：\\s]*([A-Za-z0-9_-]{4,24})"
-    entity_type: account
+    patterns:
+      - "(?:邀请码|暗号|口令)[:：\\s]*(?:code[:：\\s]*)?([A-Za-z0-9_-]{3,24})"
+      - "\\bcode[:：\\s]*([A-Za-z0-9_-]{3,24})"
+    entity_type: invite_code
   settlement:
     pattern: "(跑分|代付|虚拟币|USDT|银行卡|支付宝|微信收款)"
     entity_type: settlement

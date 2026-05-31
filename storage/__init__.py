@@ -4,7 +4,7 @@ from .audit_repo import AuditRepo, InMemoryAuditRepo
 from .cleaned_repo import CleanedTextRepo, InMemoryCleanedTextRepo
 from .clue_repo import ClueRepo, InMemoryClueRepo
 from .entity_repo import EntityRepo, InMemoryEntityRepo
-from src.storage.entity_graph import EntityAsset, EntityGraphStore, EntityObservation, EntityRelation
+from .entity_graph import EntityAsset, EntityGraphStore, EntityObservation, EntityRelation
 from .graph_repo import GraphEdge, GraphNode, GraphRepo, InMemoryGraphRepo
 from .raw_repo import InMemoryRawIntelligenceRepo, RawIntelligenceRepo
 from .review_repo import InMemoryReviewRepo, ReviewRepo, ReviewState

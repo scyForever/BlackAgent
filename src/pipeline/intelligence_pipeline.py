@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
 from src.agent.model_router import ModelRouter
-from src.domain import RunPolicyContext
+from src.domain import PipelineItem, RoutedRecord, RunPolicyContext
 from src.pipeline.stages import (
     ClassifyStage,
     CleanStage,
@@ -28,6 +28,7 @@ class PipelineResult:
     routed: list[dict[str, Any]] = field(default_factory=list)
     enriched: list[dict[str, Any]] = field(default_factory=list)
     clues: list[dict[str, Any]] = field(default_factory=list)
+    items: list[PipelineItem] = field(default_factory=list)
     execution_summary: dict[str, Any] = field(default_factory=dict)
 
     def model_dump(self) -> dict[str, Any]:
@@ -89,6 +90,10 @@ class IntelligencePipeline:
         stage_context = {**context, "classifications": classifications, "entities": entities}
         correlated = self.correlate_stage.run_batch(enriched, routed=routed, context=stage_context)
         scored = self.score_stage.run_batch(correlated, context=stage_context)
+        typed_items = [
+            _pipeline_item_from_payload(item, route=route)
+            for item, route in zip(enriched, routed, strict=False)
+        ]
         entity_graph_summary = {}
         graph_store = getattr(self.correlate_stage, "entity_graph", None)
         if graph_store is not None and hasattr(graph_store, "snapshot"):
@@ -97,20 +102,25 @@ class IntelligencePipeline:
                 key: graph_snapshot.get(key)
                 for key in ("entity_count", "observation_count", "relation_count", "cross_source_entity_count")
             }
+        max_candidate_clues = _positive_int(policy.budget.get("max_candidate_clues") if isinstance(policy.budget, Mapping) else None)
+        final_clues = [dict(item) for item in scored]
+        if max_candidate_clues is not None:
+            final_clues = _cap_clues_by_type(final_clues, max_candidate_clues)
         return PipelineResult(
             cleaned=[dict(item) for item in cleaned],
             classified=classifications,
             entities=entities,
             routed=routed,
             enriched=[dict(item) for item in enriched],
-            clues=[dict(item) for item in scored],
+            clues=final_clues,
+            items=typed_items,
             execution_summary={
                 "status": "completed",
                 "input_count": len(materialized_raw),
                 "cleaned_count": len(cleaned),
                 "classified_count": len(classifications),
                 "entity_count": len(entities),
-                "clue_count": len(scored),
+                "clue_count": len(final_clues),
                 "llm_enrich_count": sum(1 for item in enriched if item.get("llm_enrichment")),
                 "llm_enrich_skipped_count": sum(1 for item in enriched if item.get("llm_enrich_skipped_reason")),
                 "llm_enrich_trace_count": len(getattr(self.llm_enrich_stage, "traces", []) or []),
@@ -120,6 +130,7 @@ class IntelligencePipeline:
                 "model_router_profile": getattr(self.model_router, "profile", None),
                 "llm_stage_policy": dict(policy.llm_stage_policy),
                 "domain_contract_version": "pipeline_item_v1",
+                "pipeline_data_plane": "typed_pipeline_item_with_dict_compat",
                 "entity_graph": entity_graph_summary,
                 "rule_version": self.rule_registry.version_hash(),
             },
@@ -171,6 +182,82 @@ def _coerce_policy(value: RunPolicyContext | Mapping[str, Any] | None) -> RunPol
     if isinstance(value, Mapping):
         return RunPolicyContext.model_validate(dict(value))
     return RunPolicyContext()
+
+
+def _pipeline_item_from_payload(payload: Mapping[str, Any], *, route: Mapping[str, Any] | None = None) -> PipelineItem:
+    contract = payload.get("domain_contract") if isinstance(payload.get("domain_contract"), Mapping) else None
+    typed_route = _routed_record_from_payload(payload, route)
+    if contract:
+        item = PipelineItem.model_validate(dict(contract))
+        if payload.get("llm_enrichment") is not None and item.llm_enrichment is None:
+            item = item.model_copy(update={"llm_enrichment": dict(payload.get("llm_enrichment") or {})})
+        if typed_route is not None:
+            item = item.model_copy(update={"route": typed_route})
+        return item
+    content_text = str(payload.get("content_text") or payload.get("clean_text") or payload.get("trace_id") or payload.get("source_trace_id") or "compat_payload")
+    return PipelineItem.model_validate(
+        {
+            "record": {
+                "trace_id": str(payload.get("trace_id") or payload.get("source_trace_id") or "unknown"),
+                "content_text": content_text,
+                "source_name": payload.get("source_name"),
+                "source_type": payload.get("source_type"),
+                "legal_basis": payload.get("legal_basis"),
+                "publish_time": payload.get("publish_time"),
+            },
+            "payload": dict(payload),
+            "route": typed_route.model_dump() if typed_route is not None else None,
+            "llm_enrichment": payload.get("llm_enrichment") if isinstance(payload.get("llm_enrichment"), Mapping) else None,
+        }
+    )
+
+
+def _routed_record_from_payload(payload: Mapping[str, Any], route: Mapping[str, Any] | None) -> RoutedRecord | None:
+    if not isinstance(route, Mapping):
+        return None
+    action = str(route.get("action") or "").strip()
+    if not action:
+        return None
+    return RoutedRecord(
+        trace_id=str(payload.get("trace_id") or payload.get("source_trace_id") or "unknown"),
+        route_action=action,
+        route_reason=str(route.get("reason") or "unspecified"),
+        max_tokens=max(0, int(route.get("max_tokens") or 0)),
+        deadline_ms=max(0, int(route.get("deadline_ms") or 0)),
+        requires_review=bool(route.get("requires_review")),
+    )
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _cap_clues_by_type(clues: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    if len(clues) <= limit:
+        return clues
+    by_type: dict[str, list[dict[str, Any]]] = {}
+    for clue in clues:
+        by_type.setdefault(str(clue.get("clue_type") or "unknown"), []).append(clue)
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[int] = set()
+    for clue_type in sorted(by_type):
+        if len(selected) >= limit:
+            break
+        clue = by_type[clue_type][0]
+        selected.append(clue)
+        selected_ids.add(id(clue))
+    for clue in clues:
+        if len(selected) >= limit:
+            break
+        if id(clue) in selected_ids:
+            continue
+        selected.append(clue)
+        selected_ids.add(id(clue))
+    return selected
 
 
 __all__ = ["IntelligencePipeline", "PipelineResult"]

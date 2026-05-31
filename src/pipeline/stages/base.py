@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Protocol
 
 from src.cleaner.pipeline import CleanerPipeline
 from src.domain import CleanedRecord, ExtractedEntity, IntelRecord, PipelineItem, RiskClassification
@@ -10,13 +10,24 @@ from src.enhancement.clue_quality import ClueQualityEvaluator
 from src.enhancement.source_intake import MultimodalTextExtractor
 from src.enhancement.strategy import RiskClueAggregator
 from src.enhancement.text_intelligence import AdaptiveEntropyFilter, AdvancedEntityExtractor, FineGrainedIntentClassifier
-from src.storage.entity_graph import EntityGraphStore
+from storage.entity_graph import EntityGraphStore
+
+
+class Stage(Protocol):
+    """Typed stage boundary: PipelineItem in, PipelineItem out.
+
+    Legacy stage implementations still accept dictionaries for compatibility;
+    this protocol documents the target contract used by the core pipeline.
+    """
+
+    def run_batch(self, items: list[PipelineItem], **kwargs: Any) -> list[PipelineItem]:
+        ...
 
 
 class PassThroughStage:
     """Default stage used while legacy processors are wrapped incrementally."""
 
-    def run_batch(self, items: Iterable[Mapping[str, Any]], **_: Any) -> list[dict[str, Any]]:
+    def run_batch(self, items: Iterable[Mapping[str, Any]], **kwargs: Any) -> list[dict[str, Any]]:
         return [dict(item) for item in items]
 
 
@@ -27,7 +38,7 @@ class CleanStage:
         self.extractor = extractor or MultimodalTextExtractor()
         self.cleaner = cleaner or CleanerPipeline(keep_duplicates=True)
 
-    def run_batch(self, items: Iterable[Mapping[str, Any]], **_: Any) -> list[dict[str, Any]]:
+    def run_batch(self, items: Iterable[Mapping[str, Any]], **kwargs: Any) -> list[dict[str, Any]]:
         materialized = [self.extractor.materialize(item) for item in items]
         cleaned = self.cleaner.clean(materialized)
         raw_by_trace = {
@@ -137,7 +148,7 @@ class CorrelateStage:
         self.aggregator = aggregator or RiskClueAggregator()
         self.entity_graph = entity_graph or EntityGraphStore()
 
-    def run_batch(self, items: Iterable[Mapping[str, Any]], **_: Any) -> list[dict[str, Any]]:
+    def run_batch(self, items: Iterable[Mapping[str, Any]], **kwargs: Any) -> list[dict[str, Any]]:
         records = [dict(item) for item in items]
         classifications = [dict(item.get("classification") or {}) for item in records if isinstance(item.get("classification"), Mapping)]
         entities = [dict(entity) for item in records for entity in (item.get("entities") or []) if isinstance(entity, Mapping)]
@@ -166,6 +177,13 @@ class CorrelateStage:
             for clue in self.aggregator.aggregate(records=records, classifications=classifications, entities=entities)
         ]
         graph_snapshot = self.entity_graph.snapshot()
+        graph_clues = self.entity_graph.generate_clues() if bool((kwargs.get("context") or {}).get("enable_graph_clue_generation")) else []
+        existing_keys = {f"{clue.get('clue_type')}|{clue.get('key')}|{clue.get('risk_category')}" for clue in clues}
+        for graph_clue in graph_clues:
+            key = f"{graph_clue.get('clue_type')}|{graph_clue.get('key')}|{graph_clue.get('risk_category')}"
+            if key not in existing_keys:
+                clues.append(graph_clue)
+                existing_keys.add(key)
         for clue in clues:
             clue["entity_observation_refs"] = [
                 observation["observation_id"]
@@ -308,4 +326,4 @@ def _sync_entity_contracts(item: dict[str, Any], entities: Iterable[Mapping[str,
     item["domain_contract"] = contract
 
 
-__all__ = ["ClassifyStage", "CleanStage", "CorrelateStage", "DedupStage", "ExtractStage", "PassThroughStage", "ScoreStage"]
+__all__ = ["ClassifyStage", "CleanStage", "CorrelateStage", "DedupStage", "ExtractStage", "PassThroughStage", "ScoreStage", "Stage"]
