@@ -8,6 +8,7 @@ import unicodedata
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from difflib import SequenceMatcher
+from functools import lru_cache
 from hashlib import sha1
 from importlib import import_module
 from typing import Any
@@ -86,6 +87,31 @@ HIGH_RISK_HINT_SETS: dict[str, tuple[str, ...]] = {
     "刷单作弊": ("刷单作弊", "刷单"),
     "跑分代付": ("跑分", "代付"),
 }
+
+
+@lru_cache(maxsize=1)
+def _configured_rule_markers() -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]], tuple[str, ...], tuple[str, ...]]:
+    """Load cleaner risk/noise markers from the rule registry.
+
+    The module constants above remain as safe fallbacks for minimal import
+    environments, but normal runtime behavior is config-driven through
+    ``risk_taxonomy.yaml`` and ``context_polarity.yaml``.
+    """
+
+    try:
+        registry = import_module("src.rules").RuleRegistry()
+        risk_markers = registry.risk_marker_sets()
+        risk_hints = registry.risk_hint_sets()
+        defensive_markers = registry.defensive_markers()
+        guide_markers = registry.context_markers("generic_guide_markers")
+    except Exception:
+        return HIGH_RISK_MARKER_SETS, HIGH_RISK_HINT_SETS, DEFENSIVE_CONTEXT_MARKERS, GENERIC_GUIDE_MARKERS
+    return (
+        risk_markers or HIGH_RISK_MARKER_SETS,
+        risk_hints or HIGH_RISK_HINT_SETS,
+        defensive_markers or DEFENSIVE_CONTEXT_MARKERS,
+        guide_markers or GENERIC_GUIDE_MARKERS,
+    )
 
 
 @dataclass(frozen=True)
@@ -313,12 +339,13 @@ def detect_risk_signal_profile(
     lowered_text = normalize_intel_text(normalized).lower()
     signal_terms = _ordered_unique(extra_terms)
     lowered_terms = {term.lower() for term in signal_terms}
+    risk_marker_sets, risk_hint_sets, _defensive_markers, _guide_markers = _configured_rule_markers()
 
     matched_categories: list[str] = []
     matched_markers: list[str] = []
-    for category, markers in HIGH_RISK_MARKER_SETS.items():
+    for category, markers in risk_marker_sets.items():
         hits = [marker for marker in markers if marker.lower() in lowered_text]
-        hint_hits = [hint for hint in HIGH_RISK_HINT_SETS.get(category, ()) if hint.lower() in lowered_terms]
+        hint_hits = [hint for hint in risk_hint_sets.get(category, ()) if hint.lower() in lowered_terms]
         combined = _ordered_unique([*hits, *hint_hits])
         if combined:
             matched_categories.append(category)
@@ -391,6 +418,7 @@ def detect_noise_reason(
     score = calculate_noise_score(normalized) if noise_score is None else noise_score
     entropy = shannon_entropy(normalized)
     lowered = normalized.lower()
+    _risk_marker_sets, _risk_hint_sets, defensive_markers, guide_markers = _configured_rule_markers()
 
     if score >= 0.72 and len(canonicalize_for_dedup(normalized)) < 12 and risk_score < 0.25:
         return "blank_or_garbled"
@@ -398,9 +426,9 @@ def detect_noise_reason(
         return "low_information_entropy"
     if score > max_noise_score and risk_score < 0.35:
         return "high_noise_score"
-    if any(marker.lower() in lowered for marker in DEFENSIVE_CONTEXT_MARKERS) and risk_score < 0.85:
+    if any(marker.lower() in lowered for marker in defensive_markers) and risk_score < 0.95:
         return "defensive_context_noise"
-    if any(marker.lower() in lowered for marker in GENERIC_GUIDE_MARKERS) and risk_score < 0.55:
+    if any(marker.lower() in lowered for marker in guide_markers) and risk_score < 0.80:
         return "generic_guide_noise"
     if len(canonicalize_for_dedup(normalized)) < 4 and risk_score < 0.25:
         return "low_signal_short_text"

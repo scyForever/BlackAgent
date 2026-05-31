@@ -10,6 +10,8 @@ from src.backend import LLMGateway, TaskBackend
 from src.config_loader import Settings
 from src.enhancement.engine import PhaseTwoThreeEngine
 from src.pipeline import OfflineClueBuilder
+from src.pipeline.stages import CorrelateStage
+from storage.entity_graph import EntityGraphStore
 from storage import InMemoryClueRepo, connect
 
 
@@ -23,6 +25,7 @@ class RuntimeContainer:
         self._llm_gateway: Any | None = None
         self._orchestrator: Any | None = None
         self._offline_clue_builder: Any | None = None
+        self._entity_graph_store: EntityGraphStore | None = None
         self._task_backend: Any | None = None
         self._sql_backend: Any | None = None
         self._sql_backend_initialized = False
@@ -59,6 +62,7 @@ class RuntimeContainer:
                 llm_gateway=self.llm_gateway(),
                 phase_engine=self.phase_engine(),
                 clue_repo=self.clue_repo,
+                entity_graph=self.entity_graph_store(),
                 investigation_config=self.settings.investigation,
                 routing_profiles=self.settings.routing_profiles,
             )
@@ -69,8 +73,20 @@ class RuntimeContainer:
             self._offline_clue_builder = OfflineClueBuilder(
                 phase_engine=self.phase_engine(),
                 clue_repo=self.clue_repo,
+                entity_graph=self.entity_graph_store(),
             )
         return self._offline_clue_builder
+
+    def entity_graph_store(self) -> EntityGraphStore:
+        if self._entity_graph_store is None:
+            config = self.settings.storage.entity_graph if isinstance(self.settings.storage.entity_graph, dict) else {}
+            enabled = bool(config.get("enabled", True))
+            db_path = config.get("db_path") or "data/entity_graph.db"
+            self._entity_graph_store = EntityGraphStore(db_path=db_path if enabled else None)
+        return self._entity_graph_store
+
+    def correlate_stage(self) -> CorrelateStage:
+        return CorrelateStage(entity_graph=self.entity_graph_store())
 
     def task_backend(self) -> TaskBackend:
         if self._task_backend is None:
@@ -118,7 +134,10 @@ class RuntimeContainer:
     def close(self) -> None:
         if self._sql_backend is not None and hasattr(self._sql_backend, "close"):
             self._sql_backend.close()
+        if self._entity_graph_store is not None and hasattr(self._entity_graph_store, "close"):
+            self._entity_graph_store.close()
         self._sql_backend = None
+        self._entity_graph_store = None
         self._sql_backend_initialized = False
 
 

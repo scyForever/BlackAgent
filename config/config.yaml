@@ -17,6 +17,9 @@ sandbox:
 storage:
   backend: memory
   review_queue: memory
+  entity_graph:
+    enabled: true
+    db_path: data/entity_graph.db
   # Use sqlite:///data/blackagent.db for local persistent backend or
   # postgresql://user:pass@host:5432/dbname when psycopg is installed.
   dsn: ${BLACKAGENT_STORAGE_DSN}

@@ -131,193 +131,42 @@ class FineClassificationResult:
 class FineGrainedIntentClassifier:
     """Phase II second-level classifier plus Phase III conflict resolver."""
 
-    SECONDARY_RULES: dict[str, dict[str, tuple[str, ...]]] = {
-        FRAUD_TRAFFIC: {
-            "返利引流": ("返利", "高佣", "拉新"),
-            "跑分代付": ("跑分", "代付", "刷流水"),
-            "私域导流": ("私聊", "进群", "开户链接", "引流", "导流", "私域", "加v", "加微", "落地页"),
-            "拉群语义": ("拉群", "群聊", "群里", "交流群", "邀请", "扣1"),
-            "打粉引流": ("打粉", "全品类粉", "粉价", "超链", "分流链接", "回复情况"),
-        },
-        ACCOUNT_TRADING: {
-            "接码注册": ("接码", "验证码", "短信验证码", "批量注册", "虚拟号码", "云短信", "实卡"),
-            "实名账号买卖": ("实名号", "卖号", "收号", "老号", "白号", "成品号", "出号", "号商", "实名认证", "verified account", "二要素"),
-            "账号养号": ("养号", "权重号", "资料号", "飞机号", "电报号"),
-        },
-        TOOL_TRADING: {
-            "群控脚本": (
-                "群控",
-                "云控",
-                "脚本",
-                "协议号",
-                "自动化工具",
-                "软件",
-                "机器人",
-                "系统",
-                "功能",
-                "更新",
-                "教程",
-                "版本",
-                "拉群端",
-                "开控",
-                "配置",
-                "后台",
-                "session",
-                "自动注册",
-                "官方软件",
-                "启动",
-                "分流链接",
-                "粉丝列表",
-            ),
-            "改机外挂": ("改机", "外挂", "设备指纹"),
-            "卡密交易": ("卡密", "授权码", "激活码"),
-        },
-        CROWD_SERVICE: {
-            "拉群获客": (
-                "拉人",
-                "拉群",
-                "进群",
-                "入群",
-                "指定群",
-                "拉满",
-                "保开群",
-                "偷人",
-                "邀请",
-                "成群",
-                "手机号拉人",
-                "批量邀请",
-                "加群",
-                "机房",
-                "秒出",
-                "普群",
-            ),
-            "打粉卖量": (
-                "打粉",
-                "活粉",
-                "活人粉",
-                "僵尸粉",
-                "克隆粉",
-                "粉价",
-                "全品类粉",
-                "爆粉",
-                "秒罐",
-                "卖量",
-                "刷阅读量",
-                "指定群活人",
-                "进群人数",
-                "筛活",
-                "接粉",
-            ),
-            "代投服务": (
-                "群发",
-                "私信",
-                "代发",
-                "广告",
-                "投放",
-                "代投",
-                "seo",
-                "排名",
-                "首页展示",
-                "直通车",
-                "推广",
-                "引流",
-                "导流",
-                "关键词监听",
-                "监控关键词",
-                "采集群成员",
-                "群成员采集",
-                "回执",
-                "成功率",
-                "订单",
-                "按钮",
-                "图文",
-                "文案",
-                "链接",
-                "接单",
-                "业务",
-                "客户",
-                "对接",
-                "担保",
-                "包量",
-            ),
-            "代运营": ("代运营", "矩阵", "运营", "托管", "分成", "转化", "涨粉", "获客"),
-            "代投放": ("代投", "投放", "seo", "排名", "首页展示", "直通车", "广告", "群广告", "推广"),
-        },
-        CLICK_FARMING: {
-            "刷单返佣": ("刷单", "补单", "返佣"),
-            "点赞关注任务": ("点赞任务", "关注任务", "做任务"),
-            "垫付兼职": ("垫付", "日结", "兼职"),
-            "订单卡单": ("卡单", "支付失败", "支付通道", "下单", "订单", "发货", "补发", "退款", "售后", "订单号"),
-            "卡单玩法": ("卡单", "游戏", "单人局", "战局", "卖金", "文件", "paypal", "steam", "模组", "封号"),
-            "手工做单": ("手工单", "做单", "平台单", "线下订单", "打单"),
-        },
-    }
-
-    CATEGORY_KEYWORDS = RuleFastTrackClassifier.CATEGORY_KEYWORDS
-    THEME_PRIORS = RuleFastTrackClassifier.THEME_PRIORS
-    REVIEW_ONLY_CATEGORIES = {CROWD_SERVICE}
-    REVIEW_ONLY_SECONDARY_LABELS = {"拉群语义", "打粉引流", "订单卡单", "卡单玩法", "手工做单"}
-    CROWD_PROMOTION_MARKERS = ("业务联系", "长期合作", "老板", "对接", "担保", "测试联系", "低价", "价格", "售后", "方案", "客服", "咨询", "量大", "包量", "优惠")
-    TOOL_PROMOTION_MARKERS = ("拉群端", "开控", "配置", "后台", "session", "自动注册", "官方软件", "启动", "更新内容", "粉丝列表")
-    TOOL_UPDATE_MARKERS = ("更新", "版本", "功能", "教程", "软件", "下载", "新增", "修复", "操作", "文档", "演示视频", "停用")
-    CLICK_PROMOTION_MARKERS = ("卡单", "支付失败", "支付通道", "下单", "订单", "发货", "补发", "退款", "售后", "手工单", "做单")
-    CLICK_CORE_MARKERS = ("刷单", "补单", "垫付", "返佣", "做单", "手工单", "卡单")
-    DEFENSIVE_CONTEXT_MARKERS = (
-        "反诈",
-        "反诈提醒",
-        "安全研究",
-        "研究复盘",
-        "治理复盘",
-        "黑产治理",
-        "警方发布",
-        "警方通报",
-        "公安通报",
-        "新闻曝光",
-        "曝光",
-        "安全通告",
-        "不提供",
-        "不要参与",
-        "切勿参与",
-        "案例复盘",
-    )
-    SOLICITATION_MARKERS = (
-        "出售",
-        "出号",
-        "卖号",
-        "收号",
-        "上车",
-        "招募",
-        "接单",
-        "联系",
-        "客服",
-        "低价",
-        "价格",
-        "报价",
-        "接洽",
-        "合作",
-        "代发",
-        "代投",
-        "包量",
-        "秒出",
-    )
-    CATEGORY_PRIORITY = {
-        CROWD_SERVICE: 5,
-        TOOL_TRADING: 4,
-        ACCOUNT_TRADING: 3,
-        FRAUD_TRAFFIC: 2,
-        CLICK_FARMING: 1,
-        UNKNOWN: 0,
-    }
-
     def __init__(self, rule_registry: RuleRegistry | None = None) -> None:
         self.rule_registry = rule_registry or RuleRegistry()
-        self.fast_classifier = RuleFastTrackClassifier()
+        self.fast_classifier = RuleFastTrackClassifier(rule_registry=self.rule_registry)
+        configured_terms = self.rule_registry.primary_terms_by_label()
+        self.category_keywords = {category: tuple(terms) for category, terms in configured_terms.items()}
+        configured_promotions = self.rule_registry.promotion_markers_by_label()
+        self.category_promotion_markers = {
+            category: tuple(markers)
+            for category, markers in configured_promotions.items()
+        }
+        configured_secondary = self.rule_registry.secondary_rules()
+        self.secondary_rules = {
+            category: {label: tuple(terms) for label, terms in labels.items()}
+            for category, labels in configured_secondary.items()
+        }
         polarity = self.rule_registry.load_context_polarity()
-        configured_markers = tuple(str(item) for item in polarity.get("defensive_markers", []) if str(item).strip())
-        if configured_markers:
-            self.defensive_context_markers = tuple(dict.fromkeys([*self.DEFENSIVE_CONTEXT_MARKERS, *configured_markers]))
-        else:
-            self.defensive_context_markers = self.DEFENSIVE_CONTEXT_MARKERS
+        self.defensive_context_markers = tuple(str(item) for item in polarity.get("defensive_markers", []) if str(item).strip())
+        policy = self.rule_registry.classifier_policy()
+        marker_groups = policy.get("promotion_marker_groups") if isinstance(policy.get("promotion_marker_groups"), Mapping) else {}
+        self.crowd_promotion_markers = _as_tuple(marker_groups.get("crowd") if isinstance(marker_groups, Mapping) else ())
+        self.tool_promotion_markers = _as_tuple(marker_groups.get("tool") if isinstance(marker_groups, Mapping) else ())
+        self.tool_update_markers = _as_tuple(marker_groups.get("tool_update") if isinstance(marker_groups, Mapping) else ())
+        self.click_promotion_markers = _as_tuple(marker_groups.get("click") if isinstance(marker_groups, Mapping) else ())
+        self.click_core_markers = _as_tuple(marker_groups.get("click_core") if isinstance(marker_groups, Mapping) else ())
+        self.solicitation_markers = tuple(
+            dict.fromkeys(
+                [
+                    *_as_tuple(marker_groups.get("solicitation") if isinstance(marker_groups, Mapping) else ()),
+                    *[marker for markers in self.category_promotion_markers.values() for marker in markers],
+                ]
+            )
+        )
+        self.review_only_categories = set(_as_tuple(policy.get("review_only_categories")))
+        self.review_only_secondary_labels = set(_as_tuple(policy.get("review_only_secondary_labels")))
+        self.category_priority = {str(key): int(value) for key, value in (policy.get("category_priority") or {}).items()} if isinstance(policy.get("category_priority"), Mapping) else {}
+        self.theme_priors = self.rule_registry.theme_priors()
         self.polarity_scorer = polarity_from_config(polarity)
         self.rule_version = self.rule_registry.version_hash()
 
@@ -348,7 +197,7 @@ class FineGrainedIntentClassifier:
 
         ordered = sorted(
             category_scores.items(),
-            key=lambda item: (-item[1], -self.CATEGORY_PRIORITY.get(item[0], 0), item[0]),
+            key=lambda item: (-item[1], -self.category_priority.get(item[0], 0), item[0]),
         )
         top_category, top_score = ordered[0]
         conflicts = [category for category, score in ordered[1:] if score == top_score or (top_score - score <= 1 and score >= 2)]
@@ -361,14 +210,14 @@ class FineGrainedIntentClassifier:
             min(0.96, 0.56 + top_score * 0.07 + len(secondary_evidence) * 0.03),
         )
         review_required = bool(fast_data.get("review_required", False))
-        if top_category in self.REVIEW_ONLY_CATEGORIES:
+        if top_category in self.review_only_categories:
             review_required = True
         if theme_only_scores.get(top_category, False):
             review_required = True
             confidence = min(confidence, 0.72)
         if secondary_label in {"未细分", "待研判"}:
             review_required = True
-        if secondary_label in self.REVIEW_ONLY_SECONDARY_LABELS:
+        if secondary_label in self.review_only_secondary_labels:
             review_required = True
             confidence = min(confidence, 0.78)
         if conflicts:
@@ -391,7 +240,7 @@ class FineGrainedIntentClassifier:
         defensive_hits = self._marker_hits(text, self.defensive_context_markers)
         if not defensive_hits:
             return False
-        solicitation_hits = self._marker_hits(text, self.SOLICITATION_MARKERS)
+        solicitation_hits = self._marker_hits(text, self.solicitation_markers)
         return len(solicitation_hits) == 0 or any(marker in text for marker in ("不提供", "不要参与", "切勿参与"))
 
     def _signal_terms(self, record: Mapping[str, Any] | Any, field_name: str) -> tuple[str, ...]:
@@ -421,7 +270,7 @@ class FineGrainedIntentClassifier:
         evidence_map: dict[str, list[str]] = defaultdict(list)
         matched_keyword_set = {value.lower() for value in matched_keywords}
 
-        for category, keywords in self.CATEGORY_KEYWORDS.items():
+        for category, keywords in self.category_keywords.items():
             hits = [
                 keyword
                 for keyword in keywords
@@ -434,34 +283,46 @@ class FineGrainedIntentClassifier:
             evidence_map[category].extend(unique_hits)
 
         for theme in matched_themes:
-            mapped = self.THEME_PRIORS.get(theme)
+            mapped = self.theme_priors.get(theme)
             if mapped is None:
                 continue
             category, bonus = mapped
             score_map[category] = score_map.get(category, 0) + bonus
             evidence_map[category].append(f"theme:{theme}")
 
-        crowd_markers = self._marker_hits(text, self.CROWD_PROMOTION_MARKERS)
-        if crowd_markers and self._matches_any(text, matched_keyword_set, self.SECONDARY_RULES[CROWD_SERVICE]["拉群获客"]):
+        crowd_markers = _ordered_unique(
+            [
+                *self._marker_hits(text, self.category_promotion_markers.get(CROWD_SERVICE, ())),
+                *self._marker_hits(text, self.crowd_promotion_markers),
+            ]
+        )
+        if crowd_markers and self._matches_any(text, matched_keyword_set, self.secondary_rules[CROWD_SERVICE]["拉群获客"]):
             score_map[CROWD_SERVICE] = score_map.get(CROWD_SERVICE, 0) + min(2, len(crowd_markers))
             evidence_map[CROWD_SERVICE].extend(f"service:{marker}" for marker in crowd_markers[:2])
 
-        tool_markers = self._marker_hits(text, self.TOOL_PROMOTION_MARKERS)
-        if tool_markers:
+        tool_generic_markers = self._marker_hits(text, self.category_promotion_markers.get(TOOL_TRADING, ()))
+        tool_specific_markers = self._marker_hits(text, self.tool_promotion_markers)
+        tool_markers = _ordered_unique([*tool_specific_markers, *tool_generic_markers])
+        if tool_specific_markers or (tool_generic_markers and score_map.get(TOOL_TRADING, 0) > 0):
             score_map[TOOL_TRADING] = score_map.get(TOOL_TRADING, 0) + min(3, len(tool_markers))
             evidence_map[TOOL_TRADING].extend(f"tool:{marker}" for marker in tool_markers[:3])
 
-        tool_update_markers = self._marker_hits(text, self.TOOL_UPDATE_MARKERS)
+        tool_update_markers = self._marker_hits(text, self.tool_update_markers)
         if len(tool_update_markers) >= 2:
             score_map[TOOL_TRADING] = score_map.get(TOOL_TRADING, 0) + 2
             evidence_map[TOOL_TRADING].extend(f"tool_update:{marker}" for marker in tool_update_markers[:2])
 
-        click_markers = self._marker_hits(text, self.CLICK_PROMOTION_MARKERS)
+        click_markers = _ordered_unique(
+            [
+                *self._marker_hits(text, self.category_promotion_markers.get(CLICK_FARMING, ())),
+                *self._marker_hits(text, self.click_promotion_markers),
+            ]
+        )
         if click_markers and ("卡单" in text or "手工单" in text or "做单" in text):
             score_map[CLICK_FARMING] = score_map.get(CLICK_FARMING, 0) + min(2, len(click_markers))
             evidence_map[CLICK_FARMING].extend(f"order:{marker}" for marker in click_markers[:2])
 
-        click_core_markers = self._marker_hits(text, self.CLICK_CORE_MARKERS)
+        click_core_markers = self._marker_hits(text, self.click_core_markers)
         if click_core_markers:
             score_map[CLICK_FARMING] = score_map.get(CLICK_FARMING, 0) + min(2, len(click_core_markers))
             evidence_map[CLICK_FARMING].extend(f"click:{marker}" for marker in click_core_markers[:2])
@@ -475,7 +336,7 @@ class FineGrainedIntentClassifier:
     def _secondary_label(self, category: str, text: str, matched_keywords: tuple[str, ...]) -> tuple[str, list[str]]:
         candidates = []
         matched_keyword_set = {value.lower() for value in matched_keywords}
-        for label, keywords in self.SECONDARY_RULES.get(category, {}).items():
+        for label, keywords in self.secondary_rules.get(category, {}).items():
             hits = [
                 keyword
                 for keyword in keywords
@@ -588,18 +449,12 @@ class SlangDictionary:
 class AdvancedEntityExtractor:
     """Phase II normalization + Phase III hidden entity discovery."""
 
-    OBFUSCATED_URL_RE = re.compile(r"(?i)(?:hxxps?|https?)[:：]//[^\s]+|[a-z0-9-]+\s*\[\.\]\s*(?:com|cn|net|top|xyz)(?:/[^\s]*)?")
-    INVITE_CODE_RE = re.compile(
-        r"(?:邀请码|暗号|口令)[:：\s]*(?:code[:：\s]*)?([A-Za-z0-9_-]{3,24})"
-        r"|\bcode[:：\s]*([A-Za-z0-9_-]{3,24})",
-        re.IGNORECASE,
-    )
-    SETTLEMENT_RE = re.compile(r"(跑分|代付|虚拟币|USDT|银行卡|支付宝|微信收款)", re.IGNORECASE)
-
-    def __init__(self, slang_dictionary: SlangDictionary | None = None) -> None:
-        self.basic = BasicEntityExtractor()
-        self.slang_dictionary = slang_dictionary or SlangDictionary()
+    def __init__(self, slang_dictionary: SlangDictionary | None = None, rule_registry: RuleRegistry | None = None) -> None:
+        self.rule_registry = rule_registry or RuleRegistry()
+        self.basic = BasicEntityExtractor(rule_registry=self.rule_registry)
+        self.slang_dictionary = slang_dictionary or SlangDictionary(rule_registry=self.rule_registry)
         self.entity_normalizer = EntityNormalizer()
+        self.configured_patterns = _compile_entity_patterns(self.rule_registry.load_entity_patterns())
 
     def extract(self, record: Mapping[str, Any] | Any) -> list[AdvancedEntity]:
         text = _text(record)
@@ -644,16 +499,12 @@ class AdvancedEntityExtractor:
 
         for raw, _target, start, end in self.slang_dictionary.candidates_in_text(text):
             add("slang_term", raw, start, end, method="slang_dictionary", confidence=0.88)
-        for regex, entity_type, method in (
-            (self.OBFUSCATED_URL_RE, URL, "hidden_obfuscated_url"),
-            (self.INVITE_CODE_RE, ACCOUNT, "hidden_invite_code"),
-            (self.SETTLEMENT_RE, "settlement", "hidden_settlement_term"),
-        ):
+        for regex, entity_type, method in self.configured_patterns:
             for match in regex.finditer(text):
                 group_index = _first_group_index(match)
                 value = match.group(group_index) if group_index is not None else match.group(0)
                 start = match.start(group_index) if group_index is not None else match.start()
-                add(entity_type, value, start, start + len(value), method=method, confidence=0.82)
+                add(entity_type, value, start, start + len(value), method=method, confidence=0.84)
         return sorted(entities, key=lambda item: (item.source_trace_id, item.start_offset, item.entity_type))
 
 
@@ -662,6 +513,50 @@ def _first_group_index(match: re.Match[str]) -> int | None:
         if value:
             return index
     return None
+
+
+def _compile_entity_patterns(payload: Mapping[str, Any]) -> list[tuple[re.Pattern[str], str, str]]:
+    compiled: list[tuple[re.Pattern[str], str, str]] = []
+    for name, spec in payload.items():
+        if not isinstance(spec, Mapping):
+            continue
+        entity_type = str(spec.get("entity_type") or name)
+        raw_patterns = spec.get("patterns") if isinstance(spec.get("patterns"), list) else [spec.get("pattern")]
+        for pattern in raw_patterns:
+            text = str(pattern or "").strip()
+            if not text:
+                continue
+            try:
+                compiled.append((re.compile(text, re.IGNORECASE), entity_type, str(spec.get("method") or f"configured_entity_pattern:{name}")))
+            except re.error:
+                continue
+    return compiled
+
+
+def _as_tuple(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        values: Iterable[Any] = [value]
+    elif isinstance(value, Iterable):
+        values = value
+    else:
+        values = ()
+    return tuple(dict.fromkeys(str(item) for item in values if str(item).strip()))
+
+
+def _ordered_unique(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        normalized = str(value)
+        if not normalized:
+            continue
+        lowered = normalized.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        ordered.append(normalized)
+    return ordered
+
 
 def context_relevance(text: str, start: int, end: int) -> float:
     window = text[max(0, start - 18) : min(len(text), end + 18)]

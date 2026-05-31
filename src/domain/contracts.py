@@ -48,6 +48,51 @@ class RiskClassification(DomainModel):
     classifier_version: str = "unknown"
 
 
+class ClassificationResolution(DomainModel):
+    """Auditable resolution between deterministic rules and LLM enrichment.
+
+    ``final`` is the only classification downstream stages should consume.
+    ``rule`` and ``llm`` are preserved to prove whether a model changed the
+    deterministic result and why that change was or was not accepted.
+    """
+
+    trace_id: str = Field(min_length=1)
+    rule: dict[str, Any] = Field(default_factory=dict)
+    llm: dict[str, Any] = Field(default_factory=dict)
+    final: dict[str, Any] = Field(default_factory=dict)
+    strategy: str = "prefer_rule"
+    reason: str = ""
+    review_required: bool = False
+
+
+class CandidateClue(DomainModel):
+    """Wide-recall clue candidate before promotion gates."""
+
+    clue_id: str = Field(min_length=1)
+    clue_type: str = Field(min_length=1)
+    key: str = Field(min_length=1)
+    risk_category: str = "unknown"
+    evidence_trace_ids: list[str] = Field(default_factory=list)
+    related_entity_ids: list[str] = Field(default_factory=list)
+    source_names: list[str] = Field(default_factory=list)
+    entity_values: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    weak_reason: str = ""
+
+
+class ActionableClue(CandidateClue):
+    """Promotion-gated clue that is safe to count as review/alert load."""
+
+    promotion_reason: str = ""
+    actionability_score: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class ArchivedWeakClue(CandidateClue):
+    """Candidate retained for audit but not promoted into review load."""
+
+    archive_reason: str = ""
+
+
 class ExtractedEntity(DomainModel):
     entity_id: str
     trace_id: str = Field(min_length=1)
@@ -73,10 +118,16 @@ class PipelineItem(DomainModel):
     record: IntelRecord
     cleaned: CleanedRecord | None = None
     classification: RiskClassification | None = None
+    classification_resolution: ClassificationResolution | None = None
     entities: list[ExtractedEntity] = Field(default_factory=list)
     route: RoutedRecord | None = None
     llm_enrichment: dict[str, Any] | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class EntityGraphConfig(DomainModel):
+    enabled: bool = True
+    db_path: str = "data/entity_graph.db"
 
 
 class RunPolicyContext(DomainModel):
@@ -134,9 +185,14 @@ def _normalize_profile(value: str | None) -> Literal["fast", "balanced", "high_r
 
 
 __all__ = [
+    "ActionableClue",
+    "ArchivedWeakClue",
+    "CandidateClue",
     "CleanedRecord",
+    "ClassificationResolution",
     "ExtractedEntity",
     "IntelRecord",
+    "EntityGraphConfig",
     "PipelineItem",
     "RiskClassification",
     "RiskClue",

@@ -34,6 +34,7 @@ exclude = ["src.storage*"]
 namespaces = false
 
 [tool.setuptools.package-data]
+blackagent = ["py.typed"]
 config = ["*.yaml", "*.json"]
 
 [tool.pytest.ini_options]

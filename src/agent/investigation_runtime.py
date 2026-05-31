@@ -14,6 +14,7 @@ from src.pipeline import OfflineClueBuilder
 from src.retrieval import ClueRetriever
 from src.safety.source_policy_guard import SourcePolicyGuard
 from src.workflows import InvestigationWorkflow
+from storage.entity_graph import EntityGraphStore
 from storage import ClueRepo, InMemoryClueRepo, InMemoryReviewRepo
 
 from .clue_ranker import ClueRanker
@@ -57,6 +58,7 @@ class InvestigationRuntime(InvestigationRuntimeMixin):
             clue_repo: ClueRepo | None = None,
             clue_retriever: ClueRetriever | None = None,
             review_repo: InMemoryReviewRepo | None = None,
+            entity_graph: EntityGraphStore | None = None,
             investigation_config: InvestigationConfig | None = None,
             routing_profiles: Mapping[str, Any] | None = None,
         ) -> None:
@@ -66,6 +68,7 @@ class InvestigationRuntime(InvestigationRuntimeMixin):
             self.clue_repo = clue_repo if clue_repo is not None else InMemoryClueRepo()
             self.clue_retriever = clue_retriever or ClueRetriever()
             self.review_repo = review_repo or InMemoryReviewRepo()
+            self.entity_graph = entity_graph if entity_graph is not None else EntityGraphStore()
             self.investigation_config = investigation_config or InvestigationConfig()
             self.routing_profiles = {str(key): value for key, value in (routing_profiles or {}).items()}
             self.clue_refiner = LLMClueRefiner(llm_gateway)
@@ -102,6 +105,7 @@ class InvestigationRuntime(InvestigationRuntimeMixin):
                 optional_positive_int=self._optional_positive_int,
                 optional_float=self._optional_float,
                 summarize_retrieved_clues=self._summarize_retrieved_clues,
+                entity_graph=self.entity_graph,
             )
             self.clue_refinement = ClueRefinementService(
                 clue_refiner=self.clue_refiner,
@@ -119,6 +123,7 @@ class InvestigationRuntime(InvestigationRuntimeMixin):
                 phase_engine=self.phase_engine,
                 quality_evaluator=self.quality_evaluator,
                 clue_repo=self.clue_repo,
+                entity_graph=self.entity_graph,
             )
             self.run_state_type = _RunPlanningState
             self.retrieval_state_type = _RetrievalState

@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.config_loader import load_project_env_file, load_settings
+from blackagent.config import load_project_env_file, load_settings
 
 DEFAULT_LOCAL_CORPUS_PATH = "data/cleaning_phase_high_risk_corpus.jsonl"
 DEFAULT_LOCAL_CORPUS_LIMIT = 200
@@ -222,7 +222,7 @@ def discover_source_config_path(
 
 def _looks_like_source_catalog(path: Path) -> bool:
     try:
-        from src.config_loader import load_yaml_file
+        from blackagent.config import load_yaml_file
 
         payload = load_yaml_file(path)
     except Exception:
@@ -388,7 +388,7 @@ def _record_matches_query(record: dict[str, Any], query_profile: dict[str, Any])
         return True
 
     try:
-        from src.collector.relevance import decide_text_relevance
+        from blackagent.collector import decide_text_relevance
 
         decision = decide_text_relevance(record.get("content_text"), include_themes=themes)
         return decision.relevant
@@ -497,7 +497,7 @@ def policy_override_from_args(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def run_agent(payload: dict[str, Any], settings: Any) -> tuple[int, dict[str, Any]]:
-    from src.local_runtime import LocalAgentRuntime
+    from blackagent.runtime import LocalAgentRuntime
 
     runtime = LocalAgentRuntime(settings)
     try:

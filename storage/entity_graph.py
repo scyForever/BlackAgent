@@ -6,7 +6,7 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
@@ -173,13 +173,56 @@ class EntityGraphStore:
     def observations_for_entity(self, entity_id: str) -> list[EntityObservation]:
         return [item for item in self._observations.values() if item.entity_id == entity_id]
 
-    def cross_source_entities(self) -> list[EntityAsset]:
+    def cross_source_entities(self, min_sources: int = 2) -> list[EntityAsset]:
         output: list[EntityAsset] = []
         for entity in self._entities.values():
             sources = {item.source_name or item.source_type or item.trace_id for item in self.observations_for_entity(entity.entity_id)}
-            if len(sources) >= 2:
+            if len(sources) >= max(1, int(min_sources or 1)):
                 output.append(entity)
         return output
+
+    def neighborhood(self, entity_id: str, depth: int = 2) -> dict[str, Any]:
+        """Return entity/relation neighborhood for analyst drill-down."""
+
+        depth = max(0, int(depth or 0))
+        seen = {str(entity_id)}
+        frontier = {str(entity_id)}
+        relations: list[EntityRelation] = []
+        for _ in range(depth):
+            next_frontier: set[str] = set()
+            for relation in self._relations.values():
+                endpoints = {relation.src_entity_id, relation.dst_entity_id}
+                if not (endpoints & frontier):
+                    continue
+                relations.append(relation)
+                for endpoint in endpoints:
+                    if endpoint not in seen:
+                        seen.add(endpoint)
+                        next_frontier.add(endpoint)
+            frontier = next_frontier
+            if not frontier:
+                break
+        return {
+            "entities": [asset.model_dump() for key, asset in self._entities.items() if key in seen],
+            "relations": [relation.model_dump() for relation in relations],
+            "observations": [
+                observation.model_dump()
+                for observation in self._observations.values()
+                if observation.entity_id in seen
+            ],
+        }
+
+    def entities_seen_since(self, days: int = 7) -> list[EntityAsset]:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max(0, int(days or 0)))
+        output: list[EntityAsset] = []
+        for asset in self._entities.values():
+            seen_at = _parse_time(asset.last_seen or asset.first_seen)
+            if seen_at is not None and seen_at >= cutoff:
+                output.append(asset)
+        return output
+
+    def related_clues(self, entity_id: str) -> list[dict[str, Any]]:
+        return [clue for clue in self.generate_clues() if clue.get("entity_asset_id") == entity_id]
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -355,6 +398,25 @@ class EntityGraphStore:
         )
         self._conn.commit()
 
+    def close(self) -> None:
+        """Close the SQLite handle when this graph is file-backed.
+
+        Tests and runtime containers create temporary/persistent graph stores.
+        On Windows, leaving the sqlite connection open keeps the db file locked
+        and prevents cleanup, so the entity graph must expose the same explicit
+        close contract as the SQL backend.
+        """
+
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def __enter__(self) -> "EntityGraphStore":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.close()
+
 
 def _canonical_value(entity: Mapping[str, Any]) -> str:
     return str(entity.get("normalized_value") or entity.get("entity_value") or entity.get("raw_value") or "").strip().lower()
@@ -376,6 +438,16 @@ def _record_time(record: Mapping[str, Any]) -> str | None:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 __all__ = [

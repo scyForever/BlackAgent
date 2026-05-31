@@ -1,7 +1,11 @@
 """Domain exports under the product package namespace."""
 
 from src.domain import (
+    ActionableClue,
+    ArchivedWeakClue,
     CleanedRecord,
+    ClassificationResolution,
+    EntityGraphConfig,
     ExtractedEntity,
     IntelRecord,
     PipelineItem,
@@ -12,7 +16,11 @@ from src.domain import (
 )
 
 __all__ = [
+    "ActionableClue",
+    "ArchivedWeakClue",
     "CleanedRecord",
+    "ClassificationResolution",
+    "EntityGraphConfig",
     "ExtractedEntity",
     "IntelRecord",
     "PipelineItem",

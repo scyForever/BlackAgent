@@ -7,7 +7,12 @@ while the storage package is split further in later migrations.
 """
 
 from .contracts import (
+    ActionableClue,
+    ArchivedWeakClue,
+    CandidateClue,
     CleanedRecord,
+    ClassificationResolution,
+    EntityGraphConfig,
     ExtractedEntity,
     IntelRecord,
     PipelineItem,
@@ -31,11 +36,16 @@ from .models import (
 )
 
 __all__ = [
+    "ActionableClue",
     "AuditEvent",
+    "ArchivedWeakClue",
     "BudgetConsumed",
+    "CandidateClue",
     "ClassificationResult",
     "CleanedRecord",
     "CleanedText",
+    "ClassificationResolution",
+    "EntityGraphConfig",
     "EntityExtractionResult",
     "ExtractedEntity",
     "ExplorationHypothesis",

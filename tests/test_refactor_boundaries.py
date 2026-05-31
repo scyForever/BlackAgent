@@ -11,6 +11,7 @@ from src.agent import (
 )
 from src.domain import (
     CleanedRecord,
+    EntityGraphConfig,
     ExtractedEntity,
     IntelRecord,
     PipelineItem,
@@ -24,7 +25,8 @@ from src.backend import LLMGateway
 from src.domain import RawIntelligence, RiskClue
 from src.infra import RuntimeContainer
 from src.pipeline import IntelligencePipeline, PipelineResult
-from src.pipeline.stages import LLMEnrichStage, PassThroughStage
+from src.pipeline.classification_resolution import resolve_classification
+from src.pipeline.stages import CluePromotionStage, LLMEnrichStage, PassThroughStage
 from src.safety import OutputValidator, PIIMasker, PromptGuard
 from src.safety.source_policy_guard import SourcePolicyGuard
 from src.rules import RuleRegistry
@@ -64,6 +66,7 @@ def test_domain_namespace_exposes_storage_contracts_and_new_risk_clue_contract()
         entities=[ExtractedEntity(entity_id="e1", trace_id="contract-1", entity_type="tool_name", raw_value="群控", normalized_value="群控", confidence=0.9, sensitivity_level="normal", extraction_method="test")],
     )
     assert item.record.trace_id == "contract-1"
+    assert EntityGraphConfig(db_path="data/test-graph.db").enabled is True
 
 
 def test_model_router_budget_controller_and_clue_ranker_control_refinement_spend():
@@ -136,6 +139,9 @@ def test_application_service_and_runtime_container_wrap_existing_runtime_depende
                 },
             ],
         )
+        graph = container.entity_graph_store()
+        assert container.investigation_orchestrator().entity_graph is graph
+        assert container.offline_clue_builder().entity_graph is graph
     finally:
         container.close()
 
@@ -177,6 +183,8 @@ def test_intelligence_pipeline_boundary_runs_composable_stages():
     assert result.execution_summary["routing_profile"] == "fast"
     assert result.execution_summary["model_router_profile"] == "fast"
     assert result.execution_summary["llm_stage_policy"]["record_enrich"] is False
+    assert result.execution_summary["pipeline_data_plane"] == "typed_pipeline_item_contract_primary_dict_compat_output"
+    assert result.items[0].payload["llm_enrich_skipped_reason"] == "policy_disabled_record_enrich"
 
 
 def test_intelligence_pipeline_default_stages_run_real_components():
@@ -220,6 +228,8 @@ def test_intelligence_pipeline_default_stages_run_real_components():
     assert all(isinstance(item, PipelineItem) for item in result.items)
     assert result.items[0].cleaned is not None
     assert result.items[0].classification is not None
+    assert result.items[0].classification_resolution is not None
+    assert result.items[0].classification_resolution.final["risk_category"] == result.items[0].classification.risk_category
     assert result.items[0].route is not None
     assert result.items[0].payload
 
@@ -298,6 +308,14 @@ def test_orchestrator_source_policy_cannot_be_bypassed_by_injected_collector():
 def test_rule_registry_loads_config_and_versions_rules():
     registry = RuleRegistry()
     assert "tool_trade" in registry.load_taxonomy()
+    assert {"诈骗引流", "账号交易", "工具交易", "刷单作弊", "众包服务"} <= set(registry.labels())
+    assert "刷单返佣" in registry.secondary_rules()["刷单作弊"]
+    assert "低价" in registry.promotion_markers_by_label()["工具交易"]
+    assert "安全研究" in registry.defensive_markers()
+    assert "使用指南" in registry.context_markers("generic_guide_markers")
+    assert "接码注册" in registry.risk_marker_sets()
+    assert "接码" in registry.risk_hint_sets()["接码注册"]
+    assert "tool_slang" in registry.load_clue_generation_rules()
     assert registry.load_slang_dictionary()["飞机"] == "Telegram"
     assert "警方" in registry.load_context_polarity()["defensive_markers"]
     assert len(registry.version_hash()) == 16
@@ -306,6 +324,79 @@ def test_rule_registry_loads_config_and_versions_rules():
 def test_product_package_namespace_exports_pipeline_and_domain_contracts():
     assert ProductPipeline is IntelligencePipeline
     assert ProductIntelRecord(trace_id="pkg-1", content_text="ok").trace_id == "pkg-1"
+    assert __import__("blackagent.domain", fromlist=["EntityGraphConfig"]).EntityGraphConfig is EntityGraphConfig
+
+
+def test_classification_resolution_rejects_evidence_free_llm_override():
+    resolution = resolve_classification(
+        {
+            "risk_category": "工具交易",
+            "secondary_label": "群控脚本",
+            "confidence": 0.93,
+            "evidence": ["群控", "TG"],
+            "review_required": False,
+        },
+        {
+            "risk_category": "正常业务白噪声",
+            "secondary_label": "防御语境",
+            "confidence": 0.99,
+            "evidence": [],
+            "review_required": False,
+        },
+        trace_id="resolve-1",
+    )
+
+    assert resolution.strategy == "prefer_rule"
+    assert resolution.reason == "llm_missing_evidence"
+    assert resolution.final["risk_category"] == "工具交易"
+
+
+def test_clue_promotion_archives_weak_duplicates_and_caps_actionable_load():
+    stage = CluePromotionStage()
+    actionable = stage.run_batch(
+        [
+            {
+                "clue_id": "candidate-1",
+                "clue_type": "shared_contact_48h",
+                "key": "TG:core01",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": ["t1", "t2", "t3"],
+                "source_names": ["tg-a", "forum-b"],
+                "entity_values": ["TG:core01"],
+                "confidence": 0.8,
+            },
+            {
+                "clue_id": "candidate-2",
+                "clue_type": "shared_contact_48h",
+                "key": "TG:core01",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": ["t1"],
+                "source_names": ["tg-a"],
+                "entity_values": ["TG:core01"],
+                "confidence": 0.4,
+            },
+            {
+                "clue_id": "weak-tool",
+                "clue_type": "tool_slang",
+                "key": "脚本",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": ["t4"],
+                "source_names": ["tg-a"],
+                "entity_values": ["脚本"],
+                "confidence": 0.4,
+            },
+        ],
+        context={
+            "entities": [
+                {"source_trace_id": "t1", "entity_type": "contact"},
+                {"source_trace_id": "t2", "entity_type": "contact"},
+            ]
+        },
+    )
+
+    assert len(actionable) == 1
+    assert actionable[0]["clue_stage"] == "actionable"
+    assert {item["clue_id"] for item in stage.archived_weak_clues} == {"candidate-2", "weak-tool"}
 
 
 def test_extracted_orchestrator_services_can_run_assigned_boundaries():
@@ -662,6 +753,9 @@ def test_product_cli_entrypoint_is_packaged_not_scripts_wrapper():
 def test_pyproject_packages_runtime_config_resources():
     text = __import__("pathlib").Path("pyproject.toml").read_text(encoding="utf-8")
     assert '"config*"' in text
+    assert '"storage*"' in text
+    assert '"src*"' in text
+    assert 'exclude = ["src.storage*"]' in text
     assert "[tool.setuptools.package-data]" in text
     assert 'config = ["*.yaml", "*.json"]' in text
 

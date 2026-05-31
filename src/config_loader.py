@@ -72,6 +72,7 @@ class StorageConfig(BaseModel):
     dsn: str | None = None
     auto_create_schema: bool = True
     connect_timeout_seconds: float = Field(default=5.0, gt=0)
+    entity_graph: dict[str, Any] = Field(default_factory=lambda: {"enabled": False, "db_path": "data/entity_graph.db"})
 
 
 class TaskConfig(BaseModel):

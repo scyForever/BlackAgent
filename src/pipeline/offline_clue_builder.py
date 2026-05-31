@@ -10,6 +10,8 @@ from src.enhancement.engine import PhaseTwoThreeEngine
 from src.enhancement.strategy import RiskClue
 from src.domain import RunPolicyContext
 from src.pipeline.intelligence_pipeline import IntelligencePipeline
+from src.pipeline.stages import CorrelateStage
+from storage.entity_graph import EntityGraphStore
 from storage import ClueRepo, InMemoryClueRepo
 
 
@@ -38,15 +40,18 @@ class OfflineClueBuilder:
         clue_repo: ClueRepo | None = None,
         llm_gateway: Any | None = None,
         budget_controller: Any | None = None,
+        entity_graph: EntityGraphStore | None = None,
     ) -> None:
         self.phase_engine = phase_engine or PhaseTwoThreeEngine()
         self.quality_evaluator = quality_evaluator or ClueQualityEvaluator()
         self.clue_repo = clue_repo if clue_repo is not None else InMemoryClueRepo()
+        self.entity_graph = entity_graph
         self.run_policy = RunPolicyContext()
         self.intelligence_pipeline = IntelligencePipeline(
             llm_gateway=llm_gateway,
             budget_controller=budget_controller,
             policy=self.run_policy,
+            correlate_stage=CorrelateStage(entity_graph=self.entity_graph) if self.entity_graph is not None else None,
         )
 
     def set_runtime_controls(
@@ -65,6 +70,7 @@ class OfflineClueBuilder:
                 llm_gateway=llm_gateway,
                 budget_controller=budget_controller,
                 policy=self.run_policy,
+                correlate_stage=CorrelateStage(entity_graph=self.entity_graph) if self.entity_graph is not None else None,
             )
 
     def build(

@@ -4,8 +4,8 @@ The legacy repository still exposes modules under ``src.*`` during migration;
 new code should import from this namespace where practical.
 """
 
-from src.pipeline import IntelligencePipeline, OfflineClueBuilder, PipelineResult
-from src.domain import (
+from blackagent.pipeline import IntelligencePipeline, OfflineClueBuilder, PipelineResult
+from blackagent.domain import (
     CleanedRecord,
     ExtractedEntity,
     IntelRecord,

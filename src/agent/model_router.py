@@ -25,11 +25,51 @@ class ModelRouteDecision:
 class ModelRouter:
     """Deterministically decide whether a record or clue deserves LLM budget."""
 
-    def __init__(self, profile: str = "balanced") -> None:
+    def __init__(
+        self,
+        profile: str = "balanced",
+        *,
+        record_enrich_enabled: bool = True,
+        value_gate_reason: str | None = None,
+    ) -> None:
         self.profile = _normalize_profile(profile)
+        self.record_enrich_enabled = bool(record_enrich_enabled)
+        self.value_gate_reason = value_gate_reason or ""
 
     def with_profile(self, profile: str | None) -> "ModelRouter":
-        return type(self)(_normalize_profile(profile or self.profile))
+        return type(self)(
+            _normalize_profile(profile or self.profile),
+            record_enrich_enabled=self.record_enrich_enabled,
+            value_gate_reason=self.value_gate_reason,
+        )
+
+    def with_llm_value_metrics(
+        self,
+        recent_metrics: Mapping[str, Any] | None,
+        *,
+        profile: str | None = None,
+    ) -> "ModelRouter":
+        """Return a router tightened by recent offline LLM value evidence.
+
+        If the value gate says record enrichment is not paying for itself, the
+        router keeps deterministic processing for normal ambiguous records and
+        reserves LLM classification/extraction for true conflict cases.
+        """
+
+        from src.evaluation.llm_ablation import LLMValueGate
+
+        metrics = dict(recent_metrics or {})
+        normalized_profile = _normalize_profile(profile or self.profile)
+        enabled = LLMValueGate().should_enable_record_enrich(normalized_profile, metrics)
+        reason = str(
+            metrics.get("gate_reason")
+            or ("llm_value_gate_enabled_record_enrich" if enabled else "llm_value_gate_disabled_record_enrich")
+        )
+        return type(self)(
+            normalized_profile,
+            record_enrich_enabled=enabled,
+            value_gate_reason=reason,
+        )
 
     def decide_record(
         self,
@@ -52,10 +92,21 @@ class ModelRouter:
             return ModelRouteDecision("deterministic_only", "duplicate_high_rule_confidence", 1, 0, 0, False)
         if rule_confidence >= 0.85 and entity_count >= 2 and not has_conflict:
             return ModelRouteDecision("deterministic_only", "high_confidence_rule_and_entities", 2, 0, 0, False)
+        if not self.record_enrich_enabled and not has_conflict:
+            return ModelRouteDecision(
+                "deterministic_only",
+                self.value_gate_reason or "llm_value_gate_disabled_record_enrich",
+                1,
+                0,
+                0,
+                rule_confidence < 0.70 or risk_score >= 0.75,
+            )
         if has_conflict or ((has_contact or has_url or has_tool) and rule_confidence >= 0.45):
             return ModelRouteDecision(
                 "llm_classify_extract",
-                "ambiguous_high_value_signal",
+                "conflict_hard_case_despite_value_gate"
+                if has_conflict and not self.record_enrich_enabled
+                else "ambiguous_high_value_signal",
                 5,
                 600 if self.profile == "fast" else 900,
                 2500 if self.profile == "fast" else 6000,

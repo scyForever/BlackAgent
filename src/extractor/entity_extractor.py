@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 from src.collector.base_collector import get_record_field
 from src.cleaner.text_filter import normalize_text
+from src.rules import RuleRegistry
 
 
 URL = "url"
@@ -72,27 +73,14 @@ def build_entity_result(
 
 
 class BasicEntityExtractor:
-    URL_RE = re.compile(
-        r"(?i)(?:https?://[^\s\"'<>，。；;]+|(?:[a-z0-9-]+\.)+(?:com|cn|net|org|top|xyz|io|cc|info|me)(?:/[^\s\"'<>，。；;]*)?)"
-    )
-    EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
-    PHONE_RE = re.compile(r"(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)")
-    QQ_RE = re.compile(r"(?i)(?:QQ|企鹅|🐧)[:：\s]*([1-9]\d{4,11})")
-    WECHAT_RE = re.compile(r"(?i)(?:微信|VX|V\s*X|V信|微(?:信)?|薇(?:信)?|围信|威信|wechat|wx)[:：\s]*([a-zA-Z][-_a-zA-Z0-9]{5,19})")
-    TELEGRAM_RE = re.compile(r"(?i)(?:Telegram|TG|TG号|飞机|纸飞机|小飞机|电报|✈️?|🛩️?)[:：\s@]*([a-zA-Z][a-zA-Z0-9_]{2,31})|(?<!\w)@([A-Za-z][A-Za-z0-9_]{2,31})")
-    ACCOUNT_RE = re.compile(r"(?i)(?:账号|账户|UID|用户ID|群号|ID)[:：\s#]*([A-Za-z0-9_-]{4,32})")
-    TOOL_TERMS = (
-        "群控",
-        "脚本",
-        "外挂",
-        "接码平台",
-        "接码",
-        "改机",
-        "打粉工具",
-        "自动化工具",
-        "卡密",
-        "跑分平台",
-    )
+    def __init__(self, rule_registry: RuleRegistry | None = None) -> None:
+        self.rule_registry = rule_registry or RuleRegistry()
+        self.patterns = _compile_pattern_specs(self.rule_registry.entity_pattern_specs(scopes={"basic"}))
+        self.term_specs = [
+            (str(spec.get("entity_type") or "unknown"), tuple(str(term) for term in spec.get("terms", ()) if str(term).strip()))
+            for spec in self.rule_registry.entity_pattern_specs(scopes={"basic"})
+            if spec.get("terms")
+        ]
 
     def extract(self, item: Any) -> list[Any]:
         text = normalize_text(str(get_record_field(item, "clean_text") or get_record_field(item, "content_text") or item))
@@ -118,28 +106,42 @@ class BasicEntityExtractor:
                 )
             )
 
-        for match in self.URL_RE.finditer(text):
-            add(URL, match.group(0), match.start(), match.end())
-        for regex in (self.EMAIL_RE, self.PHONE_RE):
+        for regex, entity_type in self.patterns:
             for match in regex.finditer(text):
-                add(CONTACT, match.group(0), match.start(), match.end())
-        for regex in (self.QQ_RE, self.WECHAT_RE, self.TELEGRAM_RE):
-            for match in regex.finditer(text):
-                value = next(group for group in match.groups() if group)
-                value_start = match.start(match.groups().index(value) + 1)
-                add(CONTACT, value, value_start, value_start + len(value))
-        for match in self.ACCOUNT_RE.finditer(text):
-            add(ACCOUNT, match.group(1), match.start(1), match.end(1))
-        for term in self.TOOL_TERMS:
-            start = text.find(term)
-            while start != -1:
-                add(TOOL_NAME, term, start, start + len(term))
-                start = text.find(term, start + len(term))
+                group_index = _first_group_index(match)
+                value = match.group(group_index) if group_index is not None else match.group(0)
+                value_start = match.start(group_index) if group_index is not None else match.start()
+                add(entity_type, value, value_start, value_start + len(value))
+        for entity_type, terms in self.term_specs:
+            for term in terms:
+                start = text.find(term)
+                while start != -1:
+                    add(entity_type, term, start, start + len(term))
+                    start = text.find(term, start + len(term))
 
         return entities
 
     def extract_batch(self, items: Iterable[Any]) -> list[list[Any]]:
         return [self.extract(item) for item in items]
+
+
+def _compile_pattern_specs(specs: Iterable[dict[str, Any]]) -> list[tuple[re.Pattern[str], str]]:
+    compiled: list[tuple[re.Pattern[str], str]] = []
+    for spec in specs:
+        entity_type = str(spec.get("entity_type") or "unknown")
+        for pattern in spec.get("patterns", []):
+            try:
+                compiled.append((re.compile(str(pattern), re.IGNORECASE), entity_type))
+            except re.error:
+                continue
+    return compiled
+
+
+def _first_group_index(match: re.Match[str]) -> int | None:
+    for index, value in enumerate(match.groups(), start=1):
+        if value:
+            return index
+    return None
 
 
 __all__ = [

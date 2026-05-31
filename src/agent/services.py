@@ -252,12 +252,14 @@ class InitialCandidateRetrievalService:
         optional_positive_int: Callable[[Any], int | None],
         optional_float: Callable[[Any], float | None],
         summarize_retrieved_clues: Callable[..., dict[str, int]],
+        entity_graph: Any | None = None,
     ) -> None:
         self.clue_retriever = clue_retriever
         self.clue_repo = clue_repo
         self.optional_positive_int = optional_positive_int
         self.optional_float = optional_float
         self.summarize_retrieved_clues = summarize_retrieved_clues
+        self.entity_graph = entity_graph
 
     def retrieve(
         self,
@@ -276,6 +278,7 @@ class InitialCandidateRetrievalService:
             allowed_source_types=run_state.retrieval_filters.get("source_types") or (),
             allowed_risk_types=run_state.retrieval_filters.get("risk_types") or (),
             min_quality_score=self.optional_float(run_state.retrieval_filters.get("min_quality_score")),
+            entity_graph=self.entity_graph,
         )
         retrieved_summary = self.summarize_retrieved_clues(
             retrieved_clues,

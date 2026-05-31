@@ -236,20 +236,16 @@ class LLMGateway:
                 error=cached.error,
                 status_code=cached.status_code,
             )
-            if budget_lease is not None and budget is not None and hasattr(budget, "consume"):
-                budget.consume(budget_lease, cache_hit=True, ok=response.ok, network=False)
-            elif budget is not None and hasattr(budget, "consume_llm"):
-                try:
-                    budget.consume_llm(
-                        stage=stage_name,
-                        estimated_tokens=budget_estimated_tokens,
-                        item_count=budget_item_count,
-                        cache_hit=True,
-                        ok=response.ok,
-                        network=False,
-                    )
-                except TypeError:
-                    budget.consume_llm(stage=stage_name, estimated_tokens=budget_estimated_tokens)
+            self._finish_budget(
+                budget=budget,
+                lease=budget_lease,
+                stage=stage_name,
+                response=response,
+                cache_hit=True,
+                network=False,
+                estimated_tokens=budget_estimated_tokens,
+                item_count=budget_item_count,
+            )
             self._record_stats(
                 stage=stage_name,
                 started_at=started_at,
@@ -303,20 +299,16 @@ class LLMGateway:
 
         if self.config.mock or self.config.dry_run:
             response = self._mock_response(payload)
-            if budget_lease is not None and budget is not None and hasattr(budget, "consume"):
-                budget.consume(budget_lease, cache_hit=False, ok=response.ok, network=False)
-            elif budget is not None and hasattr(budget, "consume_llm"):
-                try:
-                    budget.consume_llm(
-                        stage=stage_name,
-                        estimated_tokens=budget_estimated_tokens,
-                        item_count=budget_item_count,
-                        cache_hit=False,
-                        ok=response.ok,
-                        network=False,
-                    )
-                except TypeError:
-                    budget.consume_llm(stage=stage_name, estimated_tokens=budget_estimated_tokens)
+            self._finish_budget(
+                budget=budget,
+                lease=budget_lease,
+                stage=stage_name,
+                response=response,
+                cache_hit=False,
+                network=False,
+                estimated_tokens=budget_estimated_tokens,
+                item_count=budget_item_count,
+            )
             if normalized_cache_policy in {"write", "read_write"}:
                 self._cache[resolved_cache_key] = response
             self._record_stats(
@@ -331,6 +323,16 @@ class LLMGateway:
 
         if not self.config.api_key:
             response = self._blocked_response("missing_api_key", "api_key is required before a real LLM request")
+            self._finish_budget(
+                budget=budget,
+                lease=budget_lease,
+                stage=stage_name,
+                response=response,
+                cache_hit=False,
+                network=False,
+                estimated_tokens=budget_estimated_tokens,
+                item_count=budget_item_count,
+            )
             self._record_stats(
                 stage=stage_name,
                 started_at=started_at,
@@ -385,6 +387,16 @@ class LLMGateway:
                         cache_hit=False,
                         response=gateway_response,
                     )
+                    self._finish_budget(
+                        budget=budget,
+                        lease=budget_lease,
+                        stage=stage_name,
+                        response=gateway_response,
+                        cache_hit=False,
+                        network=True,
+                        estimated_tokens=budget_estimated_tokens,
+                        item_count=budget_item_count,
+                    )
                     return gateway_response
                 status_code = getattr(response, "status", None)
         except urllib.error.HTTPError as exc:
@@ -406,6 +418,16 @@ class LLMGateway:
                 cache_hit=False,
                 response=response,
             )
+            self._finish_budget(
+                budget=budget,
+                lease=budget_lease,
+                stage=stage_name,
+                response=response,
+                cache_hit=False,
+                network=True,
+                estimated_tokens=budget_estimated_tokens,
+                item_count=budget_item_count,
+            )
             return response
         except urllib.error.URLError as exc:
             response = LLMGatewayResponse(
@@ -423,6 +445,16 @@ class LLMGateway:
                 completion_tokens_limit=completion_limit,
                 cache_hit=False,
                 response=response,
+            )
+            self._finish_budget(
+                budget=budget,
+                lease=budget_lease,
+                stage=stage_name,
+                response=response,
+                cache_hit=False,
+                network=True,
+                estimated_tokens=budget_estimated_tokens,
+                item_count=budget_item_count,
             )
             return response
         except (TimeoutError, socket.timeout) as exc:
@@ -442,6 +474,16 @@ class LLMGateway:
                 cache_hit=False,
                 response=response,
             )
+            self._finish_budget(
+                budget=budget,
+                lease=budget_lease,
+                stage=stage_name,
+                response=response,
+                cache_hit=False,
+                network=True,
+                estimated_tokens=budget_estimated_tokens,
+                item_count=budget_item_count,
+            )
             return response
         except OSError as exc:
             response = LLMGatewayResponse(
@@ -460,6 +502,16 @@ class LLMGateway:
                 cache_hit=False,
                 response=response,
             )
+            self._finish_budget(
+                budget=budget,
+                lease=budget_lease,
+                stage=stage_name,
+                response=response,
+                cache_hit=False,
+                network=True,
+                estimated_tokens=budget_estimated_tokens,
+                item_count=budget_item_count,
+            )
             return response
 
         content = _extract_message_content(raw)
@@ -472,20 +524,16 @@ class LLMGateway:
             network_attempted=True,
             status_code=status_code,
         )
-        if budget_lease is not None and budget is not None and hasattr(budget, "consume"):
-            budget.consume(budget_lease, cache_hit=False, ok=response.ok, network=response.network_attempted)
-        elif budget is not None and hasattr(budget, "consume_llm"):
-            try:
-                budget.consume_llm(
-                    stage=stage_name,
-                    estimated_tokens=budget_estimated_tokens,
-                    item_count=budget_item_count,
-                    cache_hit=False,
-                    ok=response.ok,
-                    network=response.network_attempted,
-                )
-            except TypeError:
-                budget.consume_llm(stage=stage_name, estimated_tokens=budget_estimated_tokens)
+        self._finish_budget(
+            budget=budget,
+            lease=budget_lease,
+            stage=stage_name,
+            response=response,
+            cache_hit=False,
+            network=response.network_attempted,
+            estimated_tokens=budget_estimated_tokens,
+            item_count=budget_item_count,
+        )
         if normalized_cache_policy in {"write", "read_write"}:
             self._cache[resolved_cache_key] = response
         self._record_stats(
@@ -520,6 +568,36 @@ class LLMGateway:
 
     def clear_cache(self) -> None:
         self._cache.clear()
+
+    def _finish_budget(
+        self,
+        *,
+        budget: Any | None,
+        lease: Any | None,
+        stage: str,
+        response: LLMGatewayResponse,
+        cache_hit: bool,
+        network: bool,
+        estimated_tokens: int,
+        item_count: int,
+    ) -> None:
+        if budget is None:
+            return
+        if lease is not None and hasattr(budget, "consume"):
+            budget.consume(lease, cache_hit=cache_hit, ok=response.ok, network=network)
+            return
+        if hasattr(budget, "consume_llm"):
+            try:
+                budget.consume_llm(
+                    stage=stage,
+                    estimated_tokens=estimated_tokens,
+                    item_count=item_count,
+                    cache_hit=cache_hit,
+                    ok=response.ok,
+                    network=network,
+                )
+            except TypeError:
+                budget.consume_llm(stage=stage, estimated_tokens=estimated_tokens)
 
     def _record_stats(
         self,

@@ -1,4 +1,5 @@
 import json
+import urllib.error
 
 from src.agent import BudgetController, RuntimeBudget
 from src.backend import LLMGateway, TaskBackend, TaskStatus
@@ -91,6 +92,38 @@ def test_llm_gateway_missing_api_key_does_not_attempt_network(monkeypatch):
     assert response.error == "missing_api_key"
     assert response.network_attempted is False
     assert response.parsed_json["error"] == "missing_api_key"
+
+
+def test_llm_gateway_failure_after_reserve_updates_failed_budget_ledger(monkeypatch):
+    def raise_http_error(*_args, **_kwargs):
+        body = type("Body", (), {"read": lambda self: b'{"error":"rate"}', "close": lambda self: None})()
+        raise urllib.error.HTTPError(
+            url="https://llm.example/v1/chat/completions",
+            code=429,
+            msg="too many requests",
+            hdrs=None,
+            fp=body,
+        )
+
+    monkeypatch.setattr(llm_gateway.urllib_request, "urlopen", raise_http_error)
+    gateway = LLMGateway(base_url="https://llm.example/v1", api_key="sk-test", model="real-model", dry_run=False)
+    budget = BudgetController(RuntimeBudget(max_llm_calls=2, max_llm_tokens=2000))
+
+    response = gateway.chat(
+        [{"role": "user", "content": "hello"}],
+        stage="llm_classify",
+        max_tokens=16,
+        budget=budget,
+    )
+    ledger = budget.snapshot()["llm_budget"]
+
+    assert response.ok is False
+    assert response.error == "http_error:429"
+    assert response.network_attempted is True
+    assert ledger["attempted_calls"] == 1
+    assert ledger["allowed_calls"] == 1
+    assert ledger["failed_calls"] == 1
+    assert ledger["network_calls"] == 1
 
 
 def test_llm_gateway_builds_openai_compatible_urllib_request(monkeypatch):

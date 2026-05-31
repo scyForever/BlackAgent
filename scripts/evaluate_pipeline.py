@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -17,6 +18,7 @@ from src.pipeline import IntelligencePipeline
 from src.domain import RunPolicyContext
 from src.agent.budget_controller import BudgetController, RuntimeBudget
 from src.backend import LLMGateway, LLMGatewayConfig
+from src.evaluation.llm_ablation import LLMValueGate
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -26,13 +28,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clues-gold", default=None, help="Optional JSONL focused on clue aggregation.")
     parser.add_argument("--hard-negative", default=None, help="Optional JSONL where no risk prediction is expected.")
     parser.add_argument("--profile", default="high_recall", choices=["fast", "balanced", "high_recall"], help="Routing profile to evaluate.")
-    parser.add_argument("--llm-mode", default="off", choices=["off", "mock"], help="Use mock LLM enrichment so profile cost/latency tradeoffs are visible.")
+    parser.add_argument(
+        "--llm-mode",
+        default="off",
+        choices=["off", "mock", "real"],
+        help="LLM enrichment mode: off, deterministic mock, or real OpenAI-compatible gateway from env/config.",
+    )
+    parser.add_argument(
+        "--ablation",
+        action="store_true",
+        help="Run fast/off, high_recall/off, and high_recall/mock and report LLM marginal value.",
+    )
+    parser.add_argument(
+        "--ablation-include-real",
+        action="store_true",
+        help="Also run high_recall/real in ablation; requires a configured real LLM gateway.",
+    )
     parser.add_argument("--with-budget", action="store_true", help="Attach BudgetController to the evaluation pipeline.")
     parser.add_argument("--min-classification-f1", type=float, default=None, help="Fail if classification F1 is below this threshold.")
+    parser.add_argument("--min-primary-classification-f1", type=float, default=None, help="Fail if primary classification F1 is below this threshold.")
+    parser.add_argument("--min-secondary-classification-f1", type=float, default=None, help="Fail if secondary classification F1 is below this threshold.")
+    parser.add_argument("--min-hierarchical-classification-f1", type=float, default=None, help="Fail if hierarchical primary+secondary F1 is below this threshold.")
     parser.add_argument("--min-entity-f1", type=float, default=None, help="Fail if entity F1 is below this threshold.")
     parser.add_argument("--max-hard-negative-fpr", type=float, default=None, help="Fail if hard-negative false-positive rate is above this threshold.")
     parser.add_argument("--max-llm-calls-per-1000", type=float, default=None, help="Fail if profile LLM calls per 1000 records exceed this threshold.")
     parser.add_argument("--max-clue-overgeneration-ratio", type=float, default=None, help="Fail if actual clue count greatly exceeds expected count.")
+    parser.add_argument("--max-review-load-per-100-records", type=float, default=None, help="Fail if actionable clue review load is above this threshold.")
     parser.add_argument("--output", default="data/eval_report.json", help="Where to write JSON metrics.")
     return parser.parse_args(argv)
 
@@ -68,7 +89,7 @@ def evaluate(
 ) -> dict[str, Any]:
     started = time.perf_counter()
     policy = RunPolicyContext.from_profile_config(routing_profile=profile, profile_config=_profile_config(profile), budget=_budget_profile(profile))
-    gateway = LLMGateway(LLMGatewayConfig(dry_run=True, mock=True)) if llm_mode == "mock" else None
+    gateway = _gateway_for_mode(llm_mode)
     budget_controller = BudgetController(RuntimeBudget.from_mapping(policy.budget or _budget_profile(profile))) if (with_budget or gateway is not None) else None
     pipeline = IntelligencePipeline(policy=policy, llm_gateway=gateway, budget_controller=budget_controller)
     classification_records = list(records)
@@ -105,16 +126,19 @@ def evaluate(
         "classification": classification_metrics,
         "entity": entity_metrics,
         "clue": clue_metrics,
-        "classification_precision": classification_metrics["overall"]["precision"],
-        "classification_recall": classification_metrics["overall"]["recall"],
-        "classification_f1": classification_metrics["overall"]["f1"],
+        "classification_precision": classification_metrics["primary"]["precision"],
+        "classification_recall": classification_metrics["primary"]["recall"],
+        "classification_f1": classification_metrics["primary"]["f1"],
+        "primary_classification_f1": classification_metrics["primary"]["f1"],
+        "secondary_classification_f1": classification_metrics["secondary"]["f1"],
+        "hierarchical_classification_f1": classification_metrics["hierarchical"]["f1"],
         "entity_precision": entity_metrics["overall"]["precision"],
         "entity_recall": entity_metrics["overall"]["recall"],
         "entity_f1": entity_metrics["overall"]["f1"],
         "clue_precision": clue_metrics["overall"]["precision"],
         "clue_recall": clue_metrics["overall"]["recall"],
         "clue_f1": clue_metrics["overall"]["f1"],
-        "high_risk_recall": classification_metrics["overall"]["recall"],
+        "high_risk_recall": classification_metrics["primary"]["recall"],
         "false_positive_rate": classification_metrics["false_positive_rate"],
         "hard_negative": classification_metrics["hard_negative"],
         "llm_calls_per_1000_records": llm_calls_per_1000,
@@ -129,6 +153,7 @@ def evaluate(
             "llm_calls": llm_calls,
             "llm_calls_per_1000_records": llm_calls_per_1000,
             "classification_recall": classification_metrics["overall"]["recall"],
+            "primary_classification_recall": classification_metrics["primary"]["recall"],
             "false_positive_rate": classification_metrics["false_positive_rate"],
             "p95_latency_ms": round(elapsed_ms, 2),
             "estimated_tokens": int((llm_budget or {}).get("estimated_tokens") or 0),
@@ -141,6 +166,12 @@ def quality_gate_failures(report: Mapping[str, Any], args: argparse.Namespace) -
     failures: list[str] = []
     if args.min_classification_f1 is not None and float(report["classification_f1"]) < args.min_classification_f1:
         failures.append(f"classification_f1_below_threshold:{report['classification_f1']}<{args.min_classification_f1}")
+    if getattr(args, "min_primary_classification_f1", None) is not None and float(report["primary_classification_f1"]) < args.min_primary_classification_f1:
+        failures.append(f"primary_classification_f1_below_threshold:{report['primary_classification_f1']}<{args.min_primary_classification_f1}")
+    if getattr(args, "min_secondary_classification_f1", None) is not None and float(report["secondary_classification_f1"]) < args.min_secondary_classification_f1:
+        failures.append(f"secondary_classification_f1_below_threshold:{report['secondary_classification_f1']}<{args.min_secondary_classification_f1}")
+    if getattr(args, "min_hierarchical_classification_f1", None) is not None and float(report["hierarchical_classification_f1"]) < args.min_hierarchical_classification_f1:
+        failures.append(f"hierarchical_classification_f1_below_threshold:{report['hierarchical_classification_f1']}<{args.min_hierarchical_classification_f1}")
     if args.min_entity_f1 is not None and float(report["entity_f1"]) < args.min_entity_f1:
         failures.append(f"entity_f1_below_threshold:{report['entity_f1']}<{args.min_entity_f1}")
     if args.max_hard_negative_fpr is not None and float(report["false_positive_rate"]) > args.max_hard_negative_fpr:
@@ -149,12 +180,15 @@ def quality_gate_failures(report: Mapping[str, Any], args: argparse.Namespace) -
         failures.append(f"llm_calls_per_1000_above_threshold:{report['llm_calls_per_1000_records']}>{args.max_llm_calls_per_1000}")
     if getattr(args, "max_clue_overgeneration_ratio", None) is not None and float(report["clue"]["clue_overgeneration_ratio"]) > args.max_clue_overgeneration_ratio:
         failures.append(f"clue_overgeneration_ratio_above_threshold:{report['clue']['clue_overgeneration_ratio']}>{args.max_clue_overgeneration_ratio}")
+    if getattr(args, "max_review_load_per_100_records", None) is not None and float(report["clue"]["review_load_per_100_records"]) > args.max_review_load_per_100_records:
+        failures.append(f"review_load_per_100_records_above_threshold:{report['clue']['review_load_per_100_records']}>{args.max_review_load_per_100_records}")
     return failures
 
 
 def evaluate_classification(records: list[dict[str, Any]], actual_items: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     primary_tp = primary_fp = primary_fn = 0
     secondary_tp = secondary_fp = secondary_fn = 0
+    hierarchical_tp = hierarchical_fp = hierarchical_fn = 0
     actual_by_trace = {
         str(item.get("source_trace_id") or ""): item
         for item in actual_items
@@ -173,16 +207,24 @@ def evaluate_classification(records: list[dict[str, Any]], actual_items: Iterabl
         secondary_tp += len(expected_secondary & actual_secondary)
         secondary_fp += len(actual_secondary - expected_secondary)
         secondary_fn += len(expected_secondary - actual_secondary)
+        expected_pairs = _classification_pairs(expected_primary, expected_secondary)
+        actual_pairs = _classification_pairs(actual_primary, actual_secondary)
+        hierarchical_tp += len(expected_pairs & actual_pairs)
+        hierarchical_fp += len(actual_pairs - expected_pairs)
+        hierarchical_fn += len(expected_pairs - actual_pairs)
         if not expected_primary:
             if actual_primary:
                 hard_fp += 1
             else:
                 hard_tn += 1
-    overall = prf(primary_tp, primary_fp, primary_fn)
+    primary = prf(primary_tp, primary_fp, primary_fn)
+    secondary = prf(secondary_tp, secondary_fp, secondary_fn)
+    hierarchical = prf(hierarchical_tp, hierarchical_fp, hierarchical_fn)
     return {
-        "overall": overall,
-        "primary": {**overall, "tp": primary_tp, "fp": primary_fp, "fn": primary_fn},
-        "secondary": {**prf(secondary_tp, secondary_fp, secondary_fn), "tp": secondary_tp, "fp": secondary_fp, "fn": secondary_fn},
+        "overall": {**hierarchical, "metric_note": "hierarchical_primary_secondary_f1"},
+        "primary": {**primary, "tp": primary_tp, "fp": primary_fp, "fn": primary_fn},
+        "secondary": {**secondary, "tp": secondary_tp, "fp": secondary_fp, "fn": secondary_fn},
+        "hierarchical": {**hierarchical, "tp": hierarchical_tp, "fp": hierarchical_fp, "fn": hierarchical_fn},
         "false_positive_rate": round(hard_fp / max(hard_fp + hard_tn, 1), 4),
         "hard_negative": {"tn": hard_tn, "fp": hard_fp},
     }
@@ -323,14 +365,24 @@ def _trace_id(record: Mapping[str, Any]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    report = evaluate(
-        load_jsonl(args.gold),
-        entity_records=load_jsonl(args.entities_gold) if args.entities_gold else None,
-        clue_records=load_jsonl(args.clues_gold) if args.clues_gold else None,
-        hard_negative_records=load_jsonl(args.hard_negative) if args.hard_negative else None,
-        profile=args.profile,
-        llm_mode=args.llm_mode,
-        with_budget=args.with_budget,
+    loaded = {
+        "records": load_jsonl(args.gold),
+        "entity_records": load_jsonl(args.entities_gold) if args.entities_gold else None,
+        "clue_records": load_jsonl(args.clues_gold) if args.clues_gold else None,
+        "hard_negative_records": load_jsonl(args.hard_negative) if args.hard_negative else None,
+    }
+    report = (
+        evaluate_ablation(**loaded, with_budget=True, include_real=args.ablation_include_real)
+        if args.ablation
+        else evaluate(
+            loaded["records"],
+            entity_records=loaded["entity_records"],
+            clue_records=loaded["clue_records"],
+            hard_negative_records=loaded["hard_negative_records"],
+            profile=args.profile,
+            llm_mode=args.llm_mode,
+            with_budget=args.with_budget,
+        )
     )
     failures = quality_gate_failures(report, args)
     if failures:
@@ -372,6 +424,79 @@ def _profile_config(profile: str) -> dict[str, Any]:
     return defaults.get(profile, defaults["balanced"])
 
 
+def evaluate_ablation(
+    records: list[dict[str, Any]],
+    *,
+    entity_records: list[dict[str, Any]] | None = None,
+    clue_records: list[dict[str, Any]] | None = None,
+    hard_negative_records: list[dict[str, Any]] | None = None,
+    with_budget: bool = True,
+    include_real: bool = False,
+) -> dict[str, Any]:
+    scenarios = {
+        "fast_off": evaluate(
+            deepcopy(records),
+            entity_records=deepcopy(entity_records),
+            clue_records=deepcopy(clue_records),
+            hard_negative_records=deepcopy(hard_negative_records),
+            profile="fast",
+            llm_mode="off",
+            with_budget=with_budget,
+        ),
+        "high_recall_off": evaluate(
+            deepcopy(records),
+            entity_records=deepcopy(entity_records),
+            clue_records=deepcopy(clue_records),
+            hard_negative_records=deepcopy(hard_negative_records),
+            profile="high_recall",
+            llm_mode="off",
+            with_budget=with_budget,
+        ),
+        "high_recall_mock": evaluate(
+            deepcopy(records),
+            entity_records=deepcopy(entity_records),
+            clue_records=deepcopy(clue_records),
+            hard_negative_records=deepcopy(hard_negative_records),
+            profile="high_recall",
+            llm_mode="mock",
+            with_budget=with_budget,
+        ),
+    }
+    base = scenarios["high_recall_off"]
+    llm = scenarios["high_recall_mock"]
+    comparison = _llm_value_delta(base, llm)
+    if include_real:
+        scenarios["high_recall_real"] = evaluate(
+            deepcopy(records),
+            entity_records=deepcopy(entity_records),
+            clue_records=deepcopy(clue_records),
+            hard_negative_records=deepcopy(hard_negative_records),
+            profile="high_recall",
+            llm_mode="real",
+            with_budget=with_budget,
+        )
+        comparison["real"] = _llm_value_delta(base, scenarios["high_recall_real"])
+    value_gate = LLMValueGate()
+    return {
+        "status": "completed",
+        "mode": "llm_ablation",
+        "scenarios": scenarios,
+        "llm_value": comparison,
+        "llm_value_gate": {
+            "should_enable_record_enrich": value_gate.should_enable_record_enrich("high_recall", comparison),
+            "reason": comparison["gate_reason"],
+        },
+    }
+
+
+def _gateway_for_mode(llm_mode: str) -> LLMGateway | None:
+    if llm_mode == "mock":
+        return LLMGateway(LLMGatewayConfig(dry_run=True, mock=True))
+    if llm_mode == "real":
+        return LLMGateway(LLMGatewayConfig.from_env())
+    return None
+
+
 def _budget_profile(profile: str) -> dict[str, Any]:
     return {
         "fast": {
@@ -396,6 +521,41 @@ def _budget_profile(profile: str) -> dict[str, Any]:
             "max_llm_refine_clues": 20,
         },
     }.get(profile, {})
+
+
+def _llm_value_delta(base: Mapping[str, Any], llm: Mapping[str, Any]) -> dict[str, Any]:
+    classification_delta = round(float(llm["primary_classification_f1"]) - float(base["primary_classification_f1"]), 4)
+    entity_delta = round(float(llm["entity_f1"]) - float(base["entity_f1"]), 4)
+    hard_negative_delta = round(float(llm["false_positive_rate"]) - float(base["false_positive_rate"]), 4)
+    clue_precision_delta = round(float(llm["clue_f1"]) - float(base["clue_f1"]), 4)
+    clue_recall_delta = round(float(llm["clue_recall"]) - float(base["clue_recall"]), 4)
+    llm_calls_delta = round(float(llm["llm_calls_per_1000_records"]) - float(base["llm_calls_per_1000_records"]), 4)
+    token_delta = float(llm.get("profile_comparison_dimensions", {}).get("estimated_tokens") or 0) - float(base.get("profile_comparison_dimensions", {}).get("estimated_tokens") or 0)
+    f1_gain = max(classification_delta, entity_delta, clue_precision_delta, 0.0)
+    extra_valid_clues = max(float(llm.get("clue", {}).get("overall", {}).get("tp") or 0) - float(base.get("clue", {}).get("overall", {}).get("tp") or 0), 0.0)
+    if f1_gain <= 0.0 and extra_valid_clues <= 0.0:
+        gate_reason = "llm_added_cost_without_measured_quality_gain"
+    else:
+        gate_reason = "llm_measured_positive_marginal_gain"
+    return {
+        "classification_f1_delta": classification_delta,
+        "entity_f1_delta": entity_delta,
+        "hard_negative_fpr_delta": hard_negative_delta,
+        "clue_precision_delta": clue_precision_delta,
+        "clue_recall_delta": clue_recall_delta,
+        "llm_calls_delta": llm_calls_delta,
+        "tokens_per_f1_gain": None if f1_gain <= 0 else round(token_delta / f1_gain, 4),
+        "tokens_per_extra_valid_clue": None if extra_valid_clues <= 0 else round(token_delta / extra_valid_clues, 4),
+        "gate_reason": gate_reason,
+    }
+
+
+def _classification_pairs(primary: set[str], secondary: set[str]) -> set[tuple[str, str]]:
+    if not primary:
+        return set()
+    if not secondary:
+        return {(item, "*") for item in primary}
+    return {(item, label) for item in primary for label in secondary}
 
 
 def _duplicate_clue_rate(actual: list[dict[str, Any]]) -> float:

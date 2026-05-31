@@ -2,12 +2,19 @@ context_polarity:
   defensive_markers:
     - 严禁
     - 禁止
+    - 警方通报
+    - 公安通报
     - 警方
+    - 反诈
     - 反诈提醒
+    - 安全通告
     - 安全研究
     - 研究分析
     - 治理案例
     - 平台公告
+    - 新闻报道
+    - 辟谣
+    - 普法
     - 用户应举报
     - 举报
     - 不提供
@@ -18,6 +25,16 @@ context_polarity:
     - 覆盖率
     - 曝光
     - 复盘
+  generic_guide_markers:
+    - 使用指南
+    - 指南
+    - 教程
+    - 推荐
+    - 收藏
+    - 实用
+    - 盘点
+    - 合集
+    - 测评
   negation_markers:
     - 无垫付
     - 无返佣
