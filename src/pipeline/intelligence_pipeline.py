@@ -143,9 +143,10 @@ class IntelligencePipeline:
             self.model_router = self.model_router.with_profile(policy.routing_profile)
         if not policy.enable_llm_record_enrich and hasattr(self.model_router, "with_record_enrich_policy"):
             self.model_router = self.model_router.with_record_enrich_policy(
-                enabled=True,
-                reason="policy_disabled_record_enrich_after_routing",
+                enabled=False,
+                reason="policy_disabled_record_enrich",
                 profile=policy.routing_profile,
+                policy="disabled",
             )
         else:
             self.model_router = _apply_runtime_llm_value_policy(
@@ -342,11 +343,14 @@ def _apply_runtime_llm_value_policy(
 ) -> Any:
     if not enabled:
         return router
+    from src.evaluation.llm_ablation import LLMValueGate
+
     if _llm_value_applies(metrics, profile) and hasattr(router, "with_llm_value_metrics"):
         return router.with_llm_value_metrics(metrics, profile=profile)
     if not hasattr(router, "with_record_enrich_policy"):
         return router
     normalized = str(profile or "").strip().lower()
+    policy = LLMValueGate().record_enrich_policy(normalized, None)
     reason = (
         "llm_value_gate_fast_profile_record_enrich_disabled"
         if normalized == "fast"
@@ -354,15 +358,13 @@ def _apply_runtime_llm_value_policy(
         if metrics
         else "llm_value_report_missing_hard_cases_only"
     )
-    return router.with_record_enrich_policy(enabled=False, reason=reason, profile=profile)
+    return router.with_record_enrich_policy(enabled=False, reason=reason, profile=profile, policy=policy)
 
 
 def _record_enrich_policy(policy: RunPolicyContext, router: Any) -> str:
     if not policy.enable_llm_record_enrich:
         return "disabled"
-    if not bool(getattr(router, "record_enrich_enabled", True)):
-        return "hard_cases_only"
-    return "enabled"
+    return str(getattr(router, "record_enrich_policy", None) or ("enabled" if bool(getattr(router, "record_enrich_enabled", True)) else "hard_cases_only"))
 
 
 def _initial_pipeline_item(payload: Mapping[str, Any]) -> PipelineItem:

@@ -11,6 +11,7 @@ from src.domain import RunPolicyContext
 from src.enhancement.llm_clue_refiner import LLMClueRefiner
 from src.agent.clue_ranker import ClueRanker
 from src.agent.model_router import ModelRouter
+from src.intelligence.entity_graph_retrieval import EntityGraphRetrievalService
 from .investigation_contracts import EvidenceGap
 from .user_request_parser import _fallback_intent, _fallback_plan
 
@@ -270,6 +271,7 @@ class InitialCandidateRetrievalService:
         self.optional_float = optional_float
         self.summarize_retrieved_clues = summarize_retrieved_clues
         self.entity_graph = entity_graph
+        self.entity_graph_retrieval = EntityGraphRetrievalService(entity_graph) if entity_graph is not None else None
 
     def retrieve(
         self,
@@ -288,8 +290,18 @@ class InitialCandidateRetrievalService:
             allowed_source_types=run_state.retrieval_filters.get("source_types") or (),
             allowed_risk_types=run_state.retrieval_filters.get("risk_types") or (),
             min_quality_score=self.optional_float(run_state.retrieval_filters.get("min_quality_score")),
-            entity_graph=self.entity_graph,
+            entity_graph=None,
         )
+        graph_clues = (
+            self.entity_graph_retrieval.retrieve(
+                query=query,
+                intent=run_state.intent_payload,
+                limit=run_state.budget["max_candidate_clues"],
+            )
+            if self.entity_graph_retrieval is not None
+            else []
+        )
+        retrieved_clues = _merge_preflight_clues(retrieved_clues, graph_clues, limit=run_state.budget["max_candidate_clues"])
         retrieved_summary = self.summarize_retrieved_clues(
             retrieved_clues,
             time_range_hours=self.optional_positive_int(run_state.retrieval_filters.get("time_range_hours"))
@@ -496,6 +508,48 @@ def _budget_peek(budget: BudgetController, *, stage: str, estimated_tokens: int,
     if hasattr(budget, "peek"):
         return bool(budget.peek(stage=stage, estimated_tokens=estimated_tokens, item_count=item_count))
     return bool(budget.allow_llm_call(stage=stage, estimated_tokens=estimated_tokens, item_count=item_count))
+
+
+def _merge_preflight_clues(
+    pool_clues: Iterable[Mapping[str, Any]],
+    graph_clues: Iterable[Mapping[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for raw in [*pool_clues, *graph_clues]:
+        clue = dict(raw)
+        key = (
+            str(clue.get("clue_type") or "").lower(),
+            str(clue.get("key") or clue.get("entity_asset_id") or clue.get("clue_id") or "").lower(),
+            str(clue.get("risk_category") or "").lower(),
+        )
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = clue
+            continue
+        for field in ("evidence_trace_ids", "source_names", "source_types", "entity_values", "orchestration_origins"):
+            existing[field] = sorted(
+                {
+                    str(value)
+                    for value in [*(existing.get(field) or []), *(clue.get(field) or [])]
+                    if str(value).strip()
+                }
+            )
+        existing["retrieval_score"] = max(float(existing.get("retrieval_score") or 0.0), float(clue.get("retrieval_score") or 0.0))
+        existing["confidence"] = max(float(existing.get("confidence") or 0.0), float(clue.get("confidence") or 0.0))
+        if clue.get("risk_profile") and not existing.get("risk_profile"):
+            existing["risk_profile"] = clue["risk_profile"]
+    output = list(merged.values())
+    output.sort(
+        key=lambda item: (
+            float(item.get("retrieval_score") or 0.0),
+            float(item.get("quality_score") or 0.0),
+            float(item.get("confidence") or 0.0),
+        ),
+        reverse=True,
+    )
+    return output[: max(0, int(limit or 0))]
 
 
 def _float(value: Any) -> float:

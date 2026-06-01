@@ -14,4 +14,8 @@ class EntityRiskScorer:
         return graph.risk_profile(entity_id)
 
 
-__all__ = ["EntityRiskScorer", "EntityRiskProfile"]
+class EntityRiskProfileService(EntityRiskScorer):
+    """Named service used by preflight graph retrieval and reports."""
+
+
+__all__ = ["EntityRiskProfileService", "EntityRiskScorer", "EntityRiskProfile"]

@@ -157,6 +157,11 @@ def evaluate(
         "classification_granularity": classification_metrics["granularity"],
         "secondary_classification_status": classification_metrics["secondary"]["status"],
         "hierarchical_classification_status": classification_metrics["hierarchical"]["status"],
+        "secondary_label_policy": (
+            "formal_metric"
+            if classification_metrics["secondary_gold"]["ready"]
+            else "assistive_field_not_formal_metric"
+        ),
         "entity_precision": entity_metrics["overall"]["precision"],
         "entity_recall": entity_metrics["overall"]["recall"],
         "entity_f1": entity_metrics["overall"]["f1"],

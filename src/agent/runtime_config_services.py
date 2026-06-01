@@ -175,6 +175,7 @@ class InvestigationConfigMixin:
                 need_cross_source_support="insufficient_cross_source_support" in active_reasons,
                 need_entity_chain="evidence_chain_not_satisfied_by_pool" in active_reasons,
                 need_contact_or_url=need_contact_or_url,
+                preferred_source_types=need_specific_source_types,
                 need_specific_source_types=need_specific_source_types,
                 missing_entity_types=missing_entity_types,
                 current_high_quality_count=current_high_quality,

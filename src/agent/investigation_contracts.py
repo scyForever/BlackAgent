@@ -21,11 +21,18 @@ class EvidenceGap:
     need_cross_source_support: bool = False
     need_entity_chain: bool = False
     need_contact_or_url: bool = False
+    preferred_source_types: list[str] = field(default_factory=list)
     need_specific_source_types: list[str] = field(default_factory=list)
     missing_entity_types: list[str] = field(default_factory=list)
     current_high_quality_count: int = 0
     required_high_quality_count: int = 0
     reasons: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.preferred_source_types and self.need_specific_source_types:
+            self.preferred_source_types = list(self.need_specific_source_types)
+        if not self.need_specific_source_types and self.preferred_source_types:
+            self.need_specific_source_types = list(self.preferred_source_types)
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any] | None) -> "EvidenceGap":
@@ -37,6 +44,11 @@ class EvidenceGap:
             need_cross_source_support=bool(payload.get("need_cross_source_support", False)),
             need_entity_chain=bool(payload.get("need_entity_chain", False)),
             need_contact_or_url=bool(payload.get("need_contact_or_url", False)),
+            preferred_source_types=[
+                str(item)
+                for item in (payload.get("preferred_source_types") or payload.get("need_specific_source_types") or [])
+                if str(item).strip()
+            ],
             need_specific_source_types=[str(item) for item in (payload.get("need_specific_source_types") or []) if str(item).strip()],
             missing_entity_types=[str(item) for item in (payload.get("missing_entity_types") or []) if str(item).strip()],
             current_high_quality_count=int(payload.get("current_high_quality_count") or 0),
@@ -55,7 +67,10 @@ class EvidenceGap:
         )
 
     def model_dump(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        if not payload.get("need_specific_source_types"):
+            payload["need_specific_source_types"] = list(payload.get("preferred_source_types") or [])
+        return payload
 
 
 @dataclass

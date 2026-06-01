@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any
 
 
+RecordEnrichPolicy = str
+
+
 def run_llm_ablation(records: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
     """Run the standard fast/off vs high_recall/off/mock comparison."""
 
@@ -23,20 +26,32 @@ class LLMValueGate:
         self.min_f1_gain = min_f1_gain
         self.max_tokens_per_valid_delta = max_tokens_per_valid_delta
 
-    def should_enable_record_enrich(self, profile: str, recent_metrics: dict[str, Any]) -> bool:
-        if str(profile or "").strip().lower() == "fast":
-            return False
+    def record_enrich_policy(self, profile: str, recent_metrics: dict[str, Any] | None) -> RecordEnrichPolicy:
+        normalized_profile = str(profile or "").strip().lower()
+        if normalized_profile == "fast":
+            return "disabled"
+        if not recent_metrics:
+            return "hard_cases_only"
+        explicit_policy = str(recent_metrics.get("record_enrich_policy") or "").strip().lower()
+        if explicit_policy in {"enabled", "hard_cases_only", "conflict_only", "disabled"}:
+            return explicit_policy
+        explicit = recent_metrics.get("should_enable_record_enrich")
+        if explicit is False:
+            return "conflict_only"
         llm_gain = max(
-            float(recent_metrics.get("classification_f1_delta") or 0.0),
-            float(recent_metrics.get("entity_f1_delta") or 0.0),
-            float(recent_metrics.get("clue_recall_delta") or 0.0),
+            float((recent_metrics or {}).get("classification_f1_delta") or 0.0),
+            float((recent_metrics or {}).get("entity_f1_delta") or 0.0),
+            float((recent_metrics or {}).get("clue_recall_delta") or 0.0),
         )
-        tokens_per_valid_delta = recent_metrics.get("tokens_per_extra_valid_clue")
+        tokens_per_valid_delta = (recent_metrics or {}).get("tokens_per_extra_valid_clue")
         if llm_gain < self.min_f1_gain and (
             tokens_per_valid_delta is None or float(tokens_per_valid_delta) > self.max_tokens_per_valid_delta
         ):
-            return False
-        return True
+            return "conflict_only"
+        return "enabled"
+
+    def should_enable_record_enrich(self, profile: str, recent_metrics: dict[str, Any]) -> bool:
+        return self.record_enrich_policy(profile, recent_metrics) == "enabled"
 
 
 def llm_value_report_from_ablation(
@@ -51,6 +66,7 @@ def llm_value_report_from_ablation(
     should_enable = gate.get("should_enable_record_enrich")
     if should_enable is None:
         should_enable = LLMValueGate().should_enable_record_enrich(profile, value)
+    record_policy = LLMValueGate().record_enrich_policy(profile, {**value, "should_enable_record_enrich": should_enable})
     report = {
         "profile": str(profile or "high_recall"),
         "classification_f1_delta": float(value.get("classification_f1_delta") or 0.0),
@@ -63,6 +79,7 @@ def llm_value_report_from_ablation(
         "tokens_per_extra_valid_clue": value.get("tokens_per_extra_valid_clue"),
         "gate_reason": str(value.get("gate_reason") or gate.get("reason") or "llm_value_gate_report"),
         "should_enable_record_enrich": bool(should_enable),
+        "record_enrich_policy": record_policy,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     if "real" in value:

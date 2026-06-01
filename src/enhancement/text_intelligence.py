@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
-from src.cleaner.text_filter import calculate_noise_score, normalize_text, shannon_entropy, text_similarity
+from src.cleaner.text_filter import calculate_noise_score, normalize_intel_text, normalize_text, shannon_entropy, text_similarity
 from src.classifier.nlp_rule_matcher import (
     ACCOUNT_TRADING,
     CLICK_FARMING,
@@ -130,12 +130,156 @@ class FineClassificationResult:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class SlangVariantCandidate:
+    raw: str
+    normalized: str
+    entity_type: str
+    start_offset: int
+    end_offset: int
+    category_hint: str | None = None
+    context_confirmed: bool = False
+    context_hits: list[str] = field(default_factory=list)
+    confidence: float = 0.78
+    method: str = "slang_variant_normalizer_v1"
+
+    def model_dump(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SlangVariantAnalysis:
+    original_text: str
+    normalized_text: str
+    expanded_text: str
+    candidates: list[SlangVariantCandidate] = field(default_factory=list)
+    context_hits: list[str] = field(default_factory=list)
+
+    @property
+    def confirmed_candidates(self) -> list[SlangVariantCandidate]:
+        return [item for item in self.candidates if item.context_confirmed]
+
+    def model_dump(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+class SlangVariantNormalizer:
+    """Normalize black/gray slang variants only when context supports risk use.
+
+    The normalizer is intentionally deterministic and local: it does not mark a
+    record risky merely because a slang token appears.  A token becomes a
+    classification hint only when trading/recruiting/contact/url context is
+    present around the same text.
+    """
+
+    CONTEXT_MARKERS = (
+        "出售",
+        "卖",
+        "买",
+        "接单",
+        "招募",
+        "上车",
+        "拉群",
+        "进群",
+        "私聊",
+        "联系",
+        "客服",
+        "咨询",
+        "详聊",
+        "暗号",
+        "口令",
+        "邀请码",
+        "code:",
+        "tg:",
+        "telegram",
+        "@",
+        "http://",
+        "https://",
+        "hxxp://",
+        "hxxps://",
+        "短链",
+        "低价",
+        "价格",
+        "卡密",
+    )
+    VARIANT_SPECS: tuple[tuple[re.Pattern[str], str, str, str | None], ...] = (
+        (re.compile(r"(?i)(?:音\s*符|🎵|\bd\s*y\b)"), "抖音", "slang_term", "诈骗引流"),
+        (re.compile(r"(?i)(?:纸\s*飞\s*机|小\s*飞\s*机|飞\s*机|\bt\s*g\b(?!\s*[:：@])|telegram(?!\s*[:：@]))"), "Telegram", "slang_term", None),
+        (re.compile(r"(?i)(?:企\s*鹅|🐧|q\s*q)"), "QQ", "slang_term", None),
+        (re.compile(r"(?i)(?:\+?\s*v\s*x|[+＋➕]?\s*v\b|加\s*[vV薇微威围]|微\s*信|薇\s*信|威\s*信|围\s*信)"), "加v", "slang_term", "诈骗引流"),
+        (re.compile(r"(?i)(?:接\s*[🐴马m]\s*a?|j\s*m|接\s*码)"), "接码", "tool_name", "账号交易"),
+        (re.compile(r"(?:裙|羣|q\s*群)"), "群组", "slang_term", "诈骗引流"),
+        (re.compile(r"(?:料\s*子|客\s*资|数\s*据|库)"), "账号资料", "slang_term", "账号交易"),
+        (re.compile(r"群\s*控"), "群控", "tool_name", "工具交易"),
+        (re.compile(r"脚\s*本"), "脚本", "tool_name", "工具交易"),
+        (re.compile(r"卡\s*密"), "卡密", "tool_name", "工具交易"),
+    )
+
+    def analyze(self, text: str) -> SlangVariantAnalysis:
+        original = normalize_text(text)
+        normalized = self.normalize_text(original)
+        context_hits = _ordered_unique(self._context_hits(normalized))
+        candidates: list[SlangVariantCandidate] = []
+        occupied: list[range] = []
+        for pattern, target, entity_type, category_hint in self.VARIANT_SPECS:
+            for match in pattern.finditer(original):
+                raw = match.group(0)
+                span = range(match.start(), match.end())
+                if any(_ranges_overlap(span, used) for used in occupied):
+                    continue
+                local_hits = _ordered_unique(self._context_hits(original[max(0, match.start() - 24) : match.end() + 24]))
+                confirmed = bool(local_hits or context_hits)
+                candidates.append(
+                    SlangVariantCandidate(
+                        raw=raw,
+                        normalized=target,
+                        entity_type=entity_type,
+                        start_offset=match.start(),
+                        end_offset=match.end(),
+                        category_hint=category_hint,
+                        context_confirmed=confirmed,
+                        context_hits=local_hits or context_hits,
+                        confidence=0.9 if confirmed else 0.76,
+                    )
+                )
+                occupied.append(span)
+        expanded_terms = [
+            candidate.normalized
+            for candidate in candidates
+            if candidate.context_confirmed or candidate.entity_type in {"tool_name", "contact"}
+        ]
+        expanded_text = " ".join(_ordered_unique([normalized, *expanded_terms]))
+        return SlangVariantAnalysis(
+            original_text=original,
+            normalized_text=normalized,
+            expanded_text=expanded_text,
+            candidates=candidates,
+            context_hits=context_hits,
+        )
+
+    def normalize_text(self, text: str) -> str:
+        normalized = normalize_intel_text(_normalize_obfuscation(text))
+        normalized = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", normalized)
+        normalized = re.sub(r"(?i)\bt\s+g\b", "TG", normalized)
+        normalized = re.sub(r"(?i)\bd\s+y\b", "dy", normalized)
+        normalized = re.sub(r"(?i)j\s*m", "jm", normalized)
+        return normalize_text(normalized)
+
+    def candidates_in_text(self, text: str) -> list[SlangVariantCandidate]:
+        return self.analyze(text).candidates
+
+    def _context_hits(self, text: str) -> list[str]:
+        lowered = str(text or "").lower()
+        return [marker for marker in self.CONTEXT_MARKERS if marker.lower() in lowered]
+
+
 class FineGrainedIntentClassifier:
     """Phase II second-level classifier plus Phase III conflict resolver."""
 
     def __init__(self, rule_registry: RuleRegistry | None = None) -> None:
         self.rule_registry = rule_registry or RuleRegistry()
         self.fast_classifier = RuleFastTrackClassifier(rule_registry=self.rule_registry)
+        self.slang_variant_normalizer = SlangVariantNormalizer()
         configured_terms = self.rule_registry.primary_terms_by_label()
         self.category_keywords = {category: tuple(terms) for category, terms in configured_terms.items()}
         configured_promotions = self.rule_registry.promotion_markers_by_label()
@@ -182,18 +326,28 @@ class FineGrainedIntentClassifier:
 
     def classify(self, record: Mapping[str, Any] | Any) -> FineClassificationResult:
         text = _text(record)
+        slang_analysis = self.slang_variant_normalizer.analyze(text)
+        match_text = slang_analysis.expanded_text or text
         trace_id = str(get_record_field(record, "source_trace_id") or get_record_field(record, "trace_id") or "unknown")
         matched_keywords = self._signal_terms(record, "matched_keywords")
         matched_themes = self._signal_terms(record, "matched_themes")
-        fast = self.fast_classifier.classify(record)
+        fast_payload = dict(record) if isinstance(record, Mapping) else {"content_text": text}
+        fast_payload["clean_text"] = match_text
+        fast = self.fast_classifier.classify(fast_payload)
         fast_data = fast.model_dump() if hasattr(fast, "model_dump") else dict(fast)
-        category_scores, category_evidence, theme_only_scores = self._category_scores(text, matched_keywords, matched_themes)
+        category_scores, category_evidence, theme_only_scores = self._category_scores(match_text, matched_keywords, matched_themes)
+        self._apply_slang_variant_scores(
+            category_scores,
+            category_evidence,
+            slang_analysis=slang_analysis,
+            text=match_text,
+        )
 
         if not category_scores:
             return FineClassificationResult(trace_id, UNKNOWN, "待研判", 0.35, True, "UNKNOWN", [], [])
         topic_terms = [term for values in category_evidence.values() for term in values if not str(term).startswith("theme:")]
         polarity = self.polarity_scorer.score(text, topic_terms=topic_terms)
-        if self._is_defensive_context(text) or polarity.polarity == NEGATIVE_RISK_ASSERTION:
+        if self._is_defensive_context(match_text) or polarity.polarity == NEGATIVE_RISK_ASSERTION:
             return FineClassificationResult(
                 trace_id,
                 NORMAL_NOISE,
@@ -212,7 +366,7 @@ class FineGrainedIntentClassifier:
         top_category, top_score = ordered[0]
         conflicts = [category for category, score in ordered[1:] if score == top_score or (top_score - score <= 1 and score >= 2)]
         conflict_status = "RESOLVED"
-        secondary_label, secondary_evidence, secondary_candidates = self._secondary_label(top_category, text, matched_keywords)
+        secondary_label, secondary_evidence, secondary_candidates = self._secondary_label(top_category, match_text, matched_keywords)
         supporting_evidence = self._ordered_unique((*category_evidence.get(top_category, []), *secondary_evidence))
 
         confidence = max(
@@ -308,6 +462,7 @@ class FineGrainedIntentClassifier:
                 *self._marker_hits(text, self.crowd_promotion_markers),
             ]
         )
+
         if crowd_markers and self._matches_any(text, matched_keyword_set, self.secondary_rules[CROWD_SERVICE]["拉群获客"]):
             score_map[CROWD_SERVICE] = score_map.get(CROWD_SERVICE, 0) + min(2, len(crowd_markers))
             evidence_map[CROWD_SERVICE].extend(f"service:{marker}" for marker in crowd_markers[:2])
@@ -344,6 +499,31 @@ class FineGrainedIntentClassifier:
             for category in score_map
         }
         return score_map, {key: self._ordered_unique(value) for key, value in evidence_map.items()}, theme_only_scores
+
+    def _apply_slang_variant_scores(
+        self,
+        score_map: dict[str, int],
+        evidence_map: dict[str, list[str]],
+        *,
+        slang_analysis: SlangVariantAnalysis,
+        text: str,
+    ) -> None:
+        confirmed = slang_analysis.confirmed_candidates
+        if not confirmed:
+            return
+        normalized_terms = {candidate.normalized for candidate in confirmed}
+        has_contact_or_url = any(marker in text.lower() for marker in ("tg:", "telegram", "http://", "https://", "hxxp://", "hxxps://", "@", "加v", "微信"))
+        has_trade_or_recruit = bool(set(slang_analysis.context_hits).intersection({"出售", "卖", "接单", "招募", "上车", "拉群", "进群", "联系", "咨询", "短链", "暗号", "口令", "邀请码", "code:"}))
+        for candidate in confirmed:
+            if candidate.category_hint:
+                score_map[candidate.category_hint] = score_map.get(candidate.category_hint, 0) + 1
+                evidence_map.setdefault(candidate.category_hint, []).append(f"slang:{candidate.normalized}")
+        if has_contact_or_url and has_trade_or_recruit and normalized_terms.intersection({"抖音", "加v", "群组", "账号资料", "Telegram"}):
+            score_map[FRAUD_TRAFFIC] = score_map.get(FRAUD_TRAFFIC, 0) + 3
+            evidence_map.setdefault(FRAUD_TRAFFIC, []).append("slang_context:contact_or_url_plus_recruiting")
+        if normalized_terms.intersection({"群控", "脚本", "卡密"}) and has_trade_or_recruit:
+            score_map[TOOL_TRADING] = score_map.get(TOOL_TRADING, 0) + 2
+            evidence_map.setdefault(TOOL_TRADING, []).append("slang_context:tool_trade")
 
     def _secondary_label(self, category: str, text: str, matched_keywords: tuple[str, ...]) -> tuple[str, list[str], list[dict[str, Any]]]:
         candidates: list[tuple[str, list[str], bool]] = []
@@ -478,10 +658,14 @@ class SlangDictionary:
     def candidates_in_text(self, text: str) -> list[tuple[str, str, int, int]]:
         results: list[tuple[str, str, int, int]] = []
         lowered = text.lower()
-        for raw, target in self._terms.items():
+        occupied: list[range] = []
+        for raw, target in sorted(self._terms.items(), key=lambda item: len(str(item[0])), reverse=True):
             start = lowered.find(raw.lower())
             while start >= 0:
-                results.append((raw, target, start, start + len(raw)))
+                span = range(start, start + len(raw))
+                if not any(_ranges_overlap(span, used) for used in occupied):
+                    results.append((raw, target, start, start + len(raw)))
+                    occupied.append(span)
                 start = lowered.find(raw.lower(), start + len(raw))
         return results
 
@@ -493,6 +677,7 @@ class AdvancedEntityExtractor:
         self.rule_registry = rule_registry or RuleRegistry()
         self.basic = BasicEntityExtractor(rule_registry=self.rule_registry)
         self.slang_dictionary = slang_dictionary or SlangDictionary(rule_registry=self.rule_registry)
+        self.slang_variant_normalizer = SlangVariantNormalizer()
         self.entity_normalizer = EntityNormalizer()
         self.configured_patterns = _compile_entity_patterns(self.rule_registry.load_entity_patterns())
 
@@ -500,7 +685,7 @@ class AdvancedEntityExtractor:
         text = _text(record)
         trace_id = str(get_record_field(record, "source_trace_id") or get_record_field(record, "trace_id") or "unknown")
         entities: list[AdvancedEntity] = []
-        seen: set[tuple[str, str, int, int]] = set()
+        seen: set[tuple[str, str]] = set()
 
         def add(entity_type: str, value: str, start: int, end: int, *, method: str = "advanced_rule_v2", confidence: float = 1.0) -> None:
             slang_normalized = self.slang_dictionary.normalize(_normalize_obfuscation(value))
@@ -511,7 +696,7 @@ class AdvancedEntityExtractor:
             )
             normalized = normalized_entity.normalized_value
             final_type = normalized_entity.entity_type
-            key = (final_type, normalized, start, end)
+            key = (final_type, normalized)
             if key in seen or not normalized:
                 return
             seen.add(key)
@@ -539,6 +724,17 @@ class AdvancedEntityExtractor:
 
         for raw, _target, start, end in self.slang_dictionary.candidates_in_text(text):
             add("slang_term", raw, start, end, method="slang_dictionary", confidence=0.88)
+        for candidate in self.slang_variant_normalizer.candidates_in_text(text):
+            if not candidate.context_confirmed and candidate.category_hint:
+                continue
+            add(
+                candidate.entity_type,
+                candidate.raw,
+                candidate.start_offset,
+                candidate.end_offset,
+                method=candidate.method,
+                confidence=candidate.confidence,
+            )
         for regex, entity_type, method in self.configured_patterns:
             for match in regex.finditer(text):
                 group_index = _first_group_index(match)
@@ -598,6 +794,10 @@ def _ordered_unique(values: Iterable[str]) -> list[str]:
     return ordered
 
 
+def _ranges_overlap(left: range, right: range) -> bool:
+    return left.start < right.stop and right.start < left.stop
+
+
 def context_relevance(text: str, start: int, end: int) -> float:
     window = text[max(0, start - 18) : min(len(text), end + 18)]
     markers = ("出售", "招募", "接码", "群控", "跑分", "引流", "刷单", "代付", "暗号", "联系", "上车")
@@ -633,6 +833,9 @@ __all__ = [
     "SimilarityCluster",
     "SimilarityClusterer",
     "SlangDictionary",
+    "SlangVariantAnalysis",
+    "SlangVariantCandidate",
+    "SlangVariantNormalizer",
     "context_relevance",
     "shannon_entropy",
 ]

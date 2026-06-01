@@ -74,7 +74,7 @@ class InvestigationCollectionMixin:
             }
             gap_preferred_types = {
                 _normalize_source_pref(item)
-                for item in gap.need_specific_source_types
+                for item in [*gap.preferred_source_types, *gap.need_specific_source_types]
                 if _normalize_source_pref(item)
             }
             if gap_preferred_types:

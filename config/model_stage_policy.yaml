@@ -7,6 +7,8 @@ model_stage_policy:
     value_gate_review_confidence: 0.70
     value_gate_review_risk_score: 0.75
     llm_min_rule_confidence_with_signal: 0.45
+    hard_case_max_rule_confidence: 0.68
+    hard_case_min_risk_score: 0.65
     fast_record_max_tokens: 600
     default_record_max_tokens: 900
     fast_record_deadline_ms: 2500

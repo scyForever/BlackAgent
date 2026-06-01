@@ -2,10 +2,21 @@ from src.agent.exploration_agent import ExplorationAgent
 from src.enhancement.engine import PhaseTwoThreeEngine
 from src.enhancement.lifecycle import DynamicSlangLifecycleManager, PromptEvaluator
 from src.enhancement.source_intake import ComplianceSourceDiscovery, MultimodalTextExtractor
-from src.enhancement.text_intelligence import AdaptiveEntropyFilter, AdvancedEntityExtractor, FineGrainedIntentClassifier
+from src.enhancement.text_intelligence import AdaptiveEntropyFilter, AdvancedEntityExtractor, FineGrainedIntentClassifier, SlangVariantNormalizer
 from src.classifier.nlp_rule_matcher import ACCOUNT_TRADING, CLICK_FARMING, CROWD_SERVICE, TOOL_TRADING
 from src.local_runtime import LocalAgentRuntime
 from storage import GraphRepo, VectorRepo
+
+
+def test_slang_variant_normalizer_confirms_context_before_risk_hint():
+    normalizer = SlangVariantNormalizer()
+
+    risky = normalizer.analyze("dy 打粉引流，➕v 咨询，短链 hxxps://risk.top")
+    benign = normalizer.analyze("这篇文章介绍 dy 的普通运营经验")
+
+    assert any(item.normalized == "抖音" and item.context_confirmed for item in risky.candidates)
+    assert "加v" in risky.expanded_text
+    assert not any(item.context_confirmed for item in benign.candidates)
 
 
 def phase_records():

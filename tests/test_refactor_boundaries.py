@@ -235,12 +235,53 @@ def test_source_selection_uses_structured_evidence_gap():
         evidence_gap=EvidenceGap(
             need_cross_source_support=True,
             missing_entity_types=["domain"],
-            need_specific_source_types=["forum"],
+            preferred_source_types=["forum"],
             reasons=["insufficient_cross_source_support", "evidence_chain_not_satisfied_by_pool"],
         ),
     )
 
     assert selected[0]["source_name"] == "domain-forum"
+
+
+def test_entity_graph_retrieval_service_feeds_preflight_candidates():
+    from src.intelligence import EntityGraphRetrievalService
+    from storage.entity_graph import EntityGraphStore
+
+    graph = EntityGraphStore()
+    records = [
+        {
+            "trace_id": "graph-preflight-a",
+            "source_name": "tg-graph",
+            "source_type": "IM",
+            "risk_category": "工具交易",
+        },
+        {
+            "trace_id": "graph-preflight-b",
+            "source_name": "forum-graph",
+            "source_type": "Forum",
+            "risk_category": "工具交易",
+        },
+    ]
+    for record in records:
+        graph.add_observation(
+            {
+                "entity_type": "contact",
+                "entity_value": "TG:graph01",
+                "normalized_value": "Telegram:graph01",
+                "source_trace_id": record["trace_id"],
+                "confidence": 0.9,
+            },
+            record,
+        )
+
+    clues = EntityGraphRetrievalService(graph).retrieve(
+        query="查群控工具交易 TG graph01",
+        intent={"risk_types": ["工具交易"]},
+    )
+
+    assert clues
+    assert clues[0]["retrieval_source"] == "entity_graph_preflight"
+    assert clues[0]["risk_profile"]["source_count"] == 2
 
 
 def test_application_service_and_runtime_container_wrap_existing_runtime_dependencies():
@@ -307,14 +348,14 @@ def test_intelligence_pipeline_boundary_runs_composable_stages():
 
     assert isinstance(result, PipelineResult)
     assert result.execution_summary["input_count"] == 1
-    assert result.routed[0]["action"] == "llm_classify_extract"
+    assert result.routed[0]["action"] == "deterministic_only"
     assert result.execution_summary["routing_profile"] == "fast"
     assert result.execution_summary["model_router_profile"] == "fast"
     assert result.execution_summary["llm_stage_policy"]["record_enrich"] is False
     assert result.execution_summary["pipeline_data_plane"] == "typed_first_pipeline_item_internal_legacy_snapshot_adapter"
     assert isinstance(result.execution_summary, PipelineExecutionSummary)
     assert isinstance(result.legacy_snapshot, PipelineLegacySnapshot)
-    assert result.items[0].payload["llm_enrich_skipped_reason"] == "policy_disabled_record_enrich"
+    assert "llm_enrich_skipped_reason" not in result.items[0].payload
 
 
 def test_intelligence_pipeline_default_stages_run_real_components():
