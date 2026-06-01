@@ -708,7 +708,7 @@ def test_extracted_orchestrator_services_can_run_assigned_boundaries():
     assert snapshot["llm_calls"] >= 1
 
 
-def test_orchestrator_llm_traces_include_model_route_decisions():
+def test_orchestrator_splits_model_route_decisions_from_llm_traces():
     orchestrator = InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
     result = orchestrator.run(
         "找接码群控线索",
@@ -730,7 +730,9 @@ def test_orchestrator_llm_traces_include_model_route_decisions():
         ],
     )
 
-    assert any(trace.get("stage") == "model_route" for trace in result.llm_traces)
+    assert not any(trace.get("stage") == "model_route" for trace in result.llm_traces)
+    assert any(trace.get("stage") == "model_route" for trace in result.model_route_traces)
+    assert any(trace.get("stage") == "model_route" for trace in result.execution_summary["model_route_traces"])
     assert result.execution_summary["model_route_summary"].get("llm_refine_only", 0) >= 1
 
 

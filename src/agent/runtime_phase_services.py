@@ -54,9 +54,23 @@ class InvestigationPhaseMixin:
             fresh_state = context.fresh_state
             refinement_state = context.refinement_state
             execution_summary = context.execution_summary
+            planning_traces = [
+                run_state.intent_trace.model_dump(),
+                run_state.plan_trace.model_dump(),
+            ]
+            semantic_traces = [dict(item) for item in semantic_state.traces]
+            rewrite_traces = [dict(item) for item in live_state.rewrite_traces]
+            refine_traces = [dict(item) for item in refinement_state.refine_traces]
+            llm_call_traces = [
+                *[trace for trace in planning_traces if _is_llm_call_trace(trace)],
+                *[trace for trace in rewrite_traces if _is_llm_call_trace(trace)],
+                *[trace for trace in refine_traces if _is_llm_call_trace(trace)],
+            ]
+            llm_item_traces = [trace for trace in refine_traces if trace.get("trace_kind") == "llm_item"]
+            llm_traces = [*planning_traces, *semantic_traces, *rewrite_traces, *refine_traces]
             return InvestigationRunResult(
                 status="completed" if (fresh_state.records or semantic_state.clues or retrieval_state.retrieved_clues) else "no_data",
-                mode="llm_driven_investigation",
+                mode=_top_level_mode(execution_summary),
                 query=context.query,
                 input_count=len(fresh_state.records),
                 fetched_count=len(live_state.records) if live_state.records else len(fresh_state.records),
@@ -65,14 +79,12 @@ class InvestigationPhaseMixin:
                 candidate_count=len(refinement_state.candidate_clues),
                 intent=run_state.intent_payload,
                 investigation_plan=run_state.plan_payload,
-                llm_traces=[
-                    run_state.intent_trace.model_dump(),
-                    run_state.plan_trace.model_dump(),
-                    *semantic_state.traces,
-                    *live_state.rewrite_traces,
-                    *refinement_state.model_route_traces,
-                    *refinement_state.refine_traces,
-                ],
+                llm_traces=llm_traces,
+                llm_call_traces=llm_call_traces,
+                llm_item_traces=llm_item_traces,
+                model_route_traces=[dict(item) for item in refinement_state.model_route_traces],
+                flow_decision_traces=[dict(item) for item in execution_summary.get("flow_decision_traces", [])],
+                safety_traces=[dict(item) for item in execution_summary.get("safety_traces", [])],
                 selected_sources=live_state.selected_sources,
                 collection_runs=live_state.collection_runs,
                 execution_summary=execution_summary,
@@ -526,9 +538,18 @@ class InvestigationPhaseMixin:
                     used_clue_pool=used_clue_pool,
                     used_fresh_processing=bool(fresh_state.records or semantic_state.clues),
                 ),
+                "run_mode": _top_level_mode(
+                    {
+                        "used_provided_records": bool(retrieval_state.provided_records),
+                        "used_live_collection": bool(live_state.records),
+                        "used_clue_pool": used_clue_pool,
+                        "used_semantic_local_retrieval": bool(semantic_state.records),
+                    }
+                ),
                 "budget": run_state.budget,
                 "run_policy": run_state.run_policy.model_dump(),
                 "llm_stage_policy": run_state.run_policy.llm_stage_policy,
+                "graph_clue_generation_enabled": bool(run_state.run_policy.enable_graph_clue_generation),
                 "refined_clue_count": refinement_state.actual_refined_count,
                 "refine_target_count": refinement_state.refine_target_count,
                 "query_rewrite_count": query_rewrite_count,
@@ -547,6 +568,11 @@ class InvestigationPhaseMixin:
                 "flow_decision_traces": [dict(item) for item in run_state.flow_decision_traces],
                 "orchestration_route": orchestration_route,
                 "live_collection_reasons": live_state.live_collection_reasons,
+                "safety_traces": [
+                    dict(item)
+                    for item in live_state.collection_runs
+                    if str(item.get("status") or "").startswith("blocked_by_")
+                ],
                 "elapsed_budget_exhausted": self._deadline_exhausted(run_state.deadline_at),
                 "runtime_quality_gate": run_state.runtime_quality_gate.model_dump(),
                 "plan_execution_controls": run_state.plan_execution_controls.model_dump(),
@@ -554,6 +580,7 @@ class InvestigationPhaseMixin:
                 "effective_max_llm_refine_clues": refinement_state.effective_max_refine,
                 "refine_budget_reasons": refinement_state.refine_budget_reasons,
                 "model_route_count": len(refinement_state.model_route_traces),
+                "model_route_traces": [dict(trace) for trace in refinement_state.model_route_traces],
                 "model_route_summary": self._summarize_model_routes(refinement_state.model_route_traces),
                 "budget_controller": refinement_state.budget_controller_snapshot,
                 "llm_budget": refinement_state.budget_controller_snapshot.get("llm_budget", {}),
@@ -606,6 +633,27 @@ class InvestigationPhaseMixin:
                 "actual_usage_tokens": gateway_summary.get("actual_usage_tokens"),
                 "token_estimation_policy": "budget_reserved_vs_gateway_prompt_plus_completion_estimates",
             }
+
+
+def _is_llm_call_trace(trace: Mapping[str, Any]) -> bool:
+    if trace.get("trace_kind") == "llm_call":
+        return True
+    if trace.get("trace_kind") == "llm_item":
+        return False
+    stage = str(trace.get("stage") or "")
+    return stage in {"intent_parse", "investigation_plan", "source_query_rewrite", "clue_refine"} and "llm_ok" in trace
+
+
+def _top_level_mode(summary: Mapping[str, Any]) -> str:
+    if bool(summary.get("used_provided_records")):
+        return "provided_records_pipeline"
+    if bool(summary.get("used_live_collection")):
+        return "live_collection_pipeline"
+    if bool(summary.get("used_clue_pool")) and bool(summary.get("used_semantic_local_retrieval")):
+        return "pool_plus_semantic_local"
+    if bool(summary.get("used_clue_pool")):
+        return "asset_first_investigation"
+    return "hybrid_investigation"
 
 
 __all__ = ["InvestigationPhaseMixin"]

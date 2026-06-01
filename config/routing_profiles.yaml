@@ -15,6 +15,7 @@ routing_profiles:
     enable_live_collection: false
     enable_llm_record_enrich: false
     enable_llm_clue_refine: true
+    enable_graph_clue_generation: false
     llm_stage_policy:
       intent_parse: false
       investigation_plan: false
@@ -40,6 +41,7 @@ routing_profiles:
     enable_live_collection: true
     enable_llm_record_enrich: true
     enable_llm_clue_refine: true
+    enable_graph_clue_generation: true
     llm_stage_policy:
       intent_parse: true
       investigation_plan: true
@@ -65,6 +67,7 @@ routing_profiles:
     enable_live_collection: true
     enable_llm_record_enrich: true
     enable_llm_clue_refine: true
+    enable_graph_clue_generation: true
     llm_stage_policy:
       intent_parse: true
       investigation_plan: true

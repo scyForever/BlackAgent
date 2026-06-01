@@ -213,3 +213,41 @@ def test_entity_graph_generates_risk_profiled_tool_trade_cluster(tmp_path):
         assert tool_cluster["risk_profile"]["risk_categories"]["工具交易"] == 2
     finally:
         graph.close()
+
+
+def test_entity_graph_persists_observation_risk_categories_for_clues(tmp_path):
+    from storage.entity_graph import EntityGraphStore
+
+    db_path = tmp_path / "risk-profile-persisted.db"
+    first = EntityGraphStore(db_path=db_path)
+    try:
+        for trace_id, source_name in (("risk-persist-a", "tg-risk"), ("risk-persist-b", "forum-risk")):
+            contact = first.add_observation(
+                {"entity_type": "contact", "entity_value": "TG:riskpersist", "normalized_value": "tg:riskpersist"},
+                {
+                    "trace_id": trace_id,
+                    "source_name": source_name,
+                    "source_type": "IM" if source_name.startswith("tg") else "Forum",
+                    "risk_category": "工具交易",
+                },
+            )
+            tool = first.add_observation(
+                {"entity_type": "tool_name", "entity_value": "群控脚本", "normalized_value": "群控脚本"},
+                {"trace_id": trace_id, "source_name": source_name, "risk_category": "工具交易"},
+            )
+            first.add_relation(contact.entity_id, tool.entity_id, "CO_OCCURS_IN_RECORD", evidence_trace_ids=[trace_id])
+    finally:
+        first.close()
+
+    second = EntityGraphStore(db_path=db_path)
+    try:
+        contact_entity = next(item for item in second.cross_source_entities() if item.entity_type == "contact")
+        profile = second.risk_profile(contact_entity.entity_id)
+        clues = second.generate_clues()
+        tool_cluster = next(item for item in clues if item["clue_type"] == "entity_graph_tool_trade_cluster")
+
+        assert profile.risk_categories["工具交易"] == 2
+        assert tool_cluster["risk_category"] == "工具交易"
+        assert tool_cluster["risk_profile"]["risk_categories"]["工具交易"] == 2
+    finally:
+        second.close()

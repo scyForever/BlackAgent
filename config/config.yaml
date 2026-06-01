@@ -1,6 +1,6 @@
 app:
   name: BlackAgent
-  mode: llm_driven_investigation
+  mode: hybrid_investigation
   year: 2026
   environment: local
 

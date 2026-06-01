@@ -37,7 +37,7 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: str = "BlackAgent"
-    mode: str = "llm_driven_investigation"
+    mode: str = "hybrid_investigation"
     year: int = 2026
     environment: str = "local"
 
@@ -220,6 +220,7 @@ class RoutingProfileConfig(BaseModel):
     enable_live_collection: bool = True
     enable_llm_record_enrich: bool = True
     enable_llm_clue_refine: bool = True
+    enable_graph_clue_generation: bool = False
     llm_stage_policy: dict[str, bool] = Field(default_factory=dict)
     prefer_clue_pool: bool = True
     min_rule_confidence_for_auto_accept: float = Field(default=0.85, ge=0.0, le=1.0)
@@ -248,6 +249,7 @@ class InvestigationPolicyOverride(BaseModel):
     max_llm_refine_clues: int | None = Field(default=None, ge=1)
     enable_llm_record_enrich: bool | None = None
     enable_llm_clue_refine: bool | None = None
+    enable_graph_clue_generation: bool | None = None
     max_elapsed_seconds: int | None = Field(default=None, ge=1)
 
 

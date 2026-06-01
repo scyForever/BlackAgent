@@ -39,7 +39,7 @@ def test_e2e_current_investigation_flow_builds_reviewable_clues():
     result = _orchestrator().run("找近24小时接码群控高质量线索", records=_records())
 
     assert result.status == "completed"
-    assert result.mode == "llm_driven_investigation"
+    assert result.mode == "provided_records_pipeline"
     assert result.input_count == 3
     assert result.execution_summary["mode"] == "investigation_processing"
     assert result.execution_summary["risk_clue_count"] >= 2

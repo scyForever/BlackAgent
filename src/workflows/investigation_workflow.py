@@ -179,6 +179,7 @@ class InvestigationWorkflow:
             live_state=context.live_state,
             fresh_state=context.fresh_state,
         )
+        self._append_execution_flow_decisions(context)
         context.execution_summary = self.execution_summary_service.build(
             run_state=run_state,
             retrieval_state=retrieval_state,
@@ -247,6 +248,7 @@ class InvestigationWorkflow:
             live_state=context.live_state,
             fresh_state=context.fresh_state,
         )
+        self._append_execution_flow_decisions(context)
         context.execution_summary = self.execution_summary_service.build(
             run_state=run_state,
             retrieval_state=retrieval_state,
@@ -264,6 +266,94 @@ class InvestigationWorkflow:
         has_assets = bool(getattr(retrieval_state, "retrieved_clues", [])) or bool(getattr(semantic_state, "clues", []))
         gap = getattr(semantic_state, "evidence_gap", None)
         return bool(has_assets and getattr(gap, "is_sufficient", False))
+
+    @staticmethod
+    def _append_execution_flow_decisions(context: WorkflowContext) -> None:
+        run_state = context.run_state
+        retrieval_state = context.retrieval_state
+        semantic_state = context.semantic_state
+        live_state = context.live_state
+        fresh_state = context.fresh_state
+        refinement_state = context.refinement_state
+        if not hasattr(run_state, "flow_decision_traces"):
+            return
+
+        def append(stage: str, next_action: str, reason: str, **extra: Any) -> None:
+            trace = {"stage": stage, "next_action": next_action, "reason": reason, **extra}
+            key = (trace["stage"], trace["next_action"], trace["reason"])
+            existing = {
+                (item.get("stage"), item.get("next_action"), item.get("reason"))
+                for item in run_state.flow_decision_traces
+            }
+            if key not in existing:
+                run_state.flow_decision_traces.append(trace)
+
+        provided_records = list(getattr(retrieval_state, "provided_records", []) or [])
+        if provided_records:
+            append(
+                "provided_records",
+                "run_fresh_processing",
+                "user_provided_records_bypass_asset_preflight",
+                provided_record_count=len(provided_records),
+            )
+
+        semantic_records = list(getattr(semantic_state, "records", []) or [])
+        semantic_clues = list(getattr(semantic_state, "clues", []) or [])
+        if semantic_records or semantic_clues:
+            append(
+                "semantic_local_satisfied",
+                "merge_or_process_local_evidence",
+                "semantic_local_records_or_clues_available",
+                semantic_record_count=len(semantic_records),
+                semantic_clue_count=len(semantic_clues),
+            )
+        else:
+            append("semantic_local_empty", "consider_live_collection", "no_semantic_local_records_or_clues")
+
+        live_records = list(getattr(live_state, "records", []) or [])
+        if live_records:
+            append(
+                "live_collection_started",
+                "run_fresh_processing",
+                "live_collection_returned_records",
+                live_record_count=len(live_records),
+            )
+        else:
+            append(
+                "live_collection_disabled",
+                "run_fresh_processing" if provided_records else "continue_without_live_collection",
+                "provided_records_bypass_live_collection" if provided_records else "live_collection_disabled_or_not_required",
+                live_collection_reasons=list(getattr(live_state, "live_collection_reasons", []) or []),
+            )
+
+        fresh_records = list(getattr(fresh_state, "records", []) or [])
+        built_clues = list(getattr(fresh_state, "built_clues", []) or [])
+        if fresh_records or built_clues:
+            append(
+                "fresh_processing_started",
+                "refine_candidates",
+                "fresh_records_or_built_clues_available",
+                fresh_record_count=len(fresh_records),
+                built_clue_count=len(built_clues),
+            )
+        else:
+            append("fresh_processing_skipped", "refine_candidates", "no_fresh_records_or_built_clues")
+
+        refined_count = int(getattr(refinement_state, "actual_refined_count", 0) or 0)
+        requested_refine = int(getattr(refinement_state, "requested_max_refine", 0) or 0)
+        effective_refine = int(getattr(refinement_state, "effective_max_refine", 0) or 0)
+        merged_candidates = list(getattr(refinement_state, "merged_candidates", []) or [])
+        if refined_count > 0:
+            append("clue_refine_started", "finish_report", "llm_refine_applied", refined_clue_count=refined_count)
+        else:
+            reason = (
+                "policy_or_budget_disabled_refine"
+                if requested_refine <= 0 or effective_refine <= 0
+                else "no_refine_candidates"
+                if not merged_candidates
+                else "deterministic_candidates_did_not_require_refine"
+            )
+            append("refine_skipped", "finish_report", reason, merged_candidate_count=len(merged_candidates))
 
 
 __all__ = ["InvestigationWorkflow"]

@@ -176,6 +176,23 @@ def test_slang_variants_primary_target_is_met_without_llm():
     assert report["entity_f1"] >= 0.8
 
 
+def test_context_conflict_gold_is_reported_as_hard_negative_not_zero_f1():
+    report = evaluate(load_jsonl("tests/evaluation/context_conflict.jsonl"), profile="fast")
+
+    assert report["classification"]["evaluation_mode"] == "hard_negative"
+    assert report["classification_f1"] is None
+    assert report["hard_negative"]["tn"] + report["hard_negative"]["fp"] == 2
+
+
+def test_graph_clue_gold_auto_enables_graph_generation_even_for_fast_profile():
+    report = evaluate([], clue_records=load_jsonl("tests/evaluation/cross_source_entity_graph.jsonl"), profile="fast")
+
+    assert report["pipeline_summary"]["graph_clue_generation_enabled"] is True
+    assert report["clue"]["expected_clue_count"] == 1
+    assert report["clue"]["actual_clue_count"] >= 1
+    assert "entity_graph_tool_trade_cluster" in report["clue"]["actual_clue_types"]
+
+
 def test_hierarchical_classification_requires_and_scores_secondary_gold():
     records = [
         {

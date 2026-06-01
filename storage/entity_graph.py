@@ -37,6 +37,7 @@ class EntityObservation:
     publish_time: str | None = None
     evidence_span: str = ""
     confidence: float = 0.0
+    risk_category: str | None = None
 
     def model_dump(self) -> dict[str, Any]:
         return asdict(self)
@@ -148,6 +149,7 @@ class EntityGraphStore:
         asset = self.upsert_entity(entity, seen_at=seen_at or _record_time(record))
         trace_id = str(entity.get("source_trace_id") or entity.get("trace_id") or record.get("trace_id") or record.get("source_trace_id") or "")
         observation_id = f"obs:{asset.entity_id}:{_hash(trace_id)[:12]}"
+        risk_category = _risk_category_from_record(record)
         observation = EntityObservation(
             observation_id=observation_id,
             entity_id=asset.entity_id,
@@ -157,9 +159,9 @@ class EntityGraphStore:
             publish_time=_record_time(record),
             evidence_span=str(entity.get("entity_value") or entity.get("raw_value") or entity.get("normalized_value") or ""),
             confidence=float(entity.get("confidence") or 0.0),
+            risk_category=risk_category,
         )
         self._observations[observation_id] = observation
-        risk_category = _risk_category_from_record(record)
         if risk_category:
             self._observation_risk[observation_id] = risk_category
         self._persist_observation(observation)
@@ -356,7 +358,8 @@ class EntityGraphStore:
               source_type TEXT,
               publish_time TEXT,
               evidence_span TEXT,
-              confidence REAL
+              confidence REAL,
+              risk_category TEXT
             );
             CREATE TABLE IF NOT EXISTS entity_relation (
               relation_id TEXT PRIMARY KEY,
@@ -368,6 +371,12 @@ class EntityGraphStore:
             );
             """
         )
+        columns = {
+            str(row["name"])
+            for row in self._conn.execute("PRAGMA table_info(entity_observation)")
+        }
+        if "risk_category" not in columns:
+            self._conn.execute("ALTER TABLE entity_observation ADD COLUMN risk_category TEXT")
         self._conn.commit()
 
     def _load_from_db(self) -> None:
@@ -393,8 +402,12 @@ class EntityGraphStore:
                 publish_time=row["publish_time"],
                 evidence_span=row["evidence_span"] or "",
                 confidence=float(row["confidence"] or 0.0),
+                risk_category=row["risk_category"],
             )
             self._observations[row["observation_id"]] = observation
+            risk_category = str(row["risk_category"] or "").strip()
+            if risk_category:
+                self._observation_risk[row["observation_id"]] = risk_category
         for row in self._conn.execute("SELECT * FROM entity_relation"):
             self._relations[row["relation_id"]] = EntityRelation(
                 relation_id=row["relation_id"],
@@ -433,8 +446,8 @@ class EntityGraphStore:
         self._conn.execute(
             """
             INSERT OR REPLACE INTO entity_observation
-            (observation_id, entity_id, trace_id, source_name, source_type, publish_time, evidence_span, confidence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (observation_id, entity_id, trace_id, source_name, source_type, publish_time, evidence_span, confidence, risk_category)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 observation.observation_id,
@@ -445,6 +458,7 @@ class EntityGraphStore:
                 observation.publish_time,
                 observation.evidence_span,
                 observation.confidence,
+                observation.risk_category or self._observation_risk.get(observation.observation_id),
             ),
         )
         self._conn.commit()

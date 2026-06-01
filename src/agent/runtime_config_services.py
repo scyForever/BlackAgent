@@ -588,6 +588,7 @@ class InvestigationConfigMixin:
                     "enable_live_collection": False,
                     "enable_llm_record_enrich": False,
                     "enable_llm_clue_refine": True,
+                    "enable_graph_clue_generation": False,
                     "llm_stage_policy": {
                         "intent_parse": False,
                         "investigation_plan": False,
@@ -614,6 +615,7 @@ class InvestigationConfigMixin:
                     "enable_live_collection": True,
                     "enable_llm_record_enrich": True,
                     "enable_llm_clue_refine": True,
+                    "enable_graph_clue_generation": True,
                     "llm_stage_policy": {
                         "intent_parse": True,
                         "investigation_plan": True,
@@ -640,6 +642,7 @@ class InvestigationConfigMixin:
                     "enable_live_collection": True,
                     "enable_llm_record_enrich": True,
                     "enable_llm_clue_refine": True,
+                    "enable_graph_clue_generation": True,
                     "llm_stage_policy": {
                         "intent_parse": True,
                         "investigation_plan": True,

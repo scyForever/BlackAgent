@@ -103,7 +103,14 @@ def evaluate(
     classification_granularity: str = "auto",
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    policy = RunPolicyContext.from_profile_config(routing_profile=profile, profile_config=_profile_config(profile), budget=_budget_profile(profile))
+    classification_records = list(records)
+    entity_eval_records = list(entity_records or records)
+    hard_negative_records = list(hard_negative_records or [])
+    clue_eval_records = list(clue_records or [])
+    profile_config = _profile_config(profile)
+    if _contains_graph_clue_gold([*classification_records, *entity_eval_records, *clue_eval_records]):
+        profile_config["enable_graph_clue_generation"] = True
+    policy = RunPolicyContext.from_profile_config(routing_profile=profile, profile_config=profile_config, budget=_budget_profile(profile))
     gateway = _gateway_for_mode(llm_mode)
     budget_controller = BudgetController(RuntimeBudget.from_mapping(policy.budget or _budget_profile(profile))) if (with_budget or gateway is not None) else None
     pipeline = IntelligencePipeline(
@@ -112,10 +119,6 @@ def evaluate(
         budget_controller=budget_controller,
         load_runtime_llm_value=False,
     )
-    classification_records = list(records)
-    entity_eval_records = list(entity_records or records)
-    hard_negative_records = list(hard_negative_records or [])
-    clue_eval_records = list(clue_records or [])
 
     classification_result = pipeline.run(
         [*classification_records, *hard_negative_records],
@@ -172,6 +175,12 @@ def evaluate(
         "false_positive_rate": classification_metrics["false_positive_rate"],
         "hard_negative": classification_metrics["hard_negative"],
         "llm_calls_per_1000_records": llm_calls_per_1000,
+        "runtime_value_gate_applied": False,
+        "llm_value_gate_mode": (
+            "disabled_for_offline_evaluation"
+            if llm_mode == "off"
+            else "disabled_for_ablation_measurement"
+        ),
         "estimated_tokens_per_valid_clue": round(float((llm_budget or {}).get("estimated_tokens") or classification_result.execution_summary.get("estimated_tokens") or 0.0) / valid_clues, 4),
         "llm_mode": llm_mode,
         "budget_controller": llm_budget,
@@ -229,10 +238,16 @@ def evaluate_difficult_sets(
 
 def quality_gate_failures(report: Mapping[str, Any], args: argparse.Namespace) -> list[str]:
     failures: list[str] = []
-    if args.min_classification_f1 is not None and float(report["classification_f1"]) < args.min_classification_f1:
-        failures.append(f"classification_f1_below_threshold:{report['classification_f1']}<{args.min_classification_f1}")
-    if getattr(args, "min_primary_classification_f1", None) is not None and float(report["primary_classification_f1"]) < args.min_primary_classification_f1:
-        failures.append(f"primary_classification_f1_below_threshold:{report['primary_classification_f1']}<{args.min_primary_classification_f1}")
+    if args.min_classification_f1 is not None:
+        if report.get("classification_f1") is None:
+            failures.append("classification_f1_not_applicable:positive_gold_required")
+        elif float(report["classification_f1"]) < args.min_classification_f1:
+            failures.append(f"classification_f1_below_threshold:{report['classification_f1']}<{args.min_classification_f1}")
+    if getattr(args, "min_primary_classification_f1", None) is not None:
+        if report.get("primary_classification_f1") is None:
+            failures.append("primary_classification_f1_not_applicable:positive_gold_required")
+        elif float(report["primary_classification_f1"]) < args.min_primary_classification_f1:
+            failures.append(f"primary_classification_f1_below_threshold:{report['primary_classification_f1']}<{args.min_primary_classification_f1}")
     if getattr(args, "min_secondary_classification_f1", None) is not None:
         if report.get("secondary_classification_f1") is None:
             failures.append("secondary_classification_f1_not_applicable:secondary_gold_required")
@@ -270,6 +285,8 @@ def evaluate_classification(
         for item in actual_items
     }
     hard_tn = hard_fp = 0
+    positive_record_count = 0
+    negative_record_count = 0
     annotated_secondary_records = sum(1 for record in records if _has_secondary_gold_annotation(record))
     expected_secondary_gold_count = sum(len(expected_secondary_labels(record)) for record in records)
     requested_granularity = str(granularity or "auto").strip().lower()
@@ -287,9 +304,13 @@ def evaluate_classification(
         actual = actual_by_trace.get(trace_id, {})
         actual_primary = predicted_categories(actual)
         actual_secondary = actual_secondary_labels(actual)
-        primary_tp += len(expected_primary & actual_primary)
-        primary_fp += len(actual_primary - expected_primary)
-        primary_fn += len(expected_primary - actual_primary)
+        if expected_primary:
+            positive_record_count += 1
+            primary_tp += len(expected_primary & actual_primary)
+            primary_fp += len(actual_primary - expected_primary)
+            primary_fn += len(expected_primary - actual_primary)
+        else:
+            negative_record_count += 1
         if hierarchical_gold_ready:
             secondary_tp += len(expected_secondary & actual_secondary)
             secondary_fp += len(actual_secondary - expected_secondary)
@@ -304,7 +325,19 @@ def evaluate_classification(
                 hard_fp += 1
             else:
                 hard_tn += 1
-    primary = prf(primary_tp, primary_fp, primary_fn)
+    primary = prf(primary_tp, primary_fp, primary_fn) if positive_record_count else {
+        "precision": None,
+        "recall": None,
+        "f1": None,
+    }
+    primary_status = "completed" if positive_record_count else "no_positive_gold"
+    evaluation_mode = (
+        "hard_negative"
+        if positive_record_count == 0 and negative_record_count > 0
+        else "mixed_gold"
+        if positive_record_count > 0 and negative_record_count > 0
+        else "classification_gold"
+    )
     if hierarchical_gold_ready:
         secondary = {
             **prf(secondary_tp, secondary_fp, secondary_fn),
@@ -333,13 +366,20 @@ def evaluate_classification(
             "status": secondary_status,
             "metric_note": "hierarchical_gold_labels_required_for_hierarchical_metrics",
         }
-        overall = {**primary, "metric_note": "primary_only_f1"}
+        overall = {
+            **primary,
+            "metric_note": "primary_only_f1" if positive_record_count else "hard_negative_only_tn_fp",
+            "status": primary_status,
+        }
     return {
         "overall": overall,
-        "primary": {**primary, "tp": primary_tp, "fp": primary_fp, "fn": primary_fn},
+        "primary": {**primary, "tp": primary_tp, "fp": primary_fp, "fn": primary_fn, "status": primary_status},
         "secondary": {**secondary, "tp": secondary_tp, "fp": secondary_fp, "fn": secondary_fn},
         "hierarchical": {**hierarchical, "tp": hierarchical_tp, "fp": hierarchical_fp, "fn": hierarchical_fn},
         "granularity": resolved_granularity,
+        "evaluation_mode": evaluation_mode,
+        "positive_record_count": positive_record_count,
+        "negative_record_count": negative_record_count,
         "secondary_gold": {
             "annotated_record_count": annotated_secondary_records,
             "expected_label_count": expected_secondary_gold_count,
@@ -571,6 +611,7 @@ def _profile_config(profile: str) -> dict[str, Any]:
             "enable_live_collection": False,
             "enable_llm_record_enrich": False,
             "enable_llm_clue_refine": True,
+            "enable_graph_clue_generation": False,
         },
         "balanced": {
             "enable_llm_intent_parse": True,
@@ -578,6 +619,7 @@ def _profile_config(profile: str) -> dict[str, Any]:
             "enable_live_collection": True,
             "enable_llm_record_enrich": True,
             "enable_llm_clue_refine": True,
+            "enable_graph_clue_generation": True,
         },
         "high_recall": {
             "enable_llm_intent_parse": True,
@@ -585,6 +627,7 @@ def _profile_config(profile: str) -> dict[str, Any]:
             "enable_live_collection": True,
             "enable_llm_record_enrich": True,
             "enable_llm_clue_refine": True,
+            "enable_graph_clue_generation": True,
         },
     }
     return defaults.get(profile, defaults["balanced"])
@@ -646,6 +689,8 @@ def evaluate_ablation(
     return {
         "status": "completed",
         "mode": "llm_ablation",
+        "runtime_value_gate_applied": False,
+        "llm_value_gate_mode": "disabled_for_ablation_measurement",
         "scenarios": scenarios,
         "llm_value": comparison,
         "llm_value_gate": {
@@ -690,12 +735,12 @@ def _budget_profile(profile: str) -> dict[str, Any]:
 
 
 def _llm_value_delta(base: Mapping[str, Any], llm: Mapping[str, Any]) -> dict[str, Any]:
-    classification_delta = round(float(llm["primary_classification_f1"]) - float(base["primary_classification_f1"]), 4)
-    entity_delta = round(float(llm["entity_f1"]) - float(base["entity_f1"]), 4)
-    hard_negative_delta = round(float(llm["false_positive_rate"]) - float(base["false_positive_rate"]), 4)
-    clue_precision_delta = round(float(llm["clue_f1"]) - float(base["clue_f1"]), 4)
-    clue_recall_delta = round(float(llm["clue_recall"]) - float(base["clue_recall"]), 4)
-    llm_calls_delta = round(float(llm["llm_calls_per_1000_records"]) - float(base["llm_calls_per_1000_records"]), 4)
+    classification_delta = round(_numeric_metric(llm.get("primary_classification_f1")) - _numeric_metric(base.get("primary_classification_f1")), 4)
+    entity_delta = round(_numeric_metric(llm.get("entity_f1")) - _numeric_metric(base.get("entity_f1")), 4)
+    hard_negative_delta = round(_numeric_metric(llm.get("false_positive_rate")) - _numeric_metric(base.get("false_positive_rate")), 4)
+    clue_precision_delta = round(_numeric_metric(llm.get("clue_f1")) - _numeric_metric(base.get("clue_f1")), 4)
+    clue_recall_delta = round(_numeric_metric(llm.get("clue_recall")) - _numeric_metric(base.get("clue_recall")), 4)
+    llm_calls_delta = round(_numeric_metric(llm.get("llm_calls_per_1000_records")) - _numeric_metric(base.get("llm_calls_per_1000_records")), 4)
     token_delta = float(llm.get("profile_comparison_dimensions", {}).get("estimated_tokens") or 0) - float(base.get("profile_comparison_dimensions", {}).get("estimated_tokens") or 0)
     f1_gain = max(classification_delta, entity_delta, clue_precision_delta, 0.0)
     extra_valid_clues = max(float(llm.get("clue", {}).get("overall", {}).get("tp") or 0) - float(base.get("clue", {}).get("overall", {}).get("tp") or 0), 0.0)
@@ -736,6 +781,32 @@ def _duplicate_clue_rate(actual: list[dict[str, Any]]) -> float:
         for item in actual
     ]
     return round(1.0 - (len(set(keys)) / len(keys)), 4)
+
+
+def _contains_graph_clue_gold(records: Iterable[Mapping[str, Any]]) -> bool:
+    for record in records:
+        expected_types = record.get("expected_clue_types")
+        if isinstance(expected_types, list) and any(_is_graph_clue_type(item) for item in expected_types):
+            return True
+        expected_clues = record.get("expected_clues")
+        if isinstance(expected_clues, list):
+            for clue in expected_clues:
+                clue_type = clue.get("clue_type") if isinstance(clue, Mapping) else clue
+                if _is_graph_clue_type(clue_type):
+                    return True
+    return False
+
+
+def _is_graph_clue_type(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return text.startswith("entity_graph_") or text.startswith("graph_")
+
+
+def _numeric_metric(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 if __name__ == "__main__":

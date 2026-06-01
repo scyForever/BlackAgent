@@ -550,6 +550,7 @@ def print_summary(payload: dict[str, Any], *, show_clues: bool) -> None:
         print("\n--- execution_summary ---")
         for key in (
             "status",
+            "run_mode",
             "mode",
             "budget",
             "accepted_count",
@@ -561,6 +562,8 @@ def print_summary(payload: dict[str, Any], *, show_clues: bool) -> None:
             "playbook_count",
             "strategy_count",
             "refined_clue_count",
+            "graph_clue_generation_enabled",
+            "model_route_count",
         ):
             if key in execution_summary:
                 print(f"{key}: {execution_summary[key]}")
@@ -580,16 +583,32 @@ def print_summary(payload: dict[str, Any], *, show_clues: bool) -> None:
                 line += f" error={item.get('error')}"
             print(line)
 
-    traces = payload.get("llm_traces") or []
-    if traces:
-        print("\n--- llm_traces ---")
+    for section_name in ("llm_call_traces", "llm_item_traces", "model_route_traces", "flow_decision_traces", "safety_traces"):
+        traces = payload.get(section_name) or execution_summary.get(section_name) or []
+        if not traces:
+            continue
+        print(f"\n--- {section_name} ---")
         for item in traces:
-            print(
-                f"{item.get('stage')}: "
-                f"llm_ok={item.get('llm_ok')} "
-                f"used_fallback={item.get('used_fallback')} "
-                f"error={item.get('error')}"
-            )
+            if section_name == "model_route_traces":
+                print(
+                    f"{item.get('stage')}: "
+                    f"target={item.get('route_target')} "
+                    f"action={item.get('action')} "
+                    f"reason={item.get('reason')}"
+                )
+            elif section_name == "flow_decision_traces":
+                print(
+                    f"{item.get('stage')}: "
+                    f"next={item.get('next_action')} "
+                    f"reason={item.get('reason')}"
+                )
+            else:
+                print(
+                    f"{item.get('stage')}: "
+                    f"llm_ok={item.get('llm_ok')} "
+                    f"used_fallback={item.get('used_fallback')} "
+                    f"error={item.get('error')}"
+                )
 
     if show_clues:
         clues = list(payload.get("high_quality_clues") or []) + list(payload.get("candidate_clues") or [])

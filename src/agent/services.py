@@ -205,6 +205,8 @@ class RunStatePreparationService:
                 run_policy = run_policy.model_copy(update={"enable_llm_record_enrich": bool(override_payload["enable_llm_record_enrich"])})
             if "enable_llm_clue_refine" in override_payload:
                 run_policy = run_policy.model_copy(update={"enable_llm_clue_refine": bool(override_payload["enable_llm_clue_refine"])})
+            if "enable_graph_clue_generation" in override_payload:
+                run_policy = run_policy.model_copy(update={"enable_graph_clue_generation": bool(override_payload["enable_graph_clue_generation"])})
             run_policy = run_policy.model_copy(
                 update={
                     "llm_stage_policy": {

@@ -197,6 +197,7 @@ class RunPolicyContext(DomainModel):
     enable_live_collection: bool = True
     enable_llm_record_enrich: bool = True
     enable_llm_clue_refine: bool = True
+    enable_graph_clue_generation: bool = False
     min_rule_confidence_for_auto_accept: float = Field(default=0.85, ge=0.0, le=1.0)
     llm_stage_policy: dict[str, bool] = Field(default_factory=dict)
 
@@ -222,6 +223,7 @@ class RunPolicyContext(DomainModel):
             enable_live_collection=bool(config.get("enable_live_collection", True)),
             enable_llm_record_enrich=enable_record,
             enable_llm_clue_refine=enable_refine,
+            enable_graph_clue_generation=bool(config.get("enable_graph_clue_generation", False)),
             min_rule_confidence_for_auto_accept=float(config.get("min_rule_confidence_for_auto_accept", 0.85)),
             llm_stage_policy={
                 "intent_parse": bool(config.get("enable_llm_intent_parse", True)),

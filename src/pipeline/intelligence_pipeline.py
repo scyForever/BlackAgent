@@ -158,6 +158,7 @@ class IntelligencePipeline:
         context["policy"] = policy.model_dump()
         context["routing_profile"] = policy.routing_profile
         context["llm_stage_policy"] = dict(policy.llm_stage_policy)
+        context["enable_graph_clue_generation"] = bool(policy.enable_graph_clue_generation)
         materialized_raw = [dict(item) for item in raw_items]
         items = [_initial_pipeline_item(item) for item in materialized_raw]
         cleaned_items = [_coerce_pipeline_item(item) for item in self.clean_stage.run_batch(items, context=context)]
@@ -195,6 +196,8 @@ class IntelligencePipeline:
         typed_candidates = [_candidate_clue_from_payload(item) for item in candidate_clue_payloads]
         typed_actionable = [_actionable_clue_from_payload(item) for item in final_clues]
         typed_archived = [_archived_clue_from_payload(item) for item in archived_weak_payloads]
+        graph_candidate_count = sum(1 for item in candidate_clue_payloads if _is_graph_clue(item))
+        graph_actionable_count = sum(1 for item in final_clues if _is_graph_clue(item))
         execution_summary = {
             "status": "completed",
             "input_count": len(materialized_raw),
@@ -220,16 +223,19 @@ class IntelligencePipeline:
             "routing_profile": policy.routing_profile,
             "model_router_profile": getattr(self.model_router, "profile", None),
             "llm_stage_policy": dict(policy.llm_stage_policy),
-                "llm_value_gate": {
-                    "metrics_loaded": bool(self.llm_value_metrics),
-                    "metrics_applied": _llm_value_applies(self.llm_value_metrics, policy.routing_profile),
-                    "record_enrich_enabled": getattr(self.model_router, "record_enrich_enabled", None),
-                    "record_enrich_policy": _record_enrich_policy(policy, self.model_router),
+            "graph_clue_generation_enabled": bool(policy.enable_graph_clue_generation),
+            "graph_candidate_clue_count": graph_candidate_count,
+            "graph_actionable_clue_count": graph_actionable_count,
+            "llm_value_gate": {
+                "metrics_loaded": bool(self.llm_value_metrics),
+                "metrics_applied": _llm_value_applies(self.llm_value_metrics, policy.routing_profile),
+                "record_enrich_enabled": getattr(self.model_router, "record_enrich_enabled", None),
+                "record_enrich_policy": _record_enrich_policy(policy, self.model_router),
                 "reason": getattr(self.model_router, "value_gate_reason", "")
                 or (self.llm_value_metrics or {}).get("gate_reason"),
                 "profile": (self.llm_value_metrics or {}).get("profile"),
             },
-        "domain_contract_version": "pipeline_item_v1",
+            "domain_contract_version": "pipeline_item_v1",
             "pipeline_data_plane": "typed_first_pipeline_item_internal_legacy_snapshot_adapter",
             "entity_graph": entity_graph_summary,
             "rule_version": self.rule_registry.version_hash(),
@@ -621,6 +627,12 @@ def _cap_clues_by_type(clues: list[dict[str, Any]], limit: int) -> list[dict[str
         selected.append(clue)
         selected_ids.add(id(clue))
     return selected
+
+
+def _is_graph_clue(clue: Mapping[str, Any]) -> bool:
+    clue_type = str(clue.get("clue_type") or "").strip().lower()
+    origins = {str(item).strip().lower() for item in (clue.get("orchestration_origins") or []) if str(item).strip()}
+    return bool(clue.get("entity_graph_backend")) or clue_type.startswith("entity_graph_") or "entity_graph" in origins
 
 
 __all__ = ["IntelligencePipeline", "PipelineResult"]

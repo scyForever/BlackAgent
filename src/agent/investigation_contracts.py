@@ -86,6 +86,11 @@ class InvestigationRunResult:
     intent: dict[str, Any]
     investigation_plan: dict[str, Any]
     llm_traces: list[dict[str, Any]] = field(default_factory=list)
+    llm_call_traces: list[dict[str, Any]] = field(default_factory=list)
+    llm_item_traces: list[dict[str, Any]] = field(default_factory=list)
+    model_route_traces: list[dict[str, Any]] = field(default_factory=list)
+    flow_decision_traces: list[dict[str, Any]] = field(default_factory=list)
+    safety_traces: list[dict[str, Any]] = field(default_factory=list)
     selected_sources: list[dict[str, Any]] = field(default_factory=list)
     collection_runs: list[dict[str, Any]] = field(default_factory=list)
     execution_summary: dict[str, Any] = field(default_factory=dict)
