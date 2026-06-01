@@ -18,6 +18,7 @@ from src.workflows import WorkflowContext
 
 from .budget_controller import RuntimeBudget
 from .investigation_contracts import (
+    EvidenceGap,
     InvestigationRunResult,
     PlanExecutionControls,
     RuntimeQualityGate,
@@ -121,12 +122,20 @@ class InvestigationPhaseMixin:
                 retrieval_state=retrieval_state,
                 collect_source_records=collect_source_records,
             )
+            evidence_gap = self._evidence_gap_from_summary(
+                config=run_state.effective_config,
+                intent=run_state.intent_payload,
+                quality_gate=run_state.runtime_quality_gate,
+                retrieved_summary=retrieval_state.retrieved_summary,
+                retrieval_filters=run_state.retrieval_filters,
+                clues=retrieval_state.retrieved_clues,
+            )
             records: list[dict[str, Any]] = []
             traces: list[dict[str, Any]] = []
             clues: list[dict[str, Any]] = []
             phase_payload: dict[str, Any] | None = None
-            if not (should_collect_live and not retrieval_state.provided_records):
-                return _SemanticLocalState(records, traces, clues, phase_payload, summary, should_collect_live, live_collection_reasons)
+            if retrieval_state.provided_records:
+                return _SemanticLocalState(records, traces, clues, phase_payload, summary, should_collect_live, live_collection_reasons, evidence_gap)
     
             semantic_local_limit = self._semantic_local_limit(budget=run_state.budget)
             summary["query_limit"] = semantic_local_limit
@@ -135,8 +144,13 @@ class InvestigationPhaseMixin:
             summary["record_count"] = len(records)
             summary["graph_expanded_count"] = sum(1 for item in traces if item.get("stage") == "semantic_graph_expansion")
             if not records:
-                return _SemanticLocalState(records, traces, clues, phase_payload, summary, should_collect_live, live_collection_reasons)
+                return _SemanticLocalState(records, traces, clues, phase_payload, summary, should_collect_live, live_collection_reasons, evidence_gap)
     
+            self.offline_builder.set_runtime_controls(
+                llm_gateway=getattr(run_state, "llm_gateway", None),
+                budget_controller=run_state.budget_controller,
+                policy=run_state.run_policy,
+            )
             semantic_local_build = self.offline_builder.build(
                 records,
                 prompt_text=query,
@@ -144,6 +158,7 @@ class InvestigationPhaseMixin:
                 quality_profile=str(run_state.intent_payload.get("quality_profile") or "balanced"),
                 require_cross_source=bool(run_state.intent_payload.get("require_cross_source")),
                 require_evidence_chain=bool(run_state.intent_payload.get("require_evidence_chain", True)),
+                policy=run_state.run_policy,
             )
             phase_payload = _as_investigation_processing_summary(semantic_local_build.execution_summary)
             clues = semantic_local_build.clues
@@ -170,7 +185,16 @@ class InvestigationPhaseMixin:
                 if set(live_collection_reasons).issubset({"insufficient_high_quality_pool_clues"}):
                     should_collect_live = False
                     live_collection_reasons = ["semantic_local_high_quality_satisfied"]
-            return _SemanticLocalState(records, traces, clues, phase_payload, summary, should_collect_live, live_collection_reasons)
+            evidence_gap = self._evidence_gap_from_summary(
+                config=run_state.effective_config,
+                intent=run_state.intent_payload,
+                quality_gate=run_state.runtime_quality_gate,
+                retrieved_summary=merged_retrieved_summary,
+                retrieval_filters=run_state.retrieval_filters,
+                clues=[*retrieval_state.retrieved_clues, *clues],
+                reasons=[] if live_collection_reasons == ["semantic_local_high_quality_satisfied"] else None,
+            )
+            return _SemanticLocalState(records, traces, clues, phase_payload, summary, should_collect_live, live_collection_reasons, evidence_gap)
 
 
     def _run_live_collection_phase(
@@ -185,11 +209,12 @@ class InvestigationPhaseMixin:
         ) -> _LiveCollectionState:
             selected_sources = [dict(item) for item in run_state.selected_sources]
             live_collection_reasons = list(semantic_state.live_collection_reasons)
+            evidence_gap = semantic_state.evidence_gap
             rewrite_traces: list[dict[str, Any]] = []
             live_records: list[dict[str, Any]] = []
             collection_runs: list[dict[str, Any]] = []
             if not (semantic_state.should_collect_live and collect_source_records is not None):
-                return _LiveCollectionState(live_records, collection_runs, rewrite_traces, selected_sources, live_collection_reasons)
+                return _LiveCollectionState(live_records, collection_runs, rewrite_traces, selected_sources, live_collection_reasons, evidence_gap)
     
             collection_deadline_at = run_state.deadline_at
             planning_exhausted_before_first_collection = (
@@ -203,7 +228,7 @@ class InvestigationPhaseMixin:
                 collection_deadline_at = None
             if self._deadline_exhausted(collection_deadline_at):
                 live_collection_reasons.append("elapsed_budget_exhausted_before_live_collection")
-                return _LiveCollectionState(live_records, collection_runs, rewrite_traces, selected_sources, live_collection_reasons)
+                return _LiveCollectionState(live_records, collection_runs, rewrite_traces, selected_sources, live_collection_reasons, evidence_gap)
     
             selected_sources = self._cap_live_sources(
                 selected_sources,
@@ -214,7 +239,7 @@ class InvestigationPhaseMixin:
             collection_runs.extend(blocked_runs)
             if not selected_sources:
                 live_collection_reasons.append("all_sources_blocked_by_source_policy")
-                return _LiveCollectionState(live_records, collection_runs, rewrite_traces, selected_sources, live_collection_reasons)
+                return _LiveCollectionState(live_records, collection_runs, rewrite_traces, selected_sources, live_collection_reasons, evidence_gap)
             if (
                 run_state.plan_execution_controls.query_rewrite_policy == "off"
                 or planning_exhausted_before_first_collection
@@ -259,15 +284,90 @@ class InvestigationPhaseMixin:
                 collection_runs.extend(blocked_runs)
                 if not selected_sources:
                     live_collection_reasons.append("all_sources_blocked_by_source_policy")
-                    return _LiveCollectionState(live_records, collection_runs, rewrite_traces, selected_sources, live_collection_reasons)
+                    return _LiveCollectionState(live_records, collection_runs, rewrite_traces, selected_sources, live_collection_reasons, evidence_gap)
             live_records, collection_runs = self._collect_records_from_sources(
                 selected_sources,
                 collect_source_records=collect_source_records,
                 max_raw_records=run_state.budget["max_raw_records"],
                 max_concurrent_sources=max_concurrent_sources,
                 deadline_at=collection_deadline_at,
+                layer_recheck=self._live_collection_layer_recheck(
+                    query=query,
+                    run_state=run_state,
+                    retrieval_state=retrieval_state,
+                    semantic_state=semantic_state,
+                ),
             )
-            return _LiveCollectionState(live_records, collection_runs, rewrite_traces, selected_sources, live_collection_reasons)
+            for run in reversed(collection_runs):
+                payload = run.get("evidence_gap_after_layer")
+                if isinstance(payload, Mapping):
+                    evidence_gap = EvidenceGap.from_mapping(payload)
+                    break
+            return _LiveCollectionState(live_records, collection_runs, rewrite_traces, selected_sources, live_collection_reasons, evidence_gap)
+
+
+    def _live_collection_layer_recheck(
+            self,
+            *,
+            query: str,
+            run_state: _RunPlanningState,
+            retrieval_state: _RetrievalState,
+            semantic_state: _SemanticLocalState,
+        ) -> Any:
+            semantic_summary = self._summarize_retrieved_clues(
+                semantic_state.clues,
+                time_range_hours=self._optional_positive_int(run_state.retrieval_filters.get("time_range_hours"))
+                or self._optional_positive_int(run_state.intent_payload.get("time_range_hours")),
+                quality_gate=run_state.runtime_quality_gate,
+            )
+            base_summary = self._merge_retrieved_summary(retrieval_state.retrieved_summary, semantic_summary)
+
+            def recheck(collected_records: list[dict[str, Any]]) -> tuple[bool, str, dict[str, Any]]:
+                if not collected_records:
+                    return False, "evidence_gap_still_open_after_layer", semantic_state.evidence_gap.model_dump()
+                quick_policy = run_state.run_policy.model_copy(
+                    update={
+                        "enable_llm_record_enrich": False,
+                        "llm_stage_policy": {
+                            **run_state.run_policy.llm_stage_policy,
+                            "record_enrich": False,
+                        },
+                    }
+                )
+                self.offline_builder.set_runtime_controls(
+                    llm_gateway=getattr(run_state, "llm_gateway", None),
+                    budget_controller=run_state.budget_controller,
+                    policy=quick_policy,
+                )
+                build_result = self.offline_builder.build(
+                    collected_records,
+                    prompt_text=query,
+                    source_candidates=run_state.selected_sources or run_state.available_sources_list,
+                    quality_profile=str(run_state.intent_payload.get("quality_profile") or "balanced"),
+                    require_cross_source=bool(run_state.intent_payload.get("require_cross_source")),
+                    require_evidence_chain=bool(run_state.intent_payload.get("require_evidence_chain", True)),
+                    policy=quick_policy,
+                )
+                fresh_summary = self._summarize_retrieved_clues(
+                    build_result.clues,
+                    time_range_hours=self._optional_positive_int(run_state.retrieval_filters.get("time_range_hours"))
+                    or self._optional_positive_int(run_state.intent_payload.get("time_range_hours")),
+                    quality_gate=run_state.runtime_quality_gate,
+                )
+                merged_summary = self._merge_retrieved_summary(base_summary, fresh_summary)
+                gap = self._evidence_gap_from_summary(
+                    config=run_state.effective_config,
+                    intent=run_state.intent_payload,
+                    quality_gate=run_state.runtime_quality_gate,
+                    retrieved_summary=merged_summary,
+                    retrieval_filters=run_state.retrieval_filters,
+                    clues=[*retrieval_state.retrieved_clues, *semantic_state.clues, *build_result.clues],
+                )
+                if gap.is_sufficient and build_result.clues:
+                    return True, "evidence_gap_satisfied_after_layer", gap.model_dump()
+                return False, "evidence_gap_still_open_after_layer", gap.model_dump()
+
+            return recheck
 
 
     def _process_fresh_records(
@@ -382,6 +482,7 @@ class InvestigationPhaseMixin:
                     if trace.get("stage") in {"clue_refine", "clue_refine_item"}
                     and trace.get("trace_kind") != "llm_call"
                 ),
+                refine_target_count=sum(1 for trace in model_route_traces if trace.get("selector_selected")),
                 requested_max_refine=requested_max_refine,
                 effective_max_refine=effective_max_refine,
                 refine_budget_reasons=refine_budget_reasons,
@@ -417,6 +518,7 @@ class InvestigationPhaseMixin:
                 used_semantic_local=bool(semantic_state.records),
             )
             query_rewrite_count = sum(1 for item in live_state.selected_sources if item.get("query_rewrite_applied"))
+            final_evidence_gap = live_state.evidence_gap if live_state.evidence_gap.reasons or live_state.records else semantic_state.evidence_gap
             execution_summary = {
                 **fresh_state.phase_payload,
                 "status": "completed" if (fresh_state.records or semantic_state.clues) else "retrieved_from_clue_pool",
@@ -428,6 +530,7 @@ class InvestigationPhaseMixin:
                 "run_policy": run_state.run_policy.model_dump(),
                 "llm_stage_policy": run_state.run_policy.llm_stage_policy,
                 "refined_clue_count": refinement_state.actual_refined_count,
+                "refine_target_count": refinement_state.refine_target_count,
                 "query_rewrite_count": query_rewrite_count,
                 "query_rewrite_fallback_count": sum(1 for item in live_state.selected_sources if item.get("query_rewrite_used_fallback")),
                 "candidate_clue_hits": len(retrieval_state.retrieved_clues),
@@ -440,6 +543,8 @@ class InvestigationPhaseMixin:
                 "used_provided_records": bool(retrieval_state.provided_records),
                 "used_semantic_local_retrieval": bool(semantic_state.records),
                 "semantic_local_summary": semantic_state.summary,
+                "evidence_gap": final_evidence_gap.model_dump(),
+                "flow_decision_traces": [dict(item) for item in run_state.flow_decision_traces],
                 "orchestration_route": orchestration_route,
                 "live_collection_reasons": live_state.live_collection_reasons,
                 "elapsed_budget_exhausted": self._deadline_exhausted(run_state.deadline_at),

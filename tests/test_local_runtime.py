@@ -102,8 +102,9 @@ def test_local_runtime_prefers_existing_clue_pool_before_reprocessing():
     finally:
         runtime.close()
 
-    assert payload["execution_summary"]["mode"] == "candidate_clue_retrieval"
-    assert payload["execution_summary"]["status"] == "retrieved_from_clue_pool"
+    assert payload["execution_summary"]["mode"] in {"candidate_clue_retrieval", "hybrid_investigation"}
+    assert payload["execution_summary"]["used_clue_pool"] is True
+    assert payload["execution_summary"]["used_live_collection"] is False
     assert payload["execution_summary"]["refined_clue_count"] >= 1
 
 

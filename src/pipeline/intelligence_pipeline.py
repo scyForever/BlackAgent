@@ -126,12 +126,14 @@ class IntelligencePipeline:
         self.clue_promotion_stage = clue_promotion_stage or CluePromotionStage()
         self.score_stage = score_stage or ScoreStage()
         self.model_router = model_router or ModelRouter(profile=self.policy.routing_profile)
+        self.load_runtime_llm_value = bool(load_runtime_llm_value)
         self.llm_value_metrics = load_latest_llm_value_report() if load_runtime_llm_value else None
-        if _llm_value_applies(self.llm_value_metrics, self.policy.routing_profile) and hasattr(self.model_router, "with_llm_value_metrics"):
-            self.model_router = self.model_router.with_llm_value_metrics(
-                self.llm_value_metrics,
-                profile=self.policy.routing_profile,
-            )
+        self.model_router = _apply_runtime_llm_value_policy(
+            self.model_router,
+            metrics=self.llm_value_metrics,
+            profile=self.policy.routing_profile,
+            enabled=self.load_runtime_llm_value,
+        )
 
     def run(self, raw_items: Iterable[Mapping[str, Any]], context: Mapping[str, Any] | None = None) -> PipelineResult:
         context = dict(context or {})
@@ -139,10 +141,18 @@ class IntelligencePipeline:
         self.policy = policy
         if hasattr(self.model_router, "with_profile"):
             self.model_router = self.model_router.with_profile(policy.routing_profile)
-        if _llm_value_applies(self.llm_value_metrics, policy.routing_profile) and hasattr(self.model_router, "with_llm_value_metrics"):
-            self.model_router = self.model_router.with_llm_value_metrics(
-                self.llm_value_metrics,
+        if not policy.enable_llm_record_enrich and hasattr(self.model_router, "with_record_enrich_policy"):
+            self.model_router = self.model_router.with_record_enrich_policy(
+                enabled=True,
+                reason="policy_disabled_record_enrich_after_routing",
                 profile=policy.routing_profile,
+            )
+        else:
+            self.model_router = _apply_runtime_llm_value_policy(
+                self.model_router,
+                metrics=self.llm_value_metrics,
+                profile=policy.routing_profile,
+                enabled=self.load_runtime_llm_value,
             )
         context["policy"] = policy.model_dump()
         context["routing_profile"] = policy.routing_profile
@@ -213,6 +223,7 @@ class IntelligencePipeline:
                     "metrics_loaded": bool(self.llm_value_metrics),
                     "metrics_applied": _llm_value_applies(self.llm_value_metrics, policy.routing_profile),
                     "record_enrich_enabled": getattr(self.model_router, "record_enrich_enabled", None),
+                    "record_enrich_policy": _record_enrich_policy(policy, self.model_router),
                 "reason": getattr(self.model_router, "value_gate_reason", "")
                 or (self.llm_value_metrics or {}).get("gate_reason"),
                 "profile": (self.llm_value_metrics or {}).get("profile"),
@@ -264,7 +275,11 @@ class IntelligencePipeline:
             has_contact=bool(entity_types.intersection({"contact", "account"}) or payload.get("has_contact")),
             has_url=bool(entity_types.intersection({"url", "domain"}) or payload.get("has_url")),
             has_tool=bool("tool_name" in entity_types or payload.get("has_tool")),
-            has_conflict=bool(classification.get("conflict_status") == "CONFLICT_REVIEW" or payload.get("has_conflict")),
+            has_conflict=bool(
+                classification.get("conflict_status") == "CONFLICT_REVIEW"
+                or classification.get("review_required")
+                or payload.get("has_conflict")
+            ),
             is_duplicate=bool((item.cleaned.is_duplicate if isinstance(item, PipelineItem) and item.cleaned is not None else False) or payload.get("is_duplicate") or payload.get("duplicate_of")),
             quality_score=float((item.cleaned.quality_score if isinstance(item, PipelineItem) and item.cleaned is not None else 0.0) or payload.get("quality_score") or 0.0),
         )
@@ -316,6 +331,38 @@ def _llm_value_applies(metrics: Mapping[str, Any] | None, profile: str) -> bool:
     if not metric_profile:
         return True
     return metric_profile == str(profile or "").strip().lower()
+
+
+def _apply_runtime_llm_value_policy(
+    router: Any,
+    *,
+    metrics: Mapping[str, Any] | None,
+    profile: str,
+    enabled: bool,
+) -> Any:
+    if not enabled:
+        return router
+    if _llm_value_applies(metrics, profile) and hasattr(router, "with_llm_value_metrics"):
+        return router.with_llm_value_metrics(metrics, profile=profile)
+    if not hasattr(router, "with_record_enrich_policy"):
+        return router
+    normalized = str(profile or "").strip().lower()
+    reason = (
+        "llm_value_gate_fast_profile_record_enrich_disabled"
+        if normalized == "fast"
+        else "llm_value_report_missing_for_profile_hard_cases_only"
+        if metrics
+        else "llm_value_report_missing_hard_cases_only"
+    )
+    return router.with_record_enrich_policy(enabled=False, reason=reason, profile=profile)
+
+
+def _record_enrich_policy(policy: RunPolicyContext, router: Any) -> str:
+    if not policy.enable_llm_record_enrich:
+        return "disabled"
+    if not bool(getattr(router, "record_enrich_enabled", True)):
+        return "hard_cases_only"
+    return "enabled"
 
 
 def _initial_pipeline_item(payload: Mapping[str, Any]) -> PipelineItem:

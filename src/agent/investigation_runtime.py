@@ -21,6 +21,7 @@ from storage import ClueRepo, InMemoryClueRepo, InMemoryReviewRepo
 from .clue_ranker import ClueRanker
 from .exploration_agent import ExplorationAgent
 from .investigation_contracts import (
+    EvidenceGap,
     InvestigationRunResult,
     PlanExecutionControls,
     RuntimeQualityGate,
@@ -80,6 +81,11 @@ class InvestigationRuntime(InvestigationRuntimeMixin):
             self.model_router = ModelRouter()
             if self.llm_value_metrics:
                 self.model_router = self.model_router.with_llm_value_metrics(self.llm_value_metrics)
+            else:
+                self.model_router = self.model_router.with_record_enrich_policy(
+                    enabled=False,
+                    reason="llm_value_report_missing_hard_cases_only",
+                )
             self.clue_ranker = ClueRanker()
             self.exploration_agent = ExplorationAgent()
             self.intent_parser = LLMUserRequestParser(llm_gateway)
@@ -226,6 +232,7 @@ class InvestigationRuntime(InvestigationRuntimeMixin):
 __all__ = [
     "InvestigationRuntime",
     "InvestigationRunResult",
+    "EvidenceGap",
     "PlanExecutionControls",
     "RuntimeQualityGate",
     "SourceCollector",

@@ -54,6 +54,21 @@ class ModelRouter:
             routing_rules=self.routing_rules,
         )
 
+    def with_record_enrich_policy(
+        self,
+        *,
+        enabled: bool,
+        reason: str,
+        profile: str | None = None,
+    ) -> "ModelRouter":
+        return type(self)(
+            _normalize_profile(profile or self.profile),
+            record_enrich_enabled=enabled,
+            value_gate_reason=reason,
+            rule_registry=self.rule_registry,
+            routing_rules=self.routing_rules,
+        )
+
     def with_llm_value_metrics(
         self,
         recent_metrics: Mapping[str, Any] | None,
@@ -109,7 +124,8 @@ class ModelRouter:
             and not has_conflict
         ):
             return ModelRouteDecision("deterministic_only", "high_confidence_rule_and_entities", 2, 0, 0, False)
-        if not self.record_enrich_enabled and not has_conflict:
+        hard_case_despite_value_gate = has_conflict
+        if not self.record_enrich_enabled and not hard_case_despite_value_gate:
             return ModelRouteDecision(
                 "deterministic_only",
                 self.value_gate_reason or "llm_value_gate_disabled_record_enrich",

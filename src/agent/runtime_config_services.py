@@ -18,6 +18,7 @@ from src.workflows import WorkflowContext
 
 from .budget_controller import RuntimeBudget
 from .investigation_contracts import (
+    EvidenceGap,
     InvestigationRunResult,
     PlanExecutionControls,
     RuntimeQualityGate,
@@ -127,6 +128,113 @@ class InvestigationConfigMixin:
             if not reasons:
                 return False, []
             return True, reasons
+
+
+    def _evidence_gap_from_summary(
+            self,
+            *,
+            config: InvestigationConfig,
+            intent: Mapping[str, Any],
+            quality_gate: RuntimeQualityGate,
+            retrieved_summary: Mapping[str, Any],
+            retrieval_filters: Mapping[str, Any],
+            clues: list[dict[str, Any]] | None = None,
+            reasons: list[str] | None = None,
+        ) -> EvidenceGap:
+            active_reasons = list(
+                reasons
+                if reasons is not None
+                else self._live_collection_reasons_from_summary(
+                    config=config,
+                    intent=intent,
+                    quality_gate=quality_gate,
+                    retrieved_summary=retrieved_summary,
+                    retrieval_filters=retrieval_filters,
+                )
+            )
+            current_high_quality = int(retrieved_summary.get("high_quality_count") or 0)
+            required_high_quality = self._required_high_quality_count(config=config, quality_gate=quality_gate)
+            missing_entity_types = self._missing_entity_types(clues or [])
+            need_contact_or_url = bool(
+                "evidence_chain_not_satisfied_by_pool" in active_reasons
+                and {"contact", "url", "domain"}.intersection(missing_entity_types)
+            )
+            need_specific_source_types = self._source_types_for_gap(
+                reasons=active_reasons,
+                missing_entity_types=missing_entity_types,
+            )
+            return EvidenceGap(
+                need_more_samples=(
+                    "no_candidate_clues_in_pool" in active_reasons
+                    or "insufficient_high_quality_pool_clues" in active_reasons
+                ),
+                need_recent_signals=(
+                    "need_fresh_signals_for_short_time_window" in active_reasons
+                    or "need_recent_high_quality_signals" in active_reasons
+                ),
+                need_cross_source_support="insufficient_cross_source_support" in active_reasons,
+                need_entity_chain="evidence_chain_not_satisfied_by_pool" in active_reasons,
+                need_contact_or_url=need_contact_or_url,
+                need_specific_source_types=need_specific_source_types,
+                missing_entity_types=missing_entity_types,
+                current_high_quality_count=current_high_quality,
+                required_high_quality_count=required_high_quality,
+                reasons=active_reasons,
+            )
+
+
+    def _required_high_quality_count(
+            self,
+            *,
+            config: InvestigationConfig,
+            quality_gate: RuntimeQualityGate,
+        ) -> int:
+            min_pool = (
+                config.high_precision_min_pool_high_quality_count
+                if quality_gate.quality_profile == "high_precision"
+                else config.balanced_min_pool_high_quality_count
+            )
+            if quality_gate.require_evidence_chain:
+                min_pool = max(min_pool, config.evidence_chain_min_pool_high_quality_count)
+            return int(min_pool)
+
+    @staticmethod
+    def _missing_entity_types(clues: list[dict[str, Any]]) -> list[str]:
+            observed: set[str] = set()
+            text_parts: list[str] = []
+            for clue in clues:
+                for entity_type in clue.get("entity_types") or []:
+                    text = str(entity_type).strip().lower()
+                    if text:
+                        observed.add(text)
+                text_parts.extend(str(item).lower() for item in (clue.get("entity_values") or []) if str(item).strip())
+                text_parts.append(str(clue.get("key") or "").lower())
+                text_parts.append(str(clue.get("description") or clue.get("summary") or "").lower())
+            joined = " ".join(text_parts)
+            if "tg:" in joined or "telegram" in joined or "contact" in joined:
+                observed.add("contact")
+            if "http" in joined or ".com" in joined or "domain" in joined or "url" in joined:
+                observed.add("url")
+            if "群控" in joined or "脚本" in joined or "tool" in joined:
+                observed.add("tool_name")
+            required = ["contact", "url", "domain", "tool_name"]
+            return [item for item in required if item not in observed]
+
+    @staticmethod
+    def _source_types_for_gap(*, reasons: list[str], missing_entity_types: list[str]) -> list[str]:
+            wanted: list[str] = []
+            if "insufficient_cross_source_support" in reasons:
+                wanted.extend(["im", "forum", "threat_intel"])
+            missing = set(missing_entity_types)
+            if {"contact", "tool_name"}.intersection(missing):
+                wanted.extend(["im", "telegram"])
+            if {"url", "domain"}.intersection(missing):
+                wanted.extend(["forum", "threat_intel"])
+            deduped: list[str] = []
+            for item in wanted:
+                if item not in deduped:
+                    deduped.append(item)
+            return deduped
 
 
     def _plan_execution_controls(self, plan: Mapping[str, Any]) -> PlanExecutionControls:

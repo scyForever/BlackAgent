@@ -3,6 +3,7 @@ from src.agent import (
     BudgetController,
     ClueMergeService,
     ClueRanker,
+    EvidenceGap,
     FreshProcessingService,
     IntentPlanningService,
     InvestigationTelemetryService,
@@ -116,6 +117,130 @@ def test_model_router_budget_controller_and_clue_ranker_control_refinement_spend
     denied_ledger = denied_budget.snapshot()["llm_budget"]
     assert denied_ledger["attempted_calls"] == 1
     assert denied_ledger["denied_calls"] == 1
+
+
+def test_refine_target_selector_skips_weak_graph_clues_and_targets_near_threshold():
+    orchestrator = InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
+    gate = orchestrator._runtime_quality_gate(
+        intent={"quality_profile": "balanced"},
+        plan={"quality_gate": {"minimum_quality_score": 0.65, "require_cross_source": False, "require_evidence_chain": True}},
+        policy_override=None,
+    )
+
+    high_quality, candidates, traces, routes, _snapshot = orchestrator.clue_refinement.refine(
+        [
+            {
+                "clue_id": "weak-graph",
+                "clue_type": "graph_shared_entity_cross_source",
+                "risk_category": "unknown",
+                "retrieval_source": "entity_graph",
+                "entity_graph_backend": "entity_graph_store",
+                "quality_score": 0.62,
+                "confidence": 0.6,
+                "evidence_trace_ids": ["g1"],
+                "source_names": ["graph-only"],
+                "entity_values": [],
+            },
+            {
+                "clue_id": "near-threshold",
+                "clue_type": "shared_contact_48h",
+                "risk_category": "工具交易",
+                "quality_score": 0.6,
+                "confidence": 0.63,
+                "evidence_trace_ids": ["n1"],
+                "source_names": ["tg-near"],
+                "entity_values": ["TG:near01"],
+            },
+        ],
+        query="找群控接码线索",
+        intent={"risk_types": ["工具交易"], "quality_profile": "balanced"},
+        quality_gate=gate,
+        max_refine=2,
+        routing_profile="balanced",
+    )
+
+    assert high_quality or candidates
+    assert len(routes) > sum(1 for route in routes if route.get("selector_selected"))
+    assert any(route["clue_id"] == "weak-graph" and route["selector_selected"] is False for route in routes)
+    assert any(route["clue_id"] == "near-threshold" and route["selector_selected"] is True for route in routes)
+    assert any(trace.get("stage") == "clue_refine" for trace in traces)
+
+
+def test_llm_value_gate_missing_report_routes_hard_cases_only(monkeypatch):
+    monkeypatch.setattr("src.pipeline.intelligence_pipeline.load_latest_llm_value_report", lambda: None)
+    pipeline = IntelligencePipeline(
+        clean_stage=PassThroughStage(),
+        dedup_stage=PassThroughStage(),
+        triage_stage=PassThroughStage(),
+        classify_stage=PassThroughStage(),
+        extract_stage=PassThroughStage(),
+        llm_enrich_stage=LLMEnrichStage(llm_gateway=LLMGateway(dry_run=True, mock=True)),
+        correlate_stage=PassThroughStage(),
+        score_stage=PassThroughStage(),
+        model_router=ModelRouter(),
+    )
+
+    low_value = pipeline.run(
+        [
+            {
+                "trace_id": "value-low",
+                "classification": {"risk_category": "账号交易", "confidence": 0.82},
+                "confidence": 0.82,
+                "risk_score": 0.4,
+                "quality_score": 0.7,
+                "has_contact": True,
+                "entity_count": 1,
+            }
+        ]
+    )
+    hard_case = pipeline.run(
+        [
+            {
+                "trace_id": "value-hard",
+                "classification": {"risk_category": "账号交易", "confidence": 0.5, "review_required": True},
+                "confidence": 0.5,
+                "risk_score": 0.86,
+                "quality_score": 0.7,
+                "has_contact": True,
+                "entity_count": 1,
+            }
+        ]
+    )
+
+    assert low_value.routed[0]["action"] == "deterministic_only"
+    assert hard_case.routed[0]["action"] == "llm_classify_extract"
+    assert low_value.execution_summary["llm_value_gate"]["record_enrich_policy"] == "hard_cases_only"
+    assert low_value.execution_summary["llm_value_gate"]["reason"] == "llm_value_report_missing_hard_cases_only"
+
+
+def test_source_selection_uses_structured_evidence_gap():
+    orchestrator = InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
+    selected = orchestrator._select_sources(
+        {"source_selection_strategy": {"match_query_keywords": ["接码"]}},
+        [
+            {
+                "source_name": "generic-im",
+                "source_type": "IM",
+                "search_query": "site:t.me/s 接码",
+            },
+            {
+                "source_name": "domain-forum",
+                "source_type": "Forum",
+                "search_query": "domain url 接码",
+                "entity_focus": "domain",
+            },
+        ],
+        max_sources=1,
+        risk_types=["接码"],
+        evidence_gap=EvidenceGap(
+            need_cross_source_support=True,
+            missing_entity_types=["domain"],
+            need_specific_source_types=["forum"],
+            reasons=["insufficient_cross_source_support", "evidence_chain_not_satisfied_by_pool"],
+        ),
+    )
+
+    assert selected[0]["source_name"] == "domain-forum"
 
 
 def test_application_service_and_runtime_container_wrap_existing_runtime_dependencies():
@@ -704,7 +829,7 @@ def test_llm_enrich_stage_budget_denial_keeps_rule_result():
         [
             {
                 "trace_id": "llm-budget-denied",
-                "classification": {"risk_category": "账号交易", "confidence": 0.5},
+                "classification": {"risk_category": "账号交易", "confidence": 0.5, "review_required": True},
                 "confidence": 0.5,
                 "risk_score": 0.8,
                 "quality_score": 0.7,

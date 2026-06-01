@@ -4,6 +4,7 @@ from .budget_manager import BudgetExceeded, BudgetManager, BudgetSnapshot
 from .budget_controller import BudgetController, BudgetLedger, BudgetLease, RuntimeBudget, StageBudgetStats
 from .clue_ranker import ClueRanker, RankedClue
 from .exploration_agent import ExplorationAgent
+from .investigation_contracts import EvidenceGap
 from .model_router import ModelRouteDecision, ModelRouter, RouteAction
 from .policy_guard import PolicyGuard, SafetyPolicyViolation
 from .query_rewriter import LLMSourceQueryRewriter, QueryRewriteTrace
@@ -45,6 +46,7 @@ __all__ = [
     "ExplorationAgent",
     "ExecutionSummaryService",
     "ExecutionSummaryDependencies",
+    "EvidenceGap",
     "FreshProcessingService",
     "FreshProcessingDependencies",
     "InitialCandidateRetrievalService",
@@ -84,10 +86,11 @@ __all__ = [
 def __getattr__(name: str):
     """Load the top-level orchestrator lazily to avoid pipeline import cycles."""
 
-    if name in {"InvestigationOrchestrator", "InvestigationRunResult"}:
-        from .investigation_orchestrator import InvestigationOrchestrator, InvestigationRunResult
+    if name in {"InvestigationOrchestrator", "InvestigationRunResult", "EvidenceGap"}:
+        from .investigation_orchestrator import EvidenceGap, InvestigationOrchestrator, InvestigationRunResult
 
         return {
+            "EvidenceGap": EvidenceGap,
             "InvestigationOrchestrator": InvestigationOrchestrator,
             "InvestigationRunResult": InvestigationRunResult,
         }[name]
