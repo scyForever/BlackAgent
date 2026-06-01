@@ -216,6 +216,10 @@ class InvestigationClueMixin:
                         "failed_count": 0,
                         "cache_hit_count": 0,
                         "estimated_tokens": 0,
+                        "gateway_request_estimated_tokens": 0,
+                        "prompt_estimated_tokens": 0,
+                        "completion_token_limit": 0,
+                        "actual_usage_tokens": None,
                         "elapsed_ms": 0,
                     },
                 )
@@ -226,17 +230,35 @@ class InvestigationClueMixin:
                     bucket["failed_count"] += 1
                 if bool(item.get("cache_hit")):
                     bucket["cache_hit_count"] += 1
-                bucket["estimated_tokens"] += int(item.get("prompt_tokens_estimated") or 0) + int(item.get("completion_tokens_limit") or 0)
+                prompt_tokens = int(item.get("prompt_estimated_tokens") or item.get("prompt_tokens_estimated") or 0)
+                completion_limit = int(item.get("completion_token_limit") or item.get("completion_tokens_limit") or 0)
+                request_tokens = int(item.get("gateway_request_estimated_tokens") or prompt_tokens + completion_limit)
+                bucket["estimated_tokens"] += request_tokens
+                bucket["gateway_request_estimated_tokens"] += request_tokens
+                bucket["prompt_estimated_tokens"] += prompt_tokens
+                bucket["completion_token_limit"] += completion_limit
                 bucket["elapsed_ms"] += int(item.get("elapsed_ms") or 0)
+            prompt_total = sum(int(item.get("prompt_estimated_tokens") or item.get("prompt_tokens_estimated") or 0) for item in items)
+            completion_total = sum(int(item.get("completion_token_limit") or item.get("completion_tokens_limit") or 0) for item in items)
+            gateway_total = sum(
+                int(
+                    item.get("gateway_request_estimated_tokens")
+                    or int(item.get("prompt_estimated_tokens") or item.get("prompt_tokens_estimated") or 0)
+                    + int(item.get("completion_token_limit") or item.get("completion_tokens_limit") or 0)
+                )
+                for item in items
+            )
             return {
                 "call_count": len(items),
                 "success_count": sum(1 for item in items if bool(item.get("ok"))),
                 "failed_count": sum(1 for item in items if not bool(item.get("ok"))),
                 "cache_hit_count": sum(1 for item in items if bool(item.get("cache_hit"))),
-                "estimated_tokens": sum(
-                    int(item.get("prompt_tokens_estimated") or 0) + int(item.get("completion_tokens_limit") or 0)
-                    for item in items
-                ),
+                "estimated_tokens": gateway_total,
+                "gateway_request_estimated_tokens": gateway_total,
+                "prompt_estimated_tokens": prompt_total,
+                "completion_token_limit": completion_total,
+                "actual_usage_tokens": None,
+                "token_estimation_policy": "heuristic_chars_div_4_plus_completion_limit",
                 "by_stage": by_stage,
             }
 

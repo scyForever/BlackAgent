@@ -7,11 +7,16 @@ from typing import Any, Iterable, Mapping
 
 from src.agent.model_router import ModelRouter
 from src.domain import (
+    ActionableClue,
+    ArchivedWeakClue,
+    CandidateClue,
     CleanedRecord,
     ClassificationResolution,
     ExtractedEntity,
     IntelRecord,
     PipelineItem,
+    PipelineExecutionSummary,
+    PipelineLegacySnapshot,
     RiskClassification,
     RoutedRecord,
     RunPolicyContext,
@@ -28,21 +33,62 @@ from src.pipeline.stages import (
     ScoreStage,
 )
 from src.rules import RuleRegistry
+from src.evaluation.llm_ablation import load_latest_llm_value_report
 
 
 @dataclass
 class PipelineResult:
-    cleaned: list[dict[str, Any]] = field(default_factory=list)
-    classified: list[dict[str, Any]] = field(default_factory=list)
-    entities: list[dict[str, Any]] = field(default_factory=list)
-    routed: list[dict[str, Any]] = field(default_factory=list)
-    enriched: list[dict[str, Any]] = field(default_factory=list)
-    clues: list[dict[str, Any]] = field(default_factory=list)
     items: list[PipelineItem] = field(default_factory=list)
-    execution_summary: dict[str, Any] = field(default_factory=dict)
+    candidate_clues: list[CandidateClue] = field(default_factory=list)
+    actionable_clues: list[ActionableClue] = field(default_factory=list)
+    archived_weak_clues: list[ArchivedWeakClue] = field(default_factory=list)
+    execution_summary: PipelineExecutionSummary = field(default_factory=PipelineExecutionSummary)
+    legacy_snapshot: PipelineLegacySnapshot = field(default_factory=PipelineLegacySnapshot)
 
     def model_dump(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "items": [item.model_dump() for item in self.items],
+            "candidate_clues": [item.model_dump() for item in self.candidate_clues],
+            "actionable_clues": [item.model_dump() for item in self.actionable_clues],
+            "archived_weak_clues": [item.model_dump() for item in self.archived_weak_clues],
+            "execution_summary": self.execution_summary.model_dump(),
+            "legacy_snapshot": self.legacy_snapshot.model_dump(),
+        }
+
+    def to_legacy_dict(self) -> dict[str, Any]:
+        """Return the dict-compatible shape expected by existing CLI/tests."""
+
+        payload = self.legacy_snapshot.model_dump()
+        payload["items"] = [item.model_dump() for item in self.items]
+        payload["candidate_clues"] = [item.model_dump() for item in self.candidate_clues]
+        payload["actionable_clues"] = [item.model_dump() for item in self.actionable_clues]
+        payload["archived_weak_clues"] = [item.model_dump() for item in self.archived_weak_clues]
+        payload["typed_execution_summary"] = self.execution_summary.model_dump()
+        return payload
+
+    @property
+    def cleaned(self) -> list[dict[str, Any]]:
+        return self.legacy_snapshot.cleaned
+
+    @property
+    def classified(self) -> list[dict[str, Any]]:
+        return self.legacy_snapshot.classified
+
+    @property
+    def entities(self) -> list[dict[str, Any]]:
+        return self.legacy_snapshot.entities
+
+    @property
+    def routed(self) -> list[dict[str, Any]]:
+        return self.legacy_snapshot.routed
+
+    @property
+    def enriched(self) -> list[dict[str, Any]]:
+        return self.legacy_snapshot.enriched
+
+    @property
+    def clues(self) -> list[dict[str, Any]]:
+        return self.legacy_snapshot.clues
 
 
 class IntelligencePipeline:
@@ -64,6 +110,7 @@ class IntelligencePipeline:
         llm_gateway: Any | None = None,
         budget_controller: Any | None = None,
         policy: RunPolicyContext | Mapping[str, Any] | None = None,
+        load_runtime_llm_value: bool = True,
     ) -> None:
         self.policy = _coerce_policy(policy)
         self.clean_stage = clean_stage or CleanStage()
@@ -79,6 +126,12 @@ class IntelligencePipeline:
         self.clue_promotion_stage = clue_promotion_stage or CluePromotionStage()
         self.score_stage = score_stage or ScoreStage()
         self.model_router = model_router or ModelRouter(profile=self.policy.routing_profile)
+        self.llm_value_metrics = load_latest_llm_value_report() if load_runtime_llm_value else None
+        if _llm_value_applies(self.llm_value_metrics, self.policy.routing_profile) and hasattr(self.model_router, "with_llm_value_metrics"):
+            self.model_router = self.model_router.with_llm_value_metrics(
+                self.llm_value_metrics,
+                profile=self.policy.routing_profile,
+            )
 
     def run(self, raw_items: Iterable[Mapping[str, Any]], context: Mapping[str, Any] | None = None) -> PipelineResult:
         context = dict(context or {})
@@ -86,6 +139,11 @@ class IntelligencePipeline:
         self.policy = policy
         if hasattr(self.model_router, "with_profile"):
             self.model_router = self.model_router.with_profile(policy.routing_profile)
+        if _llm_value_applies(self.llm_value_metrics, policy.routing_profile) and hasattr(self.model_router, "with_llm_value_metrics"):
+            self.model_router = self.model_router.with_llm_value_metrics(
+                self.llm_value_metrics,
+                profile=policy.routing_profile,
+            )
         context["policy"] = policy.model_dump()
         context["routing_profile"] = policy.routing_profile
         context["llm_stage_policy"] = dict(policy.llm_stage_policy)
@@ -99,11 +157,11 @@ class IntelligencePipeline:
         classified_payloads = [_payload_from_item(item) for item in classified_items]
         extracted_items = [_coerce_pipeline_item(item) for item in self.extract_stage.run_batch(classified_items, context=context)]
         extracted_payloads = [_payload_from_item(item) for item in extracted_items]
-        routed = [self._route_item(item) for item in extracted_payloads]
+        routed = [self._route_item(item) for item in extracted_items]
         enriched_items = self._run_llm_enrichment(extracted_items, routed=routed, context=context)
         enriched = [_payload_from_item(item) for item in enriched_items]
-        classifications = [_final_classification(item) for item in enriched if isinstance(item.get("classification"), Mapping)]
-        entities = [dict(entity) for item in enriched for entity in (item.get("entities") or []) if isinstance(entity, Mapping)]
+        classifications = [_final_classification_from_item(item) for item in enriched_items if _classification_available(item)]
+        entities = [_legacy_entity_payload(entity) for item in enriched_items for entity in item.entities]
         stage_context = {**context, "classifications": classifications, "entities": entities}
         correlated = self.correlate_stage.run_batch(enriched_items, routed=routed, context=stage_context)
         promoted = self.clue_promotion_stage.run_batch(correlated, context=stage_context)
@@ -119,59 +177,96 @@ class IntelligencePipeline:
             }
         max_candidate_clues = _positive_int(policy.budget.get("max_candidate_clues") if isinstance(policy.budget, Mapping) else None)
         final_clues = [dict(item) for item in scored]
-        candidate_clues = [dict(item) for item in getattr(self.clue_promotion_stage, "candidate_clues", correlated)]
-        archived_weak_clues = [dict(item) for item in getattr(self.clue_promotion_stage, "archived_weak_clues", [])]
+        candidate_clue_payloads = [dict(item) for item in getattr(self.clue_promotion_stage, "candidate_clues", correlated)]
+        archived_weak_payloads = [dict(item) for item in getattr(self.clue_promotion_stage, "archived_weak_clues", [])]
         if max_candidate_clues is not None:
             final_clues = _cap_clues_by_type(final_clues, max_candidate_clues)
-        return PipelineResult(
+        typed_candidates = [_candidate_clue_from_payload(item) for item in candidate_clue_payloads]
+        typed_actionable = [_actionable_clue_from_payload(item) for item in final_clues]
+        typed_archived = [_archived_clue_from_payload(item) for item in archived_weak_payloads]
+        execution_summary = {
+            "status": "completed",
+            "input_count": len(materialized_raw),
+            "cleaned_count": len(cleaned),
+            "classified_count": len(classifications),
+            "entity_count": len(entities),
+            "candidate_clue_count": len(typed_candidates),
+            "actionable_clue_count": len(final_clues),
+            "archived_weak_clue_count": len(typed_archived),
+            "clue_count": len(final_clues),
+            "clue_layering": {
+                "candidate_clues": len(typed_candidates),
+                "actionable_clues": len(final_clues),
+                "archived_weak_clues": len(typed_archived),
+            },
+            "llm_enrich_count": sum(1 for item in enriched if item.get("llm_enrichment")),
+            "llm_enrich_skipped_count": sum(1 for item in enriched if item.get("llm_enrich_skipped_reason")),
+            "llm_enrich_trace_count": len(getattr(self.llm_enrich_stage, "traces", []) or []),
+            "llm_call_traces": list(getattr(self.llm_enrich_stage, "call_traces", []) or []),
+            "llm_item_traces": list(getattr(self.llm_enrich_stage, "item_traces", []) or []),
+            "stage_mode": "real_components",
+            "pipeline_backend": "intelligence_pipeline",
+            "routing_profile": policy.routing_profile,
+            "model_router_profile": getattr(self.model_router, "profile", None),
+            "llm_stage_policy": dict(policy.llm_stage_policy),
+                "llm_value_gate": {
+                    "metrics_loaded": bool(self.llm_value_metrics),
+                    "metrics_applied": _llm_value_applies(self.llm_value_metrics, policy.routing_profile),
+                    "record_enrich_enabled": getattr(self.model_router, "record_enrich_enabled", None),
+                "reason": getattr(self.model_router, "value_gate_reason", "")
+                or (self.llm_value_metrics or {}).get("gate_reason"),
+                "profile": (self.llm_value_metrics or {}).get("profile"),
+            },
+        "domain_contract_version": "pipeline_item_v1",
+            "pipeline_data_plane": "typed_first_pipeline_item_internal_legacy_snapshot_adapter",
+            "entity_graph": entity_graph_summary,
+            "rule_version": self.rule_registry.version_hash(),
+        }
+        typed_summary = PipelineExecutionSummary(
+            status="completed",
+            input_count=len(materialized_raw),
+            cleaned_count=len(cleaned),
+            classified_count=len(classifications),
+            entity_count=len(entities),
+            candidate_clue_count=len(typed_candidates),
+            actionable_clue_count=len(final_clues),
+            archived_weak_clue_count=len(typed_archived),
+            rule_version=self.rule_registry.version_hash(),
+            extra={key: value for key, value in execution_summary.items() if key not in PipelineExecutionSummary.model_fields},
+        )
+        legacy_snapshot = PipelineLegacySnapshot(
             cleaned=[dict(item) for item in cleaned],
             classified=classifications,
             entities=entities,
             routed=routed,
             enriched=[dict(item) for item in enriched],
             clues=final_clues,
+            execution_summary=execution_summary,
+        )
+        return PipelineResult(
             items=typed_items,
-            execution_summary={
-                "status": "completed",
-                "input_count": len(materialized_raw),
-                "cleaned_count": len(cleaned),
-                "classified_count": len(classifications),
-                "entity_count": len(entities),
-                "candidate_clue_count": len(candidate_clues),
-                "actionable_clue_count": len(final_clues),
-                "archived_weak_clue_count": len(archived_weak_clues),
-                "clue_count": len(final_clues),
-                "clue_layering": {
-                    "candidate_clues": len(candidate_clues),
-                    "actionable_clues": len(final_clues),
-                    "archived_weak_clues": len(archived_weak_clues),
-                },
-                "llm_enrich_count": sum(1 for item in enriched if item.get("llm_enrichment")),
-                "llm_enrich_skipped_count": sum(1 for item in enriched if item.get("llm_enrich_skipped_reason")),
-                "llm_enrich_trace_count": len(getattr(self.llm_enrich_stage, "traces", []) or []),
-                "stage_mode": "real_components",
-                "pipeline_backend": "intelligence_pipeline",
-                "routing_profile": policy.routing_profile,
-                "model_router_profile": getattr(self.model_router, "profile", None),
-                "llm_stage_policy": dict(policy.llm_stage_policy),
-                "domain_contract_version": "pipeline_item_v1",
-                "pipeline_data_plane": "typed_pipeline_item_contract_primary_dict_compat_output",
-                "entity_graph": entity_graph_summary,
-                "rule_version": self.rule_registry.version_hash(),
-            },
+            candidate_clues=typed_candidates,
+            actionable_clues=typed_actionable,
+            archived_weak_clues=typed_archived,
+            execution_summary=typed_summary,
+            legacy_snapshot=legacy_snapshot,
         )
 
-    def _route_item(self, item: Mapping[str, Any]) -> dict[str, Any]:
+    def _route_item(self, item: Mapping[str, Any] | PipelineItem) -> dict[str, Any]:
+        payload = _payload_from_item(item)
+        classification = _final_classification_from_item(item) if isinstance(item, PipelineItem) else _final_classification(payload)
+        entities = item.entities if isinstance(item, PipelineItem) else _entities_from_payload(payload, payload.get("entities") or [])
+        entity_types = {entity.entity_type.lower() for entity in entities}
         decision = self.model_router.decide_record(
-            rule_confidence=float(item.get("confidence") or item.get("rule_confidence") or 0.0),
-            risk_score=float(item.get("risk_score") or 0.0),
-            entity_count=int(item.get("entity_count") or len(item.get("entities") or [])),
-            has_contact=bool(item.get("has_contact")),
-            has_url=bool(item.get("has_url")),
-            has_tool=bool(item.get("has_tool")),
-            has_conflict=bool(item.get("has_conflict")),
-            is_duplicate=bool(item.get("is_duplicate") or item.get("duplicate_of")),
-            quality_score=float(item.get("quality_score") or 0.0),
+            rule_confidence=float(classification.get("confidence") or payload.get("rule_confidence") or payload.get("confidence") or 0.0),
+            risk_score=float(payload.get("risk_score") or 0.0),
+            entity_count=len(entities) or int(payload.get("entity_count") or 0),
+            has_contact=bool(entity_types.intersection({"contact", "account"}) or payload.get("has_contact")),
+            has_url=bool(entity_types.intersection({"url", "domain"}) or payload.get("has_url")),
+            has_tool=bool("tool_name" in entity_types or payload.get("has_tool")),
+            has_conflict=bool(classification.get("conflict_status") == "CONFLICT_REVIEW" or payload.get("has_conflict")),
+            is_duplicate=bool((item.cleaned.is_duplicate if isinstance(item, PipelineItem) and item.cleaned is not None else False) or payload.get("is_duplicate") or payload.get("duplicate_of")),
+            quality_score=float((item.cleaned.quality_score if isinstance(item, PipelineItem) and item.cleaned is not None else 0.0) or payload.get("quality_score") or 0.0),
         )
         return decision.model_dump()
 
@@ -198,9 +293,9 @@ class IntelligencePipeline:
             context={
                 **dict(context),
                 "allowed_risk_types": [
-                    str(_payload_from_item(item).get("risk_category") or "")
+                    str(_final_classification_from_item(item).get("risk_category") or "")
                     for item in items
-                    if _payload_from_item(item).get("risk_category")
+                    if _final_classification_from_item(item).get("risk_category")
                 ],
             },
         )]
@@ -212,6 +307,15 @@ def _coerce_policy(value: RunPolicyContext | Mapping[str, Any] | None) -> RunPol
     if isinstance(value, Mapping):
         return RunPolicyContext.model_validate(dict(value))
     return RunPolicyContext()
+
+
+def _llm_value_applies(metrics: Mapping[str, Any] | None, profile: str) -> bool:
+    if not metrics:
+        return False
+    metric_profile = str(metrics.get("profile") or "").strip().lower()
+    if not metric_profile:
+        return True
+    return metric_profile == str(profile or "").strip().lower()
 
 
 def _initial_pipeline_item(payload: Mapping[str, Any]) -> PipelineItem:
@@ -310,6 +414,53 @@ def _final_classification(payload: Mapping[str, Any]) -> dict[str, Any]:
     return dict(classification)
 
 
+def _final_classification_from_item(item: PipelineItem | Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(item, PipelineItem):
+        return _final_classification(dict(item))
+    if item.classification_resolution is not None:
+        return dict(item.classification_resolution.final)
+    if item.classification is not None:
+        return item.classification.model_dump()
+    return _final_classification(item.payload)
+
+
+def _classification_available(item: PipelineItem) -> bool:
+    final = _final_classification_from_item(item)
+    return bool(str(final.get("risk_category") or "").strip())
+
+
+def _candidate_clue_from_payload(payload: Mapping[str, Any]) -> CandidateClue:
+    return CandidateClue(
+        clue_id=str(payload.get("clue_id") or f"candidate:{payload.get('clue_type') or 'unknown'}:{payload.get('key') or 'unknown'}"),
+        clue_type=str(payload.get("clue_type") or "unknown"),
+        key=str(payload.get("key") or payload.get("entity_asset_id") or payload.get("clue_id") or "unknown"),
+        risk_category=str(payload.get("risk_category") or "unknown"),
+        evidence_trace_ids=_string_list(payload.get("evidence_trace_ids")),
+        related_entity_ids=_string_list(payload.get("related_entity_ids")),
+        source_names=_string_list(payload.get("source_names")),
+        entity_values=_string_list(payload.get("entity_values")),
+        confidence=_bounded_float(payload.get("confidence"), 0.0),
+        weak_reason=str(payload.get("weak_reason") or payload.get("threshold_reason") or ""),
+    )
+
+
+def _actionable_clue_from_payload(payload: Mapping[str, Any]) -> ActionableClue:
+    candidate = _candidate_clue_from_payload(payload).model_dump()
+    return ActionableClue(
+        **candidate,
+        promotion_reason=str(payload.get("promotion_reason") or ""),
+        actionability_score=_bounded_float(payload.get("actionability_score") or payload.get("quality_score"), 0.0),
+    )
+
+
+def _archived_clue_from_payload(payload: Mapping[str, Any]) -> ArchivedWeakClue:
+    candidate = _candidate_clue_from_payload(payload).model_dump()
+    return ArchivedWeakClue(
+        **candidate,
+        archive_reason=str(payload.get("archive_reason") or ""),
+    )
+
+
 def _positive_int(value: Any) -> int | None:
     try:
         parsed = int(value)
@@ -326,6 +477,12 @@ def _risk_classification_from_payload(payload: Mapping[str, Any]) -> dict[str, A
         trace_id=str(payload.get("trace_id") or payload.get("source_trace_id") or "unknown"),
         risk_category=str(final.get("risk_category") or "unknown"),
         secondary_label=str(final.get("secondary_label") or "待研判"),
+        final_secondary_label=_optional_str(final.get("final_secondary_label") or final.get("secondary_label")),
+        candidate_secondary_labels=[
+            dict(item)
+            for item in (final.get("candidate_secondary_labels") or [])
+            if isinstance(item, Mapping)
+        ],
         confidence=float(final.get("confidence") or 0.0),
         conflict_status=_optional_str(final.get("conflict_status")),
         evidence=[str(value) for value in (final.get("evidence") or [])],
@@ -361,10 +518,36 @@ def _entities_from_payload(payload: Mapping[str, Any], entities: Iterable[Mappin
     return normalized_entities
 
 
+def _legacy_entity_payload(entity: ExtractedEntity) -> dict[str, Any]:
+    payload = entity.model_dump()
+    payload.setdefault("source_trace_id", entity.trace_id)
+    payload.setdefault("entity_value", entity.raw_value or entity.normalized_value)
+    return payload
+
+
 def _optional_str(value: Any) -> str | None:
     if value in (None, ""):
         return None
     return str(value)
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)):
+        return [str(value)] if str(value).strip() else []
+    try:
+        return [str(item) for item in value if str(item).strip()]
+    except TypeError:
+        return [str(value)] if str(value).strip() else []
+
+
+def _bounded_float(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return round(max(0.0, min(parsed, 1.0)), 4)
 
 
 def _cap_clues_by_type(clues: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:

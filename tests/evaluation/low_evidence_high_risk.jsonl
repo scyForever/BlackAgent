@@ -1,0 +1,2 @@
+{"trace_id":"low-evidence-001","source_name":"short-im","source_type":"IM","legal_basis":"PUBLIC_COMPLIANT_DATA","content_text":"接码 TG:low001","expected_risk_categories":["账号交易"],"expected_secondary_labels":["接码注册"],"expected_entities":["TG:low001","接码"]}
+{"trace_id":"low-evidence-002","source_name":"short-forum","source_type":"Forum","legal_basis":"PUBLIC_COMPLIANT_DATA","content_text":"跑分 USDT code:low002","expected_risk_categories":["诈骗引流"],"expected_secondary_labels":["跑分代付"],"expected_entities":["USDT","low002"]}

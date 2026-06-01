@@ -118,7 +118,7 @@ class OfflineClueBuilder:
             "classifications": pipeline_result.classified,
             "entities": pipeline_result.entities,
             "risk_clues": pipeline_result.clues,
-            "pipeline_summary": pipeline_result.execution_summary,
+            "pipeline_summary": pipeline_result.execution_summary.model_dump(),
             "no_clue_reason": None if pipeline_result.clues else "aggregation_threshold_not_met",
         }
         risk_clues = _to_risk_clues(payload["risk_clues"])

@@ -26,7 +26,9 @@ def test_evaluate_pipeline_reports_classification_entity_and_clue_metrics():
     assert "primary_classification_f1" in report
     assert "secondary_classification_f1" in report
     assert "hierarchical_classification_f1" in report
-    assert report["classification"]["overall"]["metric_note"] == "hierarchical_primary_secondary_f1"
+    assert report["classification"]["overall"]["metric_note"] == "primary_only_f1"
+    assert report["classification"]["secondary"]["status"] == "not_applicable"
+    assert report["secondary_classification_f1"] is None
     assert "rule_version" in report
     assert "llm_calls_per_1000_records" in report
     assert "profile_comparison_dimensions" in report
@@ -124,3 +126,52 @@ def test_llm_value_gate_tightens_model_router_record_enrich_without_blocking_con
     assert normal.reason == "llm_added_cost_without_measured_quality_gain"
     assert conflict.action == "llm_classify_extract"
     assert conflict.reason == "conflict_hard_case_despite_value_gate"
+
+
+def test_hierarchical_classification_requires_and_scores_secondary_gold():
+    records = [
+        {
+            "trace_id": "h1",
+            "expected_risk_categories": ["工具交易"],
+            "expected_secondary_labels": ["群控脚本"],
+        },
+        {
+            "trace_id": "h2",
+            "expected_risk_categories": ["诈骗引流"],
+            "expected_secondary_risk": "私域导流",
+        },
+    ]
+    actual = [
+        {"source_trace_id": "h1", "risk_category": "工具交易", "secondary_label": "群控脚本"},
+        {"source_trace_id": "h2", "risk_category": "诈骗引流", "secondary_label": "返利引流"},
+    ]
+
+    from scripts.evaluate_pipeline import evaluate_classification
+
+    metrics = evaluate_classification(records, actual, granularity="hierarchical")
+
+    assert metrics["granularity"] == "hierarchical"
+    assert metrics["secondary_gold"]["ready"] is True
+    assert metrics["secondary"]["status"] == "completed"
+    assert metrics["secondary"]["tp"] == 1
+    assert metrics["secondary"]["fp"] == 1
+    assert metrics["secondary"]["fn"] == 1
+
+
+def test_difficult_evaluation_sets_exist_and_can_be_loaded():
+    from pathlib import Path
+
+    from scripts.evaluate_pipeline import evaluate_difficult_sets
+
+    paths = [
+        Path("tests/evaluation/hard_slang_ambiguous.jsonl"),
+        Path("tests/evaluation/context_conflict.jsonl"),
+        Path("tests/evaluation/low_evidence_high_risk.jsonl"),
+        Path("tests/evaluation/cross_source_entity_graph.jsonl"),
+        Path("tests/evaluation/llm_required_cases.jsonl"),
+    ]
+
+    assert all(path.exists() and load_jsonl(path) for path in paths)
+    report = evaluate_difficult_sets(paths[:1], profile="fast", llm_mode="off")
+    assert report["status"] == "completed"
+    assert report["subsets"]["hard_slang_ambiguous"]["record_count"] == 2

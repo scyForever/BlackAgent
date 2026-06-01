@@ -236,6 +236,7 @@ class RunStatePreparationService:
             available_sources_list=available_sources_list,
             retrieval_filters=dict(retrieval_filters or {}),
             selected_sources=selected_sources,
+            llm_gateway=getattr(self.intent_parser, "llm_gateway", None),
         )
 
 
@@ -396,9 +397,10 @@ class ClueRefinementService:
             refined = [by_clue_id.get(str(item.get("clue_id") or ""), item) for item in refined]
             for trace in batch_traces:
                 meta = meta_by_clue_id.get(str(trace.get("clue_id") or ""), {})
-                trace["model_route_reason"] = meta.get("reason")
-                trace["model_route_priority"] = meta.get("priority")
-                trace["max_tokens_budgeted"] = meta.get("max_tokens")
+                if meta:
+                    trace["model_route_reason"] = meta.get("reason")
+                    trace["model_route_priority"] = meta.get("priority")
+                    trace["max_tokens_budgeted"] = meta.get("max_tokens")
             traces.extend(batch_traces)
         for item in refined:
             self.clue_repo.save(item)

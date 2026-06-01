@@ -12,7 +12,7 @@ from src.enhancement.engine import PhaseTwoThreeEngine
 from src.pipeline import OfflineClueBuilder
 from src.pipeline.stages import CorrelateStage
 from storage.entity_graph import EntityGraphStore
-from storage import InMemoryClueRepo, connect
+from storage import InMemoryClueRepo, connect, sql_repositories
 
 
 class RuntimeContainer:
@@ -28,6 +28,7 @@ class RuntimeContainer:
         self._entity_graph_store: EntityGraphStore | None = None
         self._task_backend: Any | None = None
         self._sql_backend: Any | None = None
+        self._sql_repositories: dict[str, Any] | None = None
         self._sql_backend_initialized = False
         self._investigation_service: InvestigationService | None = None
         self._task_service: TaskService | None = None
@@ -111,6 +112,12 @@ class RuntimeContainer:
         self._sql_backend = backend
         return backend
 
+    def sql_repositories(self) -> dict[str, Any]:
+        if self._sql_repositories is None:
+            backend = self.sql_backend()
+            self._sql_repositories = sql_repositories(backend) if backend is not None else {}
+        return self._sql_repositories
+
     def investigation_service(self) -> InvestigationService:
         if self._investigation_service is None:
             self._investigation_service = InvestigationService(self.investigation_orchestrator())
@@ -137,6 +144,7 @@ class RuntimeContainer:
         if self._entity_graph_store is not None and hasattr(self._entity_graph_store, "close"):
             self._entity_graph_store.close()
         self._sql_backend = None
+        self._sql_repositories = None
         self._entity_graph_store = None
         self._sql_backend_initialized = False
 

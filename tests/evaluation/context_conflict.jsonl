@@ -1,0 +1,2 @@
+{"trace_id":"context-conflict-001","source_name":"policy-feed","source_type":"News","legal_basis":"PUBLIC_COMPLIANT_DATA","content_text":"平台公告曝光群控脚本交易套路，提醒用户不要购买或联系卖家。","expected_risk_categories":[],"expected_entities":[]}
+{"trace_id":"context-conflict-002","source_name":"research-blog","source_type":"Blog","legal_basis":"PUBLIC_COMPLIANT_DATA","content_text":"安全研究复盘接码跑分黑产，不提供渠道、不提供工具。","expected_risk_categories":[],"expected_entities":[]}

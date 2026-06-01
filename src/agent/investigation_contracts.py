@@ -80,6 +80,7 @@ class _RunPlanningState:
     available_sources_list: list[dict[str, Any]]
     retrieval_filters: dict[str, Any]
     selected_sources: list[dict[str, Any]]
+    llm_gateway: Any | None = None
 
 
 @dataclass

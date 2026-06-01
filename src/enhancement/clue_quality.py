@@ -110,9 +110,12 @@ class ClueQualityEvaluator:
         if require_evidence_chain and evidence_count < 2:
             score -= 0.15
             reasons.append("weak_evidence_chain")
-        if critical_entity_count == 0:
+        clue_entity_values = [str(item) for item in (get_record_field(clue, "entity_values") or []) if str(item).strip()]
+        if critical_entity_count == 0 and not clue_entity_values:
             score -= 0.15
             reasons.append("missing_critical_entities")
+        elif critical_entity_count == 0 and clue_entity_values:
+            reasons.append("critical_entity_implied_by_clue_key")
 
         score = round(max(0.0, min(score, 0.99)), 4)
         threshold = _quality_threshold(quality_profile)

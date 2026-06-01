@@ -376,7 +376,12 @@ class InvestigationPhaseMixin:
                 refine_traces=refine_traces,
                 model_route_traces=model_route_traces,
                 budget_controller_snapshot=budget_controller_snapshot,
-                actual_refined_count=sum(1 for trace in refine_traces if trace.get("stage") == "clue_refine"),
+                actual_refined_count=sum(
+                    1
+                    for trace in refine_traces
+                    if trace.get("stage") in {"clue_refine", "clue_refine_item"}
+                    and trace.get("trace_kind") != "llm_call"
+                ),
                 requested_max_refine=requested_max_refine,
                 effective_max_refine=effective_max_refine,
                 refine_budget_reasons=refine_budget_reasons,
@@ -448,6 +453,12 @@ class InvestigationPhaseMixin:
                 "budget_controller": refinement_state.budget_controller_snapshot,
                 "llm_budget": refinement_state.budget_controller_snapshot.get("llm_budget", {}),
                 "llm_gateway": self._summarize_gateway_stats(self._gateway_stats_since(run_state.gateway_stats_start)),
+                "llm_cost": self._merge_llm_cost_summary(
+                    refinement_state.budget_controller_snapshot,
+                    self._summarize_gateway_stats(self._gateway_stats_since(run_state.gateway_stats_start)),
+                ),
+                "llm_call_traces": [dict(trace) for trace in refinement_state.refine_traces if trace.get("trace_kind") == "llm_call"],
+                "llm_item_traces": [dict(trace) for trace in refinement_state.refine_traces if trace.get("trace_kind") == "llm_item"],
                 "exploration_hypothesis_count": len(refinement_state.exploration_hypotheses),
                 "collection_layers_executed": [
                     str(item.get("collection_layer") or "")
@@ -478,6 +489,18 @@ class InvestigationPhaseMixin:
                 )
             execution_summary["routing_profile"] = run_state.profile
             return self._mask_execution_summary(execution_summary)
+
+
+    @staticmethod
+    def _merge_llm_cost_summary(budget_snapshot: Mapping[str, Any], gateway_summary: Mapping[str, Any]) -> dict[str, Any]:
+            return {
+                "budget_reserved_tokens": int(budget_snapshot.get("budget_reserved_tokens") or budget_snapshot.get("estimated_tokens") or 0),
+                "gateway_request_estimated_tokens": int(gateway_summary.get("gateway_request_estimated_tokens") or gateway_summary.get("estimated_tokens") or 0),
+                "prompt_estimated_tokens": int(gateway_summary.get("prompt_estimated_tokens") or 0),
+                "completion_token_limit": int(gateway_summary.get("completion_token_limit") or 0),
+                "actual_usage_tokens": gateway_summary.get("actual_usage_tokens"),
+                "token_estimation_policy": "budget_reserved_vs_gateway_prompt_plus_completion_estimates",
+            }
 
 
 __all__ = ["InvestigationPhaseMixin"]

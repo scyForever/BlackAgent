@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Iterable, Mapping
+from uuid import uuid4
 
 from src.backend import LLMGateway
 from src.domain import ClassificationResolution, ExtractedEntity, IntelRecord, PipelineItem, RiskClassification
@@ -28,6 +29,8 @@ class LLMEnrichStage:
         self.prompt_guard = prompt_guard or PromptGuard()
         self.output_validator = output_validator or OutputValidator()
         self.traces: list[dict[str, Any]] = []
+        self.call_traces: list[dict[str, Any]] = []
+        self.item_traces: list[dict[str, Any]] = []
 
     def run_batch(
         self,
@@ -40,6 +43,8 @@ class LLMEnrichStage:
         materialized = [_coerce_pipeline_item(item) for item in items]
         routes = [dict(route) for route in routed]
         self.traces = []
+        self.call_traces = []
+        self.item_traces = []
         output: list[PipelineItem] = []
         for item, route in zip(materialized, routes, strict=False):
             if str(route.get("action") or "") != "llm_classify_extract":
@@ -50,7 +55,17 @@ class LLMEnrichStage:
             budget_estimated_tokens = _estimate_tokens(messages) + max_tokens
             if not self._allow(estimated_tokens=budget_estimated_tokens):
                 skipped = _item_with_payload(item, {**item.payload, "llm_enrich_skipped_reason": "budget_denied"})
-                self._trace(skipped, route, llm_ok=False, used_fallback=True, error="budget_denied", parsed_json=None)
+                call_id = f"llm_call_{uuid4().hex[:12]}"
+                self._trace_call(
+                    route,
+                    call_id=call_id,
+                    llm_ok=False,
+                    cache_hit=False,
+                    network_attempted=False,
+                    error="budget_denied",
+                    budget_reserved_tokens=budget_estimated_tokens,
+                )
+                self._trace_item(skipped, route, call_id=call_id, llm_ok=False, used_fallback=True, error="budget_denied", parsed_json=None)
                 output.append(skipped)
                 continue
 
@@ -67,9 +82,28 @@ class LLMEnrichStage:
                 extra_body={"budget_item_count": 1, "budget_estimated_tokens": budget_estimated_tokens},
             )
             self._consume_if_needed(estimated_tokens=budget_estimated_tokens, before=budget_before)
-            parsed = response.parsed_json or {}
+            parsed_payload = getattr(response, "parsed_json", None)
+            parsed = parsed_payload if isinstance(parsed_payload, Mapping) else {}
             enriched, used_fallback = self._merge_response(item, parsed)
-            self._trace(enriched, route, llm_ok=response.ok, used_fallback=used_fallback, error=response.error, parsed_json=parsed if parsed else None)
+            call_id = f"llm_call_{uuid4().hex[:12]}"
+            self._trace_call(
+                route,
+                call_id=call_id,
+                llm_ok=bool(getattr(response, "ok", False)),
+                cache_hit=bool((_response_raw(response) or {}).get("cache_hit")),
+                network_attempted=bool(getattr(response, "network_attempted", False)),
+                error=getattr(response, "error", None),
+                budget_reserved_tokens=budget_estimated_tokens,
+            )
+            self._trace_item(
+                enriched,
+                route,
+                call_id=call_id,
+                llm_ok=bool(getattr(response, "ok", False)),
+                used_fallback=used_fallback,
+                error=getattr(response, "error", None),
+                parsed_json=parsed if parsed else None,
+            )
             output.append(enriched)
         return output
 
@@ -191,6 +225,12 @@ class LLMEnrichStage:
                     trace_id=str(payload.get("source_trace_id") or payload.get("trace_id") or current.record.trace_id),
                     risk_category=str(final.get("risk_category") or "unknown"),
                     secondary_label=str(final.get("secondary_label") or "待研判"),
+                    final_secondary_label=_optional_str(final.get("final_secondary_label") or final.get("secondary_label")),
+                    candidate_secondary_labels=[
+                        dict(item)
+                        for item in (final.get("candidate_secondary_labels") or [])
+                        if isinstance(item, Mapping)
+                    ],
                     confidence=float(final.get("confidence") or 0.0),
                     conflict_status=_optional_str(final.get("conflict_status")),
                     evidence=[str(value) for value in (final.get("evidence") or [])],
@@ -204,27 +244,57 @@ class LLMEnrichStage:
         )
         return _sync_item_payload(_item_with_payload(current, payload)), not (usable_classification or normalized_entities)
 
-    def _trace(
+    def _trace_call(
+        self,
+        route: Mapping[str, Any],
+        *,
+        call_id: str,
+        llm_ok: bool,
+        cache_hit: bool,
+        network_attempted: bool,
+        error: str | None,
+        budget_reserved_tokens: int,
+    ) -> None:
+        trace = {
+            "stage": "llm_classify_extract",
+            "trace_kind": "llm_call",
+            "mode": "single_record",
+            "call_id": call_id,
+            "item_count": 1,
+            "route_reason": route.get("reason"),
+            "llm_ok": llm_ok,
+            "cache_hit": cache_hit,
+            "network_attempted": network_attempted,
+            "budget_reserved_tokens": budget_reserved_tokens,
+            "error": error,
+        }
+        self.call_traces.append(trace)
+        self.traces.append(trace)
+
+    def _trace_item(
         self,
         item: Mapping[str, Any] | PipelineItem,
         route: Mapping[str, Any],
         *,
+        call_id: str,
         llm_ok: bool,
         used_fallback: bool,
         error: str | None,
         parsed_json: Mapping[str, Any] | None,
     ) -> None:
-        self.traces.append(
-            {
-                "stage": "llm_classify_extract",
-                "source_trace_id": str(_payload_from_item(item).get("source_trace_id") or _payload_from_item(item).get("trace_id") or "unknown"),
-                "route_reason": route.get("reason"),
-                "llm_ok": llm_ok,
-                "used_fallback": used_fallback,
-                "parsed_json": dict(parsed_json) if isinstance(parsed_json, Mapping) else None,
-                "error": error,
-            }
-        )
+        trace = {
+            "stage": "llm_classify_extract_item",
+            "trace_kind": "llm_item",
+            "call_id": call_id,
+            "source_trace_id": str(_payload_from_item(item).get("source_trace_id") or _payload_from_item(item).get("trace_id") or "unknown"),
+            "route_reason": route.get("reason"),
+            "llm_ok": llm_ok,
+            "used_fallback": used_fallback,
+            "parsed_json": dict(parsed_json) if isinstance(parsed_json, Mapping) else None,
+            "error": error,
+        }
+        self.item_traces.append(trace)
+        self.traces.append(trace)
 
 
 def _record_card(item: Mapping[str, Any] | PipelineItem) -> dict[str, Any]:
@@ -326,6 +396,12 @@ def _coerce_pipeline_item(item: Mapping[str, Any] | PipelineItem) -> PipelineIte
             trace_id=trace_id,
             risk_category=str(final.get("risk_category") or "unknown"),
             secondary_label=str(final.get("secondary_label") or "待研判"),
+            final_secondary_label=_optional_str(final.get("final_secondary_label") or final.get("secondary_label")),
+            candidate_secondary_labels=[
+                dict(item)
+                for item in (final.get("candidate_secondary_labels") or [])
+                if isinstance(item, Mapping)
+            ],
             confidence=float(final.get("confidence") or 0.0),
             conflict_status=_optional_str(final.get("conflict_status")),
             evidence=[str(value) for value in (final.get("evidence") or [])],
@@ -462,6 +538,11 @@ def _bool(value: Any, *, default: bool) -> bool:
 def _estimate_tokens(messages: list[dict[str, str]]) -> int:
     text = json.dumps(messages, ensure_ascii=False, sort_keys=True, default=str)
     return max(1, len(text) // 4)
+
+
+def _response_raw(response: Any) -> Mapping[str, Any]:
+    raw = getattr(response, "raw", None)
+    return raw if isinstance(raw, Mapping) else {}
 
 
 __all__ = ["LLMEnrichStage"]

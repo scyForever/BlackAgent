@@ -119,6 +119,8 @@ class FineClassificationResult:
     secondary_label: str
     confidence: float
     review_required: bool
+    final_secondary_label: str | None = None
+    candidate_secondary_labels: list[dict[str, Any]] = field(default_factory=list)
     conflict_status: str = "RESOLVED"
     conflict_categories: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
@@ -165,6 +167,14 @@ class FineGrainedIntentClassifier:
         )
         self.review_only_categories = set(_as_tuple(policy.get("review_only_categories")))
         self.review_only_secondary_labels = set(_as_tuple(policy.get("review_only_secondary_labels")))
+        secondary_gate = policy.get("secondary_label_gate") if isinstance(policy.get("secondary_label_gate"), Mapping) else {}
+        self.secondary_min_markers_for_final = int(secondary_gate.get("min_markers_for_final") or 2) if isinstance(secondary_gate, Mapping) else 2
+        self.secondary_allow_single_marker_with_entity_context = bool(
+            secondary_gate.get("allow_single_marker_with_entity_context", True)
+        ) if isinstance(secondary_gate, Mapping) else True
+        self.secondary_entity_context_markers = _as_tuple(
+            secondary_gate.get("entity_context_markers") if isinstance(secondary_gate, Mapping) else ()
+        )
         self.category_priority = {str(key): int(value) for key, value in (policy.get("category_priority") or {}).items()} if isinstance(policy.get("category_priority"), Mapping) else {}
         self.theme_priors = self.rule_registry.theme_priors()
         self.polarity_scorer = polarity_from_config(polarity)
@@ -202,7 +212,7 @@ class FineGrainedIntentClassifier:
         top_category, top_score = ordered[0]
         conflicts = [category for category, score in ordered[1:] if score == top_score or (top_score - score <= 1 and score >= 2)]
         conflict_status = "RESOLVED"
-        secondary_label, secondary_evidence = self._secondary_label(top_category, text, matched_keywords)
+        secondary_label, secondary_evidence, secondary_candidates = self._secondary_label(top_category, text, matched_keywords)
         supporting_evidence = self._ordered_unique((*category_evidence.get(top_category, []), *secondary_evidence))
 
         confidence = max(
@@ -229,6 +239,8 @@ class FineGrainedIntentClassifier:
             source_trace_id=trace_id,
             risk_category=top_category,
             secondary_label=secondary_label,
+            final_secondary_label=None if secondary_label in {"未细分", "待研判"} else secondary_label,
+            candidate_secondary_labels=secondary_candidates,
             confidence=round(confidence, 4),
             review_required=review_required,
             conflict_status=conflict_status,
@@ -333,8 +345,8 @@ class FineGrainedIntentClassifier:
         }
         return score_map, {key: self._ordered_unique(value) for key, value in evidence_map.items()}, theme_only_scores
 
-    def _secondary_label(self, category: str, text: str, matched_keywords: tuple[str, ...]) -> tuple[str, list[str]]:
-        candidates = []
+    def _secondary_label(self, category: str, text: str, matched_keywords: tuple[str, ...]) -> tuple[str, list[str], list[dict[str, Any]]]:
+        candidates: list[tuple[str, list[str], bool]] = []
         matched_keyword_set = {value.lower() for value in matched_keywords}
         for label, keywords in self.secondary_rules.get(category, {}).items():
             hits = [
@@ -343,11 +355,39 @@ class FineGrainedIntentClassifier:
                 if keyword.lower() in text.lower() or normalize_text(keyword).lower() in matched_keyword_set
             ]
             if hits:
-                candidates.append((label, hits))
+                has_entity_context = any(marker.lower() in text.lower() for marker in self.secondary_entity_context_markers)
+                candidates.append((label, self._ordered_unique(hits), has_entity_context))
         if not candidates:
-            return "未细分", []
-        label, hits = max(candidates, key=lambda item: len(item[1]))
-        return label, self._ordered_unique(hits)
+            return "未细分", [], []
+        candidate_payloads = [
+            {
+                "label": label,
+                "confidence": round(min(0.92, 0.46 + 0.12 * len(hits) + (0.08 if has_entity_context else 0.0)), 4),
+                "evidence": hits,
+                "reason": (
+                    "secondary_gate_ready"
+                    if self._secondary_gate_ready(hits, has_entity_context)
+                    else "single_secondary_marker_only"
+                ),
+            }
+            for label, hits, has_entity_context in candidates
+        ]
+        label, hits, has_entity_context = max(
+            candidates,
+            key=lambda item: (len(item[1]), item[2], item[0]),
+        )
+        if self._secondary_gate_ready(hits, has_entity_context):
+            return label, hits, candidate_payloads
+        return "待研判", [], candidate_payloads
+
+    def _secondary_gate_ready(self, hits: list[str], has_entity_context: bool) -> bool:
+        if len(hits) >= self.secondary_min_markers_for_final:
+            return True
+        return bool(
+            self.secondary_allow_single_marker_with_entity_context
+            and hits
+            and has_entity_context
+        )
 
     def _marker_hits(self, text: str, markers: Iterable[str]) -> list[str]:
         lowered_text = text.lower()

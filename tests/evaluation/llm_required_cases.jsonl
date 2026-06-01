@@ -1,0 +1,2 @@
+{"trace_id":"llm-required-001","source_name":"ambiguous-forum","source_type":"Forum","legal_basis":"PUBLIC_COMPLIANT_DATA","content_text":"不是普通教程：这里的火苗是新导流暗号，落地页口令 lr001，私聊进群。","expected_risk_categories":["诈骗引流"],"expected_secondary_labels":["私域导流"],"expected_entities":["lr001"]}
+{"trace_id":"llm-required-002","source_name":"ambiguous-im","source_type":"IM","legal_basis":"PUBLIC_COMPLIANT_DATA","content_text":"OCR断裂：群 控 / 云 控 / 后 台 配 置，TG:llm002 可试用。","expected_risk_categories":["工具交易"],"expected_secondary_labels":["群控脚本"],"expected_entities":["TG:llm002"]}

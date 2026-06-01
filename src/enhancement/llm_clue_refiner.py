@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
+from uuid import uuid4
 
 from src.backend import LLMGateway
 from src.safety import OutputValidator, PIIMasker, PromptGuard
@@ -72,7 +73,8 @@ class LLMClueRefiner:
             max_tokens=300,
             response_format={"type": "json_object"},
         )
-        parsed = response.parsed_json or {}
+        parsed_payload = getattr(response, "parsed_json", None)
+        parsed = parsed_payload if isinstance(parsed_payload, Mapping) else {}
         usable = isinstance(parsed.get("refined_summary"), str)
         payload = _fallback_refinement(clue) if not usable else _normalize_payload(parsed, clue)
         payload["refined_summary"] = _safe_summary(payload["refined_summary"])
@@ -84,7 +86,7 @@ class LLMClueRefiner:
             final_confidence=final_confidence,
             review_required=bool(payload["review_required"]),
             refinement_reasons=[str(item) for item in payload.get("refinement_reasons", [])],
-            llm_ok=response.ok,
+            llm_ok=bool(getattr(response, "ok", False)),
             used_fallback=not usable,
         )
         enriched = dict(clue)
@@ -93,12 +95,12 @@ class LLMClueRefiner:
         trace = {
             "stage": "clue_refine",
             "clue_id": refined.clue_id,
-            "llm_ok": response.ok,
+            "llm_ok": bool(getattr(response, "ok", False)),
             "used_fallback": not usable,
             "runtime_slang_term_count": len(slang_terms),
             "runtime_few_shot_count": len(few_shot_examples),
             "parsed_json": parsed if parsed else None,
-            "error": response.error,
+            "error": getattr(response, "error", None),
         }
         return enriched, trace
 
@@ -160,7 +162,8 @@ class LLMClueRefiner:
             deadline_ms=deadline_ms,
             extra_body={"budget_item_count": len(materialized)},
         )
-        parsed = response.parsed_json or {}
+        parsed_payload = getattr(response, "parsed_json", None)
+        parsed = parsed_payload if isinstance(parsed_payload, Mapping) else {}
         parsed_items = parsed.get("items") if isinstance(parsed.get("items"), list) else []
         payload_by_id = {
             str(item.get("clue_id") or ""): item
@@ -170,6 +173,23 @@ class LLMClueRefiner:
 
         enriched_items: list[dict[str, Any]] = []
         traces: list[dict[str, Any]] = []
+        call_id = f"llm_call_{uuid4().hex[:12]}"
+        traces.append(
+            {
+                "stage": "clue_refine",
+                "trace_kind": "llm_call",
+                "mode": "batch",
+                "call_id": call_id,
+                "item_count": len(materialized),
+                "llm_ok": bool(getattr(response, "ok", False)),
+                "cache_hit": bool((_response_raw(response) or {}).get("cache_hit")),
+                "network_attempted": bool(getattr(response, "network_attempted", False)),
+                "parsed_item_count": len(parsed_items),
+                "runtime_slang_term_count": len(slang_terms),
+                "runtime_few_shot_count": len(few_shot_examples),
+                "error": getattr(response, "error", None),
+            }
+        )
         for clue in materialized:
             clue_id = str(clue.get("clue_id") or "unknown_clue")
             card_id = card_id_by_clue_id.get(clue_id, clue_id)
@@ -185,7 +205,7 @@ class LLMClueRefiner:
                 final_confidence=final_confidence,
                 review_required=bool(payload["review_required"]),
                 refinement_reasons=[str(item) for item in payload.get("refinement_reasons", [])],
-                llm_ok=response.ok,
+                llm_ok=bool(getattr(response, "ok", False)),
                 used_fallback=not usable,
             )
             enriched = dict(clue)
@@ -194,16 +214,18 @@ class LLMClueRefiner:
             enriched_items.append(enriched)
             traces.append(
                 {
-                    "stage": "clue_refine",
+                    "stage": "clue_refine_item",
+                    "trace_kind": "llm_item",
                     "mode": "batch",
+                    "call_id": call_id,
                     "clue_id": clue_id,
                     "prompt_card_id": card_id,
-                    "llm_ok": response.ok,
+                    "llm_ok": bool(getattr(response, "ok", False)),
                     "used_fallback": not usable,
                     "runtime_slang_term_count": len(slang_terms),
                     "runtime_few_shot_count": len(few_shot_examples),
                     "parsed_json": candidate_payload if candidate_payload else None,
-                    "error": response.error,
+                    "error": getattr(response, "error", None),
                 }
             )
         return enriched_items, traces
@@ -260,6 +282,11 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item).strip()]
+
+
+def _response_raw(response: Any) -> Mapping[str, Any]:
+    raw = getattr(response, "raw", None)
+    return raw if isinstance(raw, Mapping) else {}
 
 
 __all__ = ["LLMClueRefiner", "RefinedClue"]

@@ -10,6 +10,7 @@ from src.backend import LLMGateway
 from src.enhancement.clue_quality import ClueQualityEvaluator
 from src.enhancement.engine import PhaseTwoThreeEngine
 from src.enhancement.llm_clue_refiner import LLMClueRefiner
+from src.evaluation.llm_ablation import load_latest_llm_value_report
 from src.pipeline import OfflineClueBuilder
 from src.retrieval import ClueRetriever
 from src.safety.source_policy_guard import SourcePolicyGuard
@@ -37,6 +38,7 @@ from .query_rewriter import LLMSourceQueryRewriter
 from .runtime_services import (
     execution_summary_service,
     fresh_processing_service,
+    FreshProcessingDependencies,
     live_collection_service,
     refinement_orchestration_service,
     result_render_service,
@@ -74,7 +76,10 @@ class InvestigationRuntime(InvestigationRuntimeMixin):
             self.clue_refiner = LLMClueRefiner(llm_gateway)
             self.query_rewriter = LLMSourceQueryRewriter(llm_gateway)
             self.source_policy_guard = SourcePolicyGuard()
+            self.llm_value_metrics = load_latest_llm_value_report()
             self.model_router = ModelRouter()
+            if self.llm_value_metrics:
+                self.model_router = self.model_router.with_llm_value_metrics(self.llm_value_metrics)
             self.clue_ranker = ClueRanker()
             self.exploration_agent = ExplorationAgent()
             self.intent_parser = LLMUserRequestParser(llm_gateway)
@@ -129,7 +134,7 @@ class InvestigationRuntime(InvestigationRuntimeMixin):
             self.retrieval_state_type = _RetrievalState
             self.semantic_local_retrieval = semantic_local_retrieval_service(self._run_semantic_local_phase)
             self.live_collection_service = live_collection_service(self._run_live_collection_phase)
-            self.fresh_processing_service = fresh_processing_service(self._process_fresh_records)
+            self.fresh_processing_service = fresh_processing_service(FreshProcessingDependencies(offline_builder=self.offline_builder))
             self.execution_summary_service = execution_summary_service(self._build_execution_summary)
             self.result_render_service = result_render_service(self._render_run_result)
             self.refinement_orchestration_service = refinement_orchestration_service(self._refine_and_explore_candidates)

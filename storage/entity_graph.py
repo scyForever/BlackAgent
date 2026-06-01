@@ -55,6 +55,22 @@ class EntityRelation:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class EntityRiskProfile:
+    entity_id: str
+    entity_type: str
+    risk_categories: dict[str, int] = field(default_factory=dict)
+    first_seen: str | None = None
+    last_seen: str | None = None
+    source_count: int = 0
+    observation_count: int = 0
+    related_entity_count: int = 0
+    risk_score: int = 0
+
+    def model_dump(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 class EntityAssetRepository:
     def upsert(self, asset: EntityAsset) -> None:
         raise NotImplementedError
@@ -90,6 +106,7 @@ class EntityGraphStore:
         self._entities: dict[str, EntityAsset] = {}
         self._observations: dict[str, EntityObservation] = {}
         self._relations: dict[str, EntityRelation] = {}
+        self._observation_risk: dict[str, str] = {}
         self.db_path = Path(db_path) if db_path else None
         self._conn: sqlite3.Connection | None = None
         if self.db_path is not None:
@@ -142,6 +159,9 @@ class EntityGraphStore:
             confidence=float(entity.get("confidence") or 0.0),
         )
         self._observations[observation_id] = observation
+        risk_category = _risk_category_from_record(record)
+        if risk_category:
+            self._observation_risk[observation_id] = risk_category
         self._persist_observation(observation)
         return observation
 
@@ -233,7 +253,44 @@ class EntityGraphStore:
             "entities": [item.model_dump() for item in self._entities.values()],
             "observations": [item.model_dump() for item in self._observations.values()],
             "relations": [item.model_dump() for item in self._relations.values()],
+            "risk_profiles": [self.risk_profile(item.entity_id).model_dump() for item in self._entities.values()],
         }
+
+    def risk_profile(self, entity_id: str) -> EntityRiskProfile:
+        asset = self._entities.get(str(entity_id))
+        observations = self.observations_for_entity(str(entity_id))
+        risk_categories: dict[str, int] = {}
+        for observation in observations:
+            risk_category = self._observation_risk.get(observation.observation_id)
+            if risk_category:
+                risk_categories[risk_category] = risk_categories.get(risk_category, 0) + 1
+        sources = {item.source_name or item.source_type or item.trace_id for item in observations if item.source_name or item.source_type or item.trace_id}
+        related = {
+            endpoint
+            for relation in self._relations.values()
+            if str(entity_id) in {relation.src_entity_id, relation.dst_entity_id}
+            for endpoint in (relation.src_entity_id, relation.dst_entity_id)
+            if endpoint != str(entity_id)
+        }
+        risk_score = min(
+            99,
+            28
+            + min(len(observations), 10) * 5
+            + min(len(sources), 5) * 6
+            + min(len(related), 8) * 4
+            + (16 if risk_categories else 0),
+        )
+        return EntityRiskProfile(
+            entity_id=str(entity_id),
+            entity_type=asset.entity_type if asset is not None else "unknown",
+            risk_categories=dict(sorted(risk_categories.items(), key=lambda item: (-item[1], item[0]))),
+            first_seen=asset.first_seen if asset is not None else None,
+            last_seen=asset.last_seen if asset is not None else None,
+            source_count=len(sources),
+            observation_count=len(observations),
+            related_entity_count=len(related),
+            risk_score=risk_score,
+        )
 
     def generate_clues(self) -> list[dict[str, Any]]:
         """Generate graph-view clues from persisted/cross-source entity facts."""
@@ -245,21 +302,34 @@ class EntityGraphStore:
             sources = sorted({item.source_name or item.source_type or item.trace_id for item in observations})
             if len(traces) < 2:
                 continue
-            clue_type = "graph_shared_contact_cross_source" if asset.entity_type in {"contact", "account", "invite_code"} else "graph_shared_entity_cross_source"
+            profile = self.risk_profile(asset.entity_id)
+            related_ids = sorted(_related_entity_ids(asset.entity_id, self._relations.values()))
+            related_types = {self._entities[item].entity_type for item in related_ids if item in self._entities}
+            risk_category = _dominant_risk_category(profile.risk_categories)
+            clue_type = _graph_clue_type(asset.entity_type, related_types, risk_category)
             clues.append(
                 {
                     "clue_id": f"graph_clue_{uuid4().hex[:12]}",
                     "clue_type": clue_type,
                     "key": asset.entity_id,
-                    "risk_category": "unknown",
+                    "risk_category": risk_category,
+                    "risk_score": profile.risk_score,
+                    "key_entity_id": asset.entity_id,
+                    "related_entity_ids": related_ids,
                     "evidence_trace_ids": traces,
+                    "evidence_observation_ids": [item.observation_id for item in observations],
                     "source_names": sources,
                     "entity_values": [asset.masked_display_value],
                     "confidence": round(min(0.96, 0.58 + 0.07 * len(traces) + 0.04 * len(sources)), 4),
-                    "threshold_reason": "entity_graph_cross_source_observations",
+                    "threshold_reason": "entity_graph_cross_source_observations_with_risk_profile",
+                    "reason": _graph_reason(asset.entity_type, related_types, risk_category),
                     "entity_asset_id": asset.entity_id,
                     "entity_observation_refs": [item.observation_id for item in observations],
                     "entity_graph_backend": "entity_graph_store",
+                    "first_seen": profile.first_seen,
+                    "last_seen": profile.last_seen,
+                    "source_count": profile.source_count,
+                    "risk_profile": profile.model_dump(),
                 }
             )
         return clues
@@ -314,7 +384,7 @@ class EntityGraphStore:
                 last_seen=row["last_seen"],
             )
         for row in self._conn.execute("SELECT * FROM entity_observation"):
-            self._observations[row["observation_id"]] = EntityObservation(
+            observation = EntityObservation(
                 observation_id=row["observation_id"],
                 entity_id=row["entity_id"],
                 trace_id=row["trace_id"],
@@ -324,6 +394,7 @@ class EntityGraphStore:
                 evidence_span=row["evidence_span"] or "",
                 confidence=float(row["confidence"] or 0.0),
             )
+            self._observations[row["observation_id"]] = observation
         for row in self._conn.execute("SELECT * FROM entity_relation"):
             self._relations[row["relation_id"]] = EntityRelation(
                 relation_id=row["relation_id"],
@@ -436,6 +507,46 @@ def _record_time(record: Mapping[str, Any]) -> str | None:
     return _optional_str(record.get("publish_time") or record.get("crawl_time"))
 
 
+def _risk_category_from_record(record: Mapping[str, Any]) -> str | None:
+    classification = record.get("classification") if isinstance(record.get("classification"), Mapping) else {}
+    final = classification.get("final") if isinstance(classification.get("final"), Mapping) else classification
+    value = record.get("risk_category") or final.get("risk_category")
+    text = str(value or "").strip()
+    if text and text not in {"unknown", "待研判", "正常业务白噪声", "normal_noise"}:
+        return text
+    return None
+
+
+def _dominant_risk_category(risk_categories: Mapping[str, int]) -> str:
+    if not risk_categories:
+        return "unknown"
+    return sorted(risk_categories.items(), key=lambda item: (-int(item[1]), item[0]))[0][0]
+
+
+def _related_entity_ids(entity_id: str, relations: Iterable[EntityRelation]) -> set[str]:
+    related: set[str] = set()
+    for relation in relations:
+        if relation.src_entity_id == entity_id:
+            related.add(relation.dst_entity_id)
+        elif relation.dst_entity_id == entity_id:
+            related.add(relation.src_entity_id)
+    return related
+
+
+def _graph_clue_type(entity_type: str, related_types: set[str], risk_category: str) -> str:
+    if risk_category == "工具交易" and entity_type in {"contact", "account"} and related_types.intersection({"tool_name", "domain", "url", "price"}):
+        return "entity_graph_tool_trade_cluster"
+    if entity_type in {"contact", "account", "invite_code"}:
+        return "graph_shared_contact_cross_source"
+    return "graph_shared_entity_cross_source"
+
+
+def _graph_reason(entity_type: str, related_types: set[str], risk_category: str) -> str:
+    if risk_category == "工具交易" and entity_type in {"contact", "account"} and related_types.intersection({"tool_name", "domain", "url", "price"}):
+        return "同一联系方式关联工具、域名或价格实体并跨来源重复出现"
+    return "同一实体跨来源重复出现并形成可追溯观察链"
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -456,6 +567,7 @@ __all__ = [
     "EntityGraphStore",
     "EntityObservation",
     "EntityObservationRepository",
+    "EntityRiskProfile",
     "EntityRelation",
     "EntityRelationRepository",
 ]

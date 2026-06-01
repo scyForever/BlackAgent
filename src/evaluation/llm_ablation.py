@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 
@@ -36,4 +39,74 @@ class LLMValueGate:
         return True
 
 
-__all__ = ["LLMValueGate", "run_llm_ablation"]
+def llm_value_report_from_ablation(
+    ablation_report: dict[str, Any],
+    *,
+    profile: str = "high_recall",
+) -> dict[str, Any]:
+    """Normalize an ablation report into the runtime-facing value-gate shape."""
+
+    value = dict(ablation_report.get("llm_value") or ablation_report)
+    gate = dict(ablation_report.get("llm_value_gate") or {})
+    should_enable = gate.get("should_enable_record_enrich")
+    if should_enable is None:
+        should_enable = LLMValueGate().should_enable_record_enrich(profile, value)
+    report = {
+        "profile": str(profile or "high_recall"),
+        "classification_f1_delta": float(value.get("classification_f1_delta") or 0.0),
+        "entity_f1_delta": float(value.get("entity_f1_delta") or 0.0),
+        "hard_negative_fpr_delta": float(value.get("hard_negative_fpr_delta") or 0.0),
+        "clue_precision_delta": float(value.get("clue_precision_delta") or 0.0),
+        "clue_recall_delta": float(value.get("clue_recall_delta") or 0.0),
+        "llm_calls_delta": float(value.get("llm_calls_delta") or 0.0),
+        "tokens_per_f1_gain": value.get("tokens_per_f1_gain"),
+        "tokens_per_extra_valid_clue": value.get("tokens_per_extra_valid_clue"),
+        "gate_reason": str(value.get("gate_reason") or gate.get("reason") or "llm_value_gate_report"),
+        "should_enable_record_enrich": bool(should_enable),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if "real" in value:
+        report["provider_specific"] = {"real": value["real"]}
+    return report
+
+
+def write_latest_llm_value_report(
+    ablation_report: dict[str, Any],
+    *,
+    output_path: str | Path = "data/eval/latest_llm_value.json",
+    profile: str = "high_recall",
+) -> dict[str, Any]:
+    """Persist the latest value gate report for runtime ModelRouter loading."""
+
+    report = llm_value_report_from_ablation(ablation_report, profile=profile)
+    target = Path(output_path)
+    if not target.is_absolute():
+        target = Path.cwd() / target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report
+
+
+def load_latest_llm_value_report(path: str | Path = "data/eval/latest_llm_value.json") -> dict[str, Any] | None:
+    """Load runtime LLM value metrics if available and valid."""
+
+    target = Path(path)
+    if not target.is_absolute():
+        candidates = [Path.cwd() / target, Path(__file__).resolve().parents[2] / target]
+        target = next((candidate for candidate in candidates if candidate.exists()), candidates[0])
+    if not target.exists():
+        return None
+    try:
+        parsed = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+__all__ = [
+    "LLMValueGate",
+    "llm_value_report_from_ablation",
+    "load_latest_llm_value_report",
+    "run_llm_ablation",
+    "write_latest_llm_value_report",
+]

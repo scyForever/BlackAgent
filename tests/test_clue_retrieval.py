@@ -164,3 +164,52 @@ def test_entity_graph_close_releases_sqlite_file_for_windows_cleanup(tmp_path):
     graph.close()
     db_path.unlink()
     assert not db_path.exists()
+
+
+def test_entity_graph_generates_risk_profiled_tool_trade_cluster(tmp_path):
+    from storage.entity_graph import EntityGraphStore
+
+    graph = EntityGraphStore(db_path=tmp_path / "risk-profile.db")
+    try:
+        records = [
+            {
+                "trace_id": "risk-a",
+                "source_name": "tg-risk",
+                "source_type": "IM",
+                "risk_category": "工具交易",
+                "publish_time": "2026-05-30T00:00:00+00:00",
+            },
+            {
+                "trace_id": "risk-b",
+                "source_name": "forum-risk",
+                "source_type": "Forum",
+                "classification": {"final": {"risk_category": "工具交易"}},
+                "publish_time": "2026-05-31T00:00:00+00:00",
+            },
+        ]
+        contact_ids = []
+        for record in records:
+            contact_ids.append(
+                graph.add_observation(
+                    {"entity_type": "contact", "entity_value": "TG:risk01", "normalized_value": "tg:risk01"},
+                    record,
+                ).entity_id
+            )
+            tool = graph.add_observation(
+                {"entity_type": "tool_name", "entity_value": "群控脚本", "normalized_value": "群控脚本"},
+                record,
+            )
+            graph.add_relation(contact_ids[-1], tool.entity_id, "CO_OCCURS_IN_RECORD", evidence_trace_ids=[record["trace_id"]])
+
+        clues = graph.generate_clues()
+        tool_cluster = next(item for item in clues if item["clue_type"] == "entity_graph_tool_trade_cluster")
+
+        assert tool_cluster["risk_category"] == "工具交易"
+        assert tool_cluster["risk_score"] >= 60
+        assert tool_cluster["key_entity_id"] == contact_ids[0]
+        assert tool_cluster["related_entity_ids"]
+        assert set(tool_cluster["evidence_trace_ids"]) == {"risk-a", "risk-b"}
+        assert set(tool_cluster["evidence_observation_ids"]) == set(tool_cluster["entity_observation_refs"])
+        assert tool_cluster["risk_profile"]["risk_categories"]["工具交易"] == 2
+    finally:
+        graph.close()
