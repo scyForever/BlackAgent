@@ -104,6 +104,7 @@ class MultimodalTextExtractor:
         data["multimodal_text_extracted"] = True
         data["multimodal_text_sources"] = sorted(sources)
         data["multimodal_signal_count"] = len(sources)
+        data["content_modality"] = _content_modality(sources)
         return data
 
     def _collect_text_parts(self, record: Mapping[str, Any] | Any, *, _depth: int = 0) -> tuple[list[str], set[str]]:
@@ -168,6 +169,18 @@ class ComplianceSourceDiscovery:
         if rate_limit <= 0:
             return ComplianceCandidate(source_name, source_url, "NEEDS_RATE_LIMIT", "missing_rate_limit", "set_safe_rate_limit_before_schedule", dict(candidate))
         return ComplianceCandidate(source_name, source_url, "SCHEDULABLE", "compliance_precheck_passed", "schedule_with_rate_limit", dict(candidate))
+
+
+def _content_modality(sources: set[str]) -> str:
+    image_markers = ("ocr", "image", "photo", "poster", "screenshot", "caption", "alt_text")
+    text_markers = {"content_text", "clean_text", "text", "raw_text"}
+    has_image_text = any(any(marker in source for marker in image_markers) for source in sources)
+    has_primary_text = any(source in text_markers for source in sources)
+    if has_image_text and has_primary_text:
+        return "mixed"
+    if has_image_text:
+        return "image_text"
+    return "text"
 
 
 __all__ = [

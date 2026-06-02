@@ -7,7 +7,15 @@ production infrastructure.
 """
 
 from .engine import PhaseTwoThreeEngine
-from .strategy import CountermeasureStrategy, CheatingPlaybook, RiskClue
+from .strategy import (
+    CountermeasureStrategy,
+    CountermeasureSummary,
+    CountermeasureSummaryBuilder,
+    CheatingPlaybook,
+    EvidenceChain,
+    EvidenceChainRenderer,
+    RiskClue,
+)
 from .lifecycle import DynamicSlangLifecycleManager, PromptEvaluator
 from .source_intake import AuthorizedSourcePolicy, ComplianceSourceDiscovery, MultimodalTextExtractor
 from .text_intelligence import SlangDictionary
@@ -16,8 +24,12 @@ __all__ = [
     "AuthorizedSourcePolicy",
     "ComplianceSourceDiscovery",
     "CountermeasureStrategy",
+    "CountermeasureSummary",
+    "CountermeasureSummaryBuilder",
     "CheatingPlaybook",
     "DynamicSlangLifecycleManager",
+    "EvidenceChain",
+    "EvidenceChainRenderer",
     "MultimodalTextExtractor",
     "PhaseTwoThreeEngine",
     "PromptEvaluator",

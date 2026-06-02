@@ -22,6 +22,9 @@ def test_evaluate_pipeline_reports_classification_entity_and_clue_metrics():
     assert report["false_positive_rate"] <= 0.3
     assert report["clue"]["actual_clue_count"] >= 1
     assert "shared_contact_48h" in report["clue"]["actual_clue_types"]
+    assert report["clue"]["standard_clue_eval"]["expected_clue_types"] == ["shared_contact_48h", "shared_domain_multi_source"]
+    assert report["clue"]["graph_clue_eval"]["expected_clue_count"] == 0
+    assert report["clue"]["overall_review_load_eval"]["metric_note"] == "review_load_is_reported_separately_from_standard_vs_graph_quality"
     assert report["classification"]["primary"]["fp"] <= 30
     assert "primary_classification_f1" in report
     assert "secondary_classification_f1" in report
@@ -181,7 +184,7 @@ def test_context_conflict_gold_is_reported_as_hard_negative_not_zero_f1():
 
     assert report["classification"]["evaluation_mode"] == "hard_negative"
     assert report["classification_f1"] is None
-    assert report["hard_negative"]["tn"] + report["hard_negative"]["fp"] == 2
+    assert report["hard_negative"]["tn"] + report["hard_negative"]["fp"] >= 50
 
 
 def test_graph_clue_gold_auto_enables_graph_generation_even_for_fast_profile():
@@ -191,6 +194,9 @@ def test_graph_clue_gold_auto_enables_graph_generation_even_for_fast_profile():
     assert report["clue"]["expected_clue_count"] == 1
     assert report["clue"]["actual_clue_count"] >= 1
     assert "entity_graph_tool_trade_cluster" in report["clue"]["actual_clue_types"]
+    assert report["clue"]["standard_clue_eval"]["expected_clue_count"] == 0
+    assert report["clue"]["graph_clue_eval"]["expected_clue_count"] == 1
+    assert "entity_graph_tool_trade_cluster" in report["clue"]["graph_clue_eval"]["actual_clue_types"]
 
 
 def test_hierarchical_classification_requires_and_scores_secondary_gold():
@@ -239,4 +245,4 @@ def test_difficult_evaluation_sets_exist_and_can_be_loaded():
     assert all(path.exists() and load_jsonl(path) for path in paths)
     report = evaluate_difficult_sets(paths[:1], profile="fast", llm_mode="off")
     assert report["status"] == "completed"
-    assert report["subsets"]["hard_slang_ambiguous"]["record_count"] == 2
+    assert report["subsets"]["hard_slang_ambiguous"]["record_count"] >= 50

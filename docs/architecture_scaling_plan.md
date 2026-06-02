@@ -280,4 +280,3 @@ BlackAgent 面向亿级数据的正确方向是：
 > **离线高吞吐 backbone 持续构建 candidate clue pool，在线 investigation 优先检索 clue pool，再用外部 LLM 对 top-N 高价值 clue 做精判与汇总。**
 
 这样才能把效果、成本、时延控制在同一个工程闭环里。
-

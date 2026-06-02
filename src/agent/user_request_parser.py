@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
 from src.backend import LLMGateway
+from src.query import PreflightQueryParser
 from src.safety import PolicyGuard, PromptGuard, SafetyPolicyViolation
 
 
@@ -599,21 +600,8 @@ def _plan_policy_error(payload: Mapping[str, Any]) -> str | None:
 def _fallback_intent(query: str, runtime_context: Mapping[str, Any] | None = None) -> UserIntent:
     normalized = query.lower()
     runtime_context = dict(runtime_context or {})
-    risk_types: list[str] = []
-    if "诈骗" in query or "引流" in query:
-        risk_types.append("诈骗引流")
-    if "接码" in query:
-        risk_types.append("接码")
-    if "跑分" in query or "代付" in query:
-        risk_types.append("跑分代付")
-    if "账号" in query or "卖号" in query:
-        risk_types.append("账号交易")
-    if "刷单" in query or "众包" in query:
-        risk_types.append("刷单作弊")
-    if "群控" in query or "脚本" in query or "工具" in query:
-        risk_types.append("工具交易")
-    if not risk_types:
-        risk_types = ["黑灰产情报"]
+    preflight = PreflightQueryParser().parse(query, runtime_context=runtime_context)
+    risk_types: list[str] = _legacy_specific_risk_types(query, list(preflight.risk_types))
 
     runtime_labels: list[str] = []
     runtime_keywords: list[str] = []
@@ -646,23 +634,9 @@ def _fallback_intent(query: str, runtime_context: Mapping[str, Any] | None = Non
     if runtime_labels:
         risk_types = _dedupe_list([*risk_types, *runtime_labels])
 
-    sources: list[str] = []
-    for token in ("telegram", "tg", "电报"):
-        if token in normalized or token in query:
-            sources.append("telegram")
-            break
-    for token in ("forum", "论坛", "贴吧"):
-        if token in normalized or token in query:
-            sources.append("forum")
-            break
-    for token in ("im", "群", "私聊", "聊天"):
-        if token in normalized or token in query:
-            sources.append("im")
-            break
-    if not sources:
-        sources = ["telegram", "forum", "im"]
+    sources = list(preflight.preferred_source_types) or ["telegram", "forum", "im"]
 
-    time_range_hours = _extract_time_range_hours(query)
+    time_range_hours = preflight.time_range_hours or _extract_time_range_hours(query)
 
     quality_profile = "high_precision" if any(term in query for term in ("高质量", "高置信", "可复核")) else "balanced"
     literal_keywords = [
@@ -670,7 +644,7 @@ def _fallback_intent(query: str, runtime_context: Mapping[str, Any] | None = Non
         for token in ("接码", "群控", "脚本", "跑分", "代付", "账号", "卖号", "刷单", "私域", "引流", "火苗")
         if token in query
     ]
-    include_keywords = _dedupe_list([*risk_types, *literal_keywords, *runtime_keywords])
+    include_keywords = _dedupe_list([*risk_types, *preflight.keywords, *preflight.slang_terms, *literal_keywords, *runtime_keywords])
     return UserIntent(
         goal="collect_high_quality_risk_clues",
         risk_types=risk_types,
@@ -680,7 +654,7 @@ def _fallback_intent(query: str, runtime_context: Mapping[str, Any] | None = Non
         time_range_hours=time_range_hours,
         quality_profile=quality_profile,
         output_type="clue_cards",
-        require_cross_source=True if quality_profile == "high_precision" or any(term in query for term in ("跨源", "多源")) else False,
+        require_cross_source=True if quality_profile == "high_precision" or preflight.need_cross_source else False,
         require_evidence_chain=True if "不要证据链" not in query else False,
         raw_query=query,
     )
@@ -738,6 +712,25 @@ def _fallback_plan(intent: UserIntent, runtime_context: Mapping[str, Any] | None
         llm_ok=False,
         llm_reason="fallback_plan",
     )
+
+
+def _legacy_specific_risk_types(query: str, risk_types: list[str]) -> list[str]:
+    """Keep the public UserIntent contract stable for subcategory-like queries."""
+
+    replacements = {
+        "接码": ("接码", "账号交易"),
+        "跑分": ("跑分代付", "诈骗引流"),
+        "代付": ("跑分代付", "诈骗引流"),
+    }
+    output = list(risk_types)
+    for marker, (specific, generic) in replacements.items():
+        if marker not in query:
+            continue
+        if generic in output:
+            output[output.index(generic)] = specific
+        elif specific not in output:
+            output.insert(0, specific)
+    return _dedupe_list(output or ["黑灰产情报"])
 
 
 def _extract_time_range_hours(query: str) -> int:

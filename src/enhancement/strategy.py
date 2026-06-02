@@ -63,6 +63,81 @@ class CountermeasureStrategy:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class CountermeasureSummary:
+    summary_id: str
+    target_id: str
+    suspicious_entities: list[str]
+    evidence_trace_ids: list[str]
+    risk_focus: list[str]
+    review_recommendation: str
+    monitoring_keywords: list[str]
+    confidence: float
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    def model_dump(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class EvidenceChain:
+    clue_id: str
+    clue_type: str
+    risk_category: str
+    source_name: str
+    source_type: str
+    source_trace_id: str
+    raw_excerpt: str
+    matched_rules: list[str]
+    extracted_entities: list[str]
+    related_entities: list[str]
+    confidence: float
+
+    def model_dump(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+class EvidenceChainRenderer:
+    """Render every clue into source-backed, reviewable evidence rows."""
+
+    def render(
+        self,
+        clues: Iterable[RiskClue | Mapping[str, Any]],
+        records: Iterable[Mapping[str, Any] | Any],
+        *,
+        entities: Iterable[Mapping[str, Any] | Any] = (),
+    ) -> list[EvidenceChain]:
+        record_by_trace = {_trace_id(record): record for record in records}
+        entities_by_trace: dict[str, list[str]] = defaultdict(list)
+        for entity in entities:
+            trace_id = str(get_record_field(entity, "source_trace_id") or "")
+            value = str(get_record_field(entity, "normalized_value") or get_record_field(entity, "entity_value") or "")
+            if trace_id and value:
+                entities_by_trace[trace_id].append(value)
+
+        rows: list[EvidenceChain] = []
+        for clue in clues:
+            clue_data = clue.model_dump() if hasattr(clue, "model_dump") else dict(clue)
+            for trace_id in list(clue_data.get("evidence_trace_ids") or []):
+                record = record_by_trace.get(str(trace_id), {})
+                rows.append(
+                    EvidenceChain(
+                        clue_id=str(clue_data.get("clue_id") or ""),
+                        clue_type=str(clue_data.get("clue_type") or ""),
+                        risk_category=str(clue_data.get("risk_category") or "unknown"),
+                        source_name=str(get_record_field(record, "source_name") or "unknown_source"),
+                        source_type=str(get_record_field(record, "source_type") or "unknown"),
+                        source_trace_id=str(trace_id),
+                        raw_excerpt=_excerpt(str(get_record_field(record, "content_text") or get_record_field(record, "clean_text") or "")),
+                        matched_rules=_ordered_strings([clue_data.get("threshold_reason"), clue_data.get("clue_type")]),
+                        extracted_entities=_ordered_strings(entities_by_trace.get(str(trace_id), [])),
+                        related_entities=_ordered_strings(clue_data.get("entity_values") or []),
+                        confidence=round(float(clue_data.get("confidence") or 0.0), 4),
+                    )
+                )
+        return rows
+
+
 class RiskClueAggregator:
     """Phase II clue aggregator using PRD hard thresholds."""
 
@@ -231,6 +306,36 @@ class CountermeasurePlanner:
         return strategies
 
 
+class CountermeasureSummaryBuilder:
+    """Build answer-facing summaries from clues/playbooks without auto-enforcement."""
+
+    def build(
+        self,
+        clues: Iterable[RiskClue | Mapping[str, Any]],
+        playbooks: Iterable[CheatingPlaybook | Mapping[str, Any]] = (),
+    ) -> list[CountermeasureSummary]:
+        summaries: list[CountermeasureSummary] = []
+        for item in [*list(clues), *list(playbooks)]:
+            data = item.model_dump() if hasattr(item, "model_dump") else dict(item)
+            target_id = str(data.get("clue_id") or data.get("playbook_id") or uuid4())
+            entities = _ordered_strings(data.get("entity_values") or [])
+            lifecycle = data.get("lifecycle_elements") if isinstance(data.get("lifecycle_elements"), Mapping) else {}
+            keywords = _ordered_strings([*entities, *[keyword for values in lifecycle.values() for keyword in values]])
+            summaries.append(
+                CountermeasureSummary(
+                    summary_id=f"summary_{uuid4().hex[:12]}",
+                    target_id=target_id,
+                    suspicious_entities=entities,
+                    evidence_trace_ids=_ordered_strings(data.get("evidence_trace_ids") or []),
+                    risk_focus=_ordered_strings([data.get("risk_category"), data.get("clue_type")]),
+                    review_recommendation="进入人工复核队列；仅做灰度监控和样本补充，不触发自动处置。",
+                    monitoring_keywords=keywords[:12],
+                    confidence=round(float(data.get("confidence") or 0.0), 4),
+                )
+            )
+        return summaries
+
+
 def _trace_id(record: Mapping[str, Any] | Any) -> str:
     return str(get_record_field(record, "source_trace_id") or get_record_field(record, "trace_id") or get_record_field(record, "hash_id") or uuid4())
 
@@ -262,10 +367,36 @@ def _remove_entities(text: str) -> str:
     return text
 
 
+def _excerpt(text: str, *, max_chars: int = 160) -> str:
+    normalized = normalize_text(text)
+    return normalized if len(normalized) <= max_chars else f"{normalized[:max_chars - 1]}…"
+
+
+def _ordered_strings(values: Iterable[Any] | Any) -> list[str]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
+        values = [values]
+    seen: set[str] = set()
+    output: list[str] = []
+    for raw in values:
+        value = normalize_text(str(raw or ""))
+        if not value:
+            continue
+        lowered = value.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        output.append(value)
+    return output
+
+
 __all__ = [
     "CountermeasurePlanner",
+    "CountermeasureSummary",
+    "CountermeasureSummaryBuilder",
     "CountermeasureStrategy",
     "CheatingPlaybook",
+    "EvidenceChain",
+    "EvidenceChainRenderer",
     "PlaybookBuilder",
     "RiskClue",
     "RiskClueAggregator",

@@ -412,10 +412,35 @@ def evaluate_entities(records: list[dict[str, Any]], actual_entities: Iterable[M
 
 
 def evaluate_clues(records: list[dict[str, Any]], actual_clues: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-    expected_count_values = [int(record.get("expected_clue_count") or 0) for record in records if record.get("expected_clue_count") is not None]
-    expected_count = max(expected_count_values) if expected_count_values else sum(len(record.get("expected_clues") or []) for record in records)
-    expected_types = {str(item).strip() for record in records for item in (record.get("expected_clue_types") or []) if str(item).strip()}
     actual = [dict(item) for item in actual_clues]
+    overall_eval = _evaluate_clue_layer(records, actual, layer="overall")
+    standard_eval = _evaluate_clue_layer(records, actual, layer="standard")
+    graph_eval = _evaluate_clue_layer(records, actual, layer="graph")
+    review_load_eval = {
+        "clue_overgeneration_ratio": overall_eval["clue_overgeneration_ratio"],
+        "review_load_per_100_records": overall_eval["review_load_per_100_records"],
+        "standard_review_load_per_100_records": standard_eval["review_load_per_100_records"],
+        "graph_review_load_per_100_records": graph_eval["review_load_per_100_records"],
+        "duplicate_clue_rate": overall_eval["duplicate_clue_rate"],
+        "metric_note": "review_load_is_reported_separately_from_standard_vs_graph_quality",
+    }
+    return {
+        **overall_eval,
+        "standard_clue_eval": standard_eval,
+        "graph_clue_eval": graph_eval,
+        "overall_review_load_eval": review_load_eval,
+        "evaluation_layers": ["standard_clue_eval", "graph_clue_eval", "overall_review_load_eval"],
+    }
+
+
+def _evaluate_clue_layer(
+    records: list[dict[str, Any]],
+    actual_clues: list[dict[str, Any]],
+    *,
+    layer: str,
+) -> dict[str, Any]:
+    expected_count, expected_types = _expected_clue_gold(records, layer=layer)
+    actual = [item for item in actual_clues if _clue_in_layer(item, layer=layer)]
     actual_types = {str(item.get("clue_type") or "").strip() for item in actual if str(item.get("clue_type") or "").strip()}
     if expected_types:
         type_tp = len(expected_types & actual_types)
@@ -431,18 +456,52 @@ def evaluate_clues(records: list[dict[str, Any]], actual_clues: Iterable[Mapping
         fp = max(0, len(actual) - expected_count)
         fn = max(0, expected_count - len(actual))
     overall = prf(tp, fp, fn)
-    overgeneration_ratio = round(len(actual) / max(expected_count, 1), 4)
-    duplicate_rate = _duplicate_clue_rate(actual)
+    status = "completed"
+    metric_note = f"{layer}_clue_quality"
+    if expected_count == 0 and not expected_types:
+        status = "no_gold_overgeneration_only" if actual else "not_applicable_no_gold"
+        metric_note = f"{layer}_clue_gold_missing"
     return {
-        "overall": {**overall, "tp": tp, "fp": fp, "fn": fn},
+        "overall": {**overall, "tp": tp, "fp": fp, "fn": fn, "status": status, "metric_note": metric_note},
         "expected_clue_count": expected_count,
         "actual_clue_count": len(actual),
-        "clue_overgeneration_ratio": overgeneration_ratio,
+        "clue_overgeneration_ratio": round(len(actual) / max(expected_count, 1), 4),
         "valid_clue_precision_by_count": round(min(expected_count, len(actual)) / max(len(actual), 1), 4),
         "review_load_per_100_records": round(len(actual) / max(len(records), 1) * 100, 4),
-        "duplicate_clue_rate": duplicate_rate,
+        "duplicate_clue_rate": _duplicate_clue_rate(actual),
         "actual_clue_types": sorted(actual_types),
+        "expected_clue_types": sorted(expected_types),
+        "metric_layer": layer,
+        "status": status,
     }
+
+
+def _expected_clue_gold(records: list[dict[str, Any]], *, layer: str) -> tuple[int, set[str]]:
+    expected_types = {
+        clue_type
+        for record in records
+        for clue_type in _expected_clue_types(record)
+        if _clue_type_in_layer(clue_type, layer=layer)
+    }
+    expected_count_values = [
+        int(record.get("expected_clue_count") or 0)
+        for record in records
+        if record.get("expected_clue_count") is not None
+        and (
+            layer == "overall"
+            or any(_clue_type_in_layer(clue_type, layer=layer) for clue_type in _expected_clue_types(record))
+            or (not _expected_clue_types(record) and layer == "standard")
+        )
+    ]
+    expected_count = max(expected_count_values) if expected_count_values else 0
+    if not expected_count_values:
+        expected_count = sum(
+            1
+            for record in records
+            for clue_type in _expected_clue_types(record, include_expected_clues=True)
+            if _clue_type_in_layer(clue_type, layer=layer)
+        )
+    return expected_count, expected_types
 
 
 def predicted_categories(classification: Mapping[str, Any]) -> set[str]:
@@ -767,6 +826,34 @@ def _classification_pairs(primary: set[str], secondary: set[str]) -> set[tuple[s
     if not secondary:
         return {(item, "*") for item in primary}
     return {(item, label) for item in primary for label in secondary}
+
+
+def _expected_clue_types(record: Mapping[str, Any], *, include_expected_clues: bool = False) -> list[str]:
+    values: list[str] = []
+    raw_types = record.get("expected_clue_types")
+    if isinstance(raw_types, list):
+        values.extend(str(item).strip() for item in raw_types if str(item).strip())
+    if include_expected_clues:
+        expected_clues = record.get("expected_clues")
+        if isinstance(expected_clues, list):
+            for clue in expected_clues:
+                clue_type = clue.get("clue_type") if isinstance(clue, Mapping) else clue
+                if str(clue_type or "").strip():
+                    values.append(str(clue_type).strip())
+    return values
+
+
+def _clue_in_layer(clue: Mapping[str, Any], *, layer: str) -> bool:
+    return _clue_type_in_layer(clue.get("clue_type"), layer=layer)
+
+
+def _clue_type_in_layer(value: Any, *, layer: str) -> bool:
+    if layer == "overall":
+        return True
+    is_graph = _is_graph_clue_type(value)
+    if layer == "graph":
+        return is_graph
+    return not is_graph
 
 
 def _duplicate_clue_rate(actual: list[dict[str, Any]]) -> float:
