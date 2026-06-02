@@ -58,6 +58,10 @@ def test_preflight_satisfied_pool_skips_llm_intent_and_plan():
 
     assert result.status == "completed"
     assert collected == []
+    assert result.execution_summary["main_flow_stage_count"] == 5
+    assert result.execution_summary["main_flow_stages"][2]["needs_fresh_data"] is False
+    assert result.execution_summary["main_flow_stages"][3]["status"] == "skipped"
+    assert result.execution_summary["main_flow_stages"][3]["mode"] == "history_assets_only"
     assert result.execution_summary["flow_decision_traces"][0]["next_action"] == "skip_conditional_planning"
     assert result.execution_summary["evidence_gap"]["reasons"] == []
     assert not any(trace.get("stage") in {"intent_parse", "investigation_plan"} and trace.get("llm_ok") for trace in result.llm_traces)

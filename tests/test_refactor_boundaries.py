@@ -1059,7 +1059,16 @@ def test_pr4_runtime_shell_workflow_and_services_meet_decomposition_contracts():
         retrieval_state_type=object,
     )
     result = workflow.run("q")
-    assert result.payload == {"query": "q", "summary": {"ok": True}}
+    assert result.payload["query"] == "q"
+    assert result.payload["summary"]["ok"] is True
+    assert result.payload["summary"]["main_flow_stage_count"] == 5
+    assert [item["stage"] for item in result.payload["summary"]["main_flow_stages"]] == [
+        "input_task",
+        "route_and_guard",
+        "asset_retrieval",
+        "intelligence_pipeline",
+        "clue_generation_report",
+    ]
     assert result.context.semantic_state == "semantic"
     assert result.context.refinement_state == "refine"
 

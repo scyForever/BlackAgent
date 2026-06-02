@@ -18,6 +18,7 @@ class WorkflowContext:
     fresh_state: Any | None = None
     refinement_state: Any | None = None
     execution_summary: dict[str, Any] = field(default_factory=dict)
+    main_flow_stages: list[dict[str, Any]] = field(default_factory=list)
 
 
 __all__ = ["WorkflowContext"]
