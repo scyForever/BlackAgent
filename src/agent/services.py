@@ -13,7 +13,7 @@ from src.agent.clue_ranker import ClueRanker
 from src.agent.model_router import ModelRouter
 from src.intelligence.entity_graph_retrieval import EntityGraphRetrievalService
 from .investigation_contracts import EvidenceGap
-from .user_request_parser import _fallback_intent, _fallback_plan
+from .user_request_parser import _fallback_intent, _fallback_plan, _should_use_rule_intent_parser
 
 
 class IntentPlanningService:
@@ -140,6 +140,9 @@ class RunStatePreparationService:
             policy_override=normalized_policy_override,
         )
         initial_runtime_context = self.planner_runtime_context()
+        available_sources_list = [dict(source) for source in available_sources]
+        if available_sources_list and str(planning_mode or "full") != "preflight":
+            initial_runtime_context = {**initial_runtime_context, "force_llm_intent_parse": True}
         budget_controller = BudgetController(RuntimeBudget.from_mapping(self.profile_budget_defaults(profile_config)))
         preflight_mode = str(planning_mode or "full") == "preflight"
         if bool(profile_config.get("enable_llm_intent_parse", True)) and not preflight_mode:
@@ -157,12 +160,19 @@ class RunStatePreparationService:
                 runtime_context=initial_runtime_context,
             )
         intent_payload = intent.model_dump()
-        available_sources_list = [dict(source) for source in available_sources]
+        rule_plan_ok, rule_plan_reason = _should_use_rule_intent_parser(query, runtime_context=initial_runtime_context)
         if profile == "fast" or preflight_mode:
             plan = _fallback_plan(intent, runtime_context=initial_runtime_context)
             plan_trace = self.disabled_llm_trace(
                 "investigation_plan",
                 reason="preflight_defers_investigation_plan" if preflight_mode else "profile_fast_uses_deterministic_fallback_plan",
+                runtime_context=initial_runtime_context,
+            )
+        elif rule_plan_ok and not available_sources_list:
+            plan = _fallback_plan(intent, runtime_context=initial_runtime_context)
+            plan_trace = self.disabled_llm_trace(
+                "investigation_plan",
+                reason=rule_plan_reason,
                 runtime_context=initial_runtime_context,
             )
         else:

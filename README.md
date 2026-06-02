@@ -39,10 +39,10 @@ Request
 - **情报处理流水线**：`IntelligencePipeline` 已接入 Clean/Dedup/Classify/Extract/Normalize/EntityGraph/CluePromotion 真实 stage；`LLMEnrich` 和 `Correlate/Score` 作为内部增强点折叠在流水线与线索生成中，不作为对外主流程节点。分类前置 `RiskPolarityScorer` 区分公告/反诈/研究/否定语境，抽取侧通过 `EntityNormalizer` 统一邀请码、TG、URL、联系方式的 normalized/hash/masked 字段。
 - **分类仲裁**：LLM 不再直接覆盖规则结果，分类结构保留 `classification.rule / classification.llm / classification.final / classification.resolution`；下游只消费 `final`，同时保留 `strategy / reason / review_required` 供人工复核和审计。
 - **Clue 分层**：线索先进入 `candidate_clues`，再由 `CluePromotionStage` 按跨源、观察次数、实体支撑和防御语境规则提升为 `actionable_clues`；弱线索进入 `archived_weak_clues`，避免召回优先阶段直接放大复核负担。
-- **LLM 预算与路由**：`routing_profiles.yaml + ModelRouter + BudgetController + ClueRanker + LLMValueGate` 统一控制 intent/plan/query rewrite/record enrich/clue refine 的调用、token、候选条数和时延预算；`BudgetController` 使用 `peek/reserve/consume` lease 语义，pre-check 不污染 ledger，真实调用异常分支会记入 failed/network ledger。
+- **LLM 预算与路由**：`routing_profiles.yaml + ModelRouter + BudgetController + ClueRanker + LLMValueGate` 统一控制 intent/plan/query rewrite/record enrich/clue refine 的调用、token、候选条数和时延预算；简单 query 先走规则 parser，复杂 query / runtime 黑话上下文 / live source 规划才走固定 JSON schema 的 LLM parser/plan；`BudgetController` 使用 `peek/reserve/consume` lease 语义，pre-check 不污染 ledger，真实调用异常分支会记入 failed/network ledger。
 - **实体图谱库**：`storage/entity_graph.py` 支持 `entity_asset / entity_observation / entity_relation` SQLite 持久化；`RuntimeContainer` 和 `InvestigationRuntime` 注入共享 `EntityGraphStore`，`ClueRetriever` 可从跨 run entity graph 生成可追溯线索，并提供 `neighborhood / entities_seen_since / cross_source_entities / related_clues` 查询。
 - **规则配置化**：`RuleRegistry` 统一加载 `risk_taxonomy.yaml / entity_patterns.yaml / slang_dictionary.yaml / context_polarity.yaml / clue_generation_rules.yaml`，分类主词、二级标签、promotion marker、防御语境、实体正则和 clue promotion 门槛均可通过配置扩展；evaluation 输出 `rule_version` 用于定位规则版本影响。
-- **Safety 边界**：`src/safety/` 已接入 LLM prompt wrapping、refine 输出校验和 PII masking；原有 `PolicyGuard` 继续作为硬边界。
+- **Safety 边界**：`src/safety/` 已接入 LLM prompt wrapping、refine 输出校验和 PII masking；LLM plan 里的执行动作必须先通过 `PolicyGuard`，不通过时直接回退规则 plan。
 - **本地任务队列与调度器**：支持 cron/queue 风格的分层采集和 clue build。
 - **memory/sql 双后端**：默认内存模式，可切到 SQLite/PostgreSQL。
 
@@ -116,7 +116,7 @@ python scripts/run_agent_cli.py `
 `config/routing_profiles.yaml` 中的 `fast / balanced / high_recall` 会真实合并进运行预算：
 
 - `fast`：默认不做 LLM intent parse、LLM plan、query rewrite 和 live collection，优先本地/demo/clue pool，最多 refine 少量线索。
-- `balanced`：有限 live collection/query rewrite/refine，适合作为默认交互模式。
+- `balanced`：简单 query 优先规则解析；复杂 query、runtime 黑话上下文、live source 规划才启用有限 LLM intent/plan/query rewrite/refine，适合作为默认交互模式。
 - `high_recall`：放宽 source、候选和 LLM 调用预算，适合召回优先的批处理。
 
 默认 `config/config.yaml` 是安全 dry-run/mock 配置，不会因为本地存在 API key 就真实调用 LLM。真实 LLM 可复制 `config/config.real.example.yaml` 后显式传入，或使用 `--force-real`：

@@ -49,7 +49,7 @@ flowchart TD
 - **离线高吞吐主干**：持续把授权 source 的 raw records 处理成 candidate clue pool、entity graph 和 semantic cache，服务于“历史资产检索”。
 - **在线 investigation**：先做安全与任务路由，再查历史资产；资产足够时直接做线索提升和报告，不重新扫全量 raw。
 - **按需新采集**：只有证据不足或用户明确提供新样本 / source 时，才进入 Collection / Input Records，再跑情报处理流水线并反哺 entity graph 与 clue pool。
-- **LLM 使用点**：只作为路由、query rewrite、record enrich、clue refine 的可控增强，不成为全量主路径。
+- **LLM 使用点**：简单 query 先由规则 parser 解析；复杂 query、runtime 黑话上下文和 live source 规划才走固定 JSON schema 的 LLM intent/plan；LLM 产出的计划动作先过 PolicyGuard，不通过就回退规则 plan。query rewrite、record enrich、clue refine 仍是可控增强，不成为全量主路径。
 
 ---
 
@@ -242,7 +242,7 @@ flowchart LR
 逻辑按 5 阶段表达：
 
 1. 输入任务：用户 query / 样本 / source / 时间范围。
-2. 安全与任务路由：PolicyGuard、SourcePolicyGuard、routing profile、预算和必要的 intent / plan。
+2. 安全与任务路由：简单 query 规则 intent，复杂 query 固定 schema LLM intent / plan，计划动作经过 PolicyGuard、SourcePolicyGuard、routing profile 与预算控制。
 3. 历史资产检索：优先查 clue pool、entity graph、semantic cache。
 4. 情报处理流水线：资产不足时才按授权 source 采集或处理输入 records，并执行 Clean / Dedup / Classify / Extract / Normalize / EntityGraph。
 5. 线索生成与报告：CluePromotion、SelectiveRefine、ReviewRoute、Report。

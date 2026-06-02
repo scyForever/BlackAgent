@@ -114,12 +114,13 @@ python scripts/collect_blackgray_all.py --fresh
 
 执行顺序现在是：
 
-`用户 query -> LLM intent -> LLM plan -> 选 source -> LLM 改写 search_query -> 按改写后的 URL 抓取`
+`用户 query -> 简单 query 规则 intent / 复杂 query 固定 schema LLM intent -> 规则 plan / LLM plan -> PolicyGuard 审核动作 -> 选 source -> LLM 改写 search_query -> 按改写后的 URL 抓取`
 
 边界保持保守：
 
 - 只对带 `query_url_template` 的 source 做改写
 - LLM 返回非 JSON、缺少 `search_query`、或者供应商兼容性不好时，会自动回退到 source 现有 `search_query`
+- intent/plan 的 LLM 输出必须符合固定 schema；schema 不可用、policy guard 不通过或 LLM 调用失败时，回退规则 parser / deterministic plan
 - 所以 catalog 里的静态 query 仍是保底链路，但在线 investigation 会优先尝试让外部 LLM 把 query 改得更贴近当前用户任务
 
 现在 query 展开分成两层：
