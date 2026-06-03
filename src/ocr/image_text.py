@@ -50,11 +50,16 @@ class OCRImageTextAdapter:
             except Exception as exc:  # pragma: no cover - defensive for injected engines
                 errors.append(f"ocr_engine_error:{path}:{exc}")
         final_text = normalize_text(" ".join([text, *engine_texts]))
+        content_modality = _merge_modality(
+            str(materialized.get("content_modality") or "text"),
+            had_upstream_text=bool(text),
+            had_engine_text=bool(engine_texts),
+        )
         status = "completed" if final_text and not errors else "partial" if final_text else "missing_ocr_text"
         return OCRImageTextResult(
             status=status,
             text=final_text,
-            content_modality=str(materialized.get("content_modality") or "text"),
+            content_modality=content_modality,
             sources=sorted(set(sources)),
             errors=errors,
         )
@@ -92,6 +97,14 @@ def _get(record: Mapping[str, Any] | Any, field: str) -> Any:
     if isinstance(record, Mapping):
         return record.get(field)
     return getattr(record, field, None)
+
+
+def _merge_modality(base: str, *, had_upstream_text: bool, had_engine_text: bool) -> str:
+    if not had_engine_text:
+        return base
+    if had_upstream_text and base != "image_text":
+        return "mixed"
+    return "image_text"
 
 
 __all__ = ["OCRImageTextAdapter", "OCRImageTextResult"]

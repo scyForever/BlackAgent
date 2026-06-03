@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 import time
+from collections import Counter, defaultdict
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -280,6 +281,9 @@ def evaluate_classification(
     primary_tp = primary_fp = primary_fn = 0
     secondary_tp = secondary_fp = secondary_fn = 0
     hierarchical_tp = hierarchical_fp = hierarchical_fn = 0
+    primary_confusion: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    secondary_confusion: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    hierarchical_confusion: defaultdict[str, Counter[str]] = defaultdict(Counter)
     actual_by_trace = {
         str(item.get("source_trace_id") or ""): item
         for item in actual_items
@@ -311,6 +315,7 @@ def evaluate_classification(
             primary_fn += len(expected_primary - actual_primary)
         else:
             negative_record_count += 1
+        _update_confusion(primary_confusion, expected_primary, actual_primary)
         if hierarchical_gold_ready:
             secondary_tp += len(expected_secondary & actual_secondary)
             secondary_fp += len(actual_secondary - expected_secondary)
@@ -320,6 +325,12 @@ def evaluate_classification(
             hierarchical_tp += len(expected_pairs & actual_pairs)
             hierarchical_fp += len(actual_pairs - expected_pairs)
             hierarchical_fn += len(expected_pairs - actual_pairs)
+            _update_confusion(secondary_confusion, expected_secondary, actual_secondary)
+            _update_confusion(
+                hierarchical_confusion,
+                {_pair_label(*pair) for pair in expected_pairs},
+                {_pair_label(*pair) for pair in actual_pairs},
+            )
         if not expected_primary:
             if actual_primary:
                 hard_fp += 1
@@ -376,6 +387,17 @@ def evaluate_classification(
         "primary": {**primary, "tp": primary_tp, "fp": primary_fp, "fn": primary_fn, "status": primary_status},
         "secondary": {**secondary, "tp": secondary_tp, "fp": secondary_fp, "fn": secondary_fn},
         "hierarchical": {**hierarchical, "tp": hierarchical_tp, "fp": hierarchical_fp, "fn": hierarchical_fn},
+        "confusion_analysis": {
+            "status": "completed",
+            "primary": _confusion_payload(primary_confusion),
+            "secondary": _confusion_payload(secondary_confusion) if hierarchical_gold_ready else {},
+            "hierarchical": _confusion_payload(hierarchical_confusion) if hierarchical_gold_ready else {},
+            "metric_note": (
+                "primary_secondary_confusion_from_gold"
+                if hierarchical_gold_ready
+                else "secondary_hierarchical_confusion_requires_secondary_gold"
+            ),
+        },
         "granularity": resolved_granularity,
         "evaluation_mode": evaluation_mode,
         "positive_record_count": positive_record_count,
@@ -501,6 +523,7 @@ def _expected_clue_gold(records: list[dict[str, Any]], *, layer: str) -> tuple[i
             for clue_type in _expected_clue_types(record, include_expected_clues=True)
             if _clue_type_in_layer(clue_type, layer=layer)
         )
+    expected_count = max(expected_count, len(expected_types))
     return expected_count, expected_types
 
 
@@ -826,6 +849,41 @@ def _classification_pairs(primary: set[str], secondary: set[str]) -> set[tuple[s
     if not secondary:
         return {(item, "*") for item in primary}
     return {(item, label) for item in primary for label in secondary}
+
+
+def _pair_label(primary: str, secondary: str) -> str:
+    return f"{primary}>{secondary}"
+
+
+def _update_confusion(matrix: defaultdict[str, Counter[str]], expected: set[str], actual: set[str]) -> None:
+    expected = {str(item) for item in expected if str(item).strip()}
+    actual = {str(item) for item in actual if str(item).strip()}
+    if not expected and not actual:
+        matrix["__negative__"]["__negative__"] += 1
+        return
+    if not expected:
+        for actual_label in sorted(actual):
+            matrix["__no_gold__"][actual_label] += 1
+        return
+    if not actual:
+        for expected_label in sorted(expected):
+            matrix[expected_label]["__missing_prediction__"] += 1
+        return
+    for expected_label in sorted(expected):
+        if expected_label in actual:
+            matrix[expected_label][expected_label] += 1
+        else:
+            for actual_label in sorted(actual):
+                matrix[expected_label][actual_label] += 1
+    for actual_label in sorted(actual - expected):
+        matrix["__extra_prediction__"][actual_label] += 1
+
+
+def _confusion_payload(matrix: Mapping[str, Counter[str]]) -> dict[str, dict[str, int]]:
+    return {
+        expected_label: dict(sorted(actual_counts.items()))
+        for expected_label, actual_counts in sorted(matrix.items())
+    }
 
 
 def _expected_clue_types(record: Mapping[str, Any], *, include_expected_clues: bool = False) -> list[str]:

@@ -1,6 +1,6 @@
 # BlackAgent
 
-BlackAgent 是一个**本地运行的黑灰产公开/授权情报调查 Agent**。当前版本不再对外暴露 FastAPI/HTTP 接口，所有能力通过 CLI、脚本或 `src.local_runtime.LocalAgentRuntime` 在进程内调用。
+BlackAgent 是一个**本地运行的黑灰产公开/授权情报调查 Agent**。核心能力通过 CLI、脚本或 `src.local_runtime.LocalAgentRuntime` 在进程内调用；答辩展示可选 `scripts/serve_demo_api.py` 提供本机 stdlib HTTP demo/API/UI，不引入 FastAPI/uvicorn，也不作为生产公网服务。
 
 核心链路（对外展示口径压缩为 5 阶段）：
 
@@ -39,21 +39,22 @@ Request
 - **情报处理流水线**：`IntelligencePipeline` 已接入 Clean/Dedup/Classify/Extract/Normalize/EntityGraph/CluePromotion 真实 stage；`LLMEnrich` 和 `Correlate/Score` 作为内部增强点折叠在流水线与线索生成中，不作为对外主流程节点。分类前置 `RiskPolarityScorer` 区分公告/反诈/研究/否定语境，抽取侧通过 `EntityNormalizer` 统一邀请码、TG、URL、联系方式的 normalized/hash/masked 字段。
 - **分类仲裁**：LLM 不再直接覆盖规则结果，分类结构保留 `classification.rule / classification.llm / classification.final / classification.resolution`；下游只消费 `final`，同时保留 `strategy / reason / review_required` 供人工复核和审计。
 - **Clue 分层**：线索先进入 `candidate_clues`，再由 `CluePromotionStage` 按跨源、观察次数、实体支撑和防御语境规则提升为 `actionable_clues`；弱线索进入 `archived_weak_clues`，避免召回优先阶段直接放大复核负担。
-- **评估分层**：`scripts/evaluate_pipeline.py` 同时输出 `standard_clue_eval / graph_clue_eval / overall_review_load_eval`，标准线索、图谱线索和人工复核负载不再混用同一口径。
+- **评估分层**：`scripts/evaluate_pipeline.py` 同时输出一级/二级/层级分类 F1、`confusion_analysis`、`standard_clue_eval / graph_clue_eval / overall_review_load_eval`，标准线索、图谱线索和人工复核负载不再混用同一口径。
 - **LLM 预算与路由**：`routing_profiles.yaml + ModelRouter + BudgetController + ClueRanker + LLMValueGate` 统一控制 intent/plan/query rewrite/record enrich/clue refine 的调用、token、候选条数和时延预算；简单 query 先走规则 parser，复杂 query / runtime 黑话上下文 / live source 规划才走固定 JSON schema 的 LLM parser/plan；`BudgetController` 使用 `peek/reserve/consume` lease 语义，pre-check 不污染 ledger，真实调用异常分支会记入 failed/network ledger。
 - **Query Preflight**：`src/query/preflight_parser.py` / `blackagent.query` 提供正式 `PreflightIntent`，在 LLM 解析前先抽取 risk_types、keywords、slang_terms、entity_types、freshness、preferred_source_types 和 cross-source 需求。
 - **多轮会话合同**：`src/conversation/` / `blackagent.conversation` 支持“展开第 N 条线索、解释依据、追踪实体、修改 source/profile 后重跑、基于当前线索生成报告”的 follow-up 解析与 session memory。
 - **实体图谱库**：`storage/entity_graph.py` 支持 `entity_asset / entity_observation / entity_relation` SQLite 持久化；`RuntimeContainer` 和 `InvestigationRuntime` 注入共享 `EntityGraphStore`，`ClueRetriever` 可从跨 run entity graph 生成可追溯线索，并提供 `neighborhood / entities_seen_since / cross_source_entities / related_clues` 查询。
 - **作弊剧本与证据链**：`PlaybookBuilder / CountermeasureSummaryBuilder / EvidenceChainRenderer` 可把线索组织成作弊剧本、复核建议和逐来源证据链；所有对抗建议默认 review-only，不触发自动处置。
 - **规则配置化**：`RuleRegistry` 统一加载 `risk_taxonomy.yaml / entity_patterns.yaml / slang_dictionary.yaml / context_polarity.yaml / clue_generation_rules.yaml`，分类主词、二级标签、promotion marker、防御语境、实体正则和 clue promotion 门槛均可通过配置扩展；evaluation 输出 `rule_version` 用于定位规则版本影响。
-- **OCR / 本地模型适配器**：`src/ocr` 接受上游 OCR 字段或注入 OCR engine，`content_modality=text/image_text/mixed` 会进入记录元数据；`src/ml` 提供本地 BERT 分类/NER 前置适配合同，默认不下载模型、不新增依赖，未配置时回退到本地确定性规则。
+- **OCR / 本地模型适配器**：`src/ocr` 接受上游 OCR 字段或注入 OCR engine，并提供 `BitmapGlyphOCREngine` demo 与可选 `TesseractCliOCREngine`；`content_modality=text/image_text/mixed` 会进入记录元数据；`src/ml` 提供本地 BERT 分类/NER 前置适配合同，默认不下载模型、不新增依赖，未配置时回退到本地确定性规则。
 - **Safety 边界**：`src/safety/` 已接入 LLM prompt wrapping、refine 输出校验和 PII masking；LLM plan 里的执行动作必须先通过 `PolicyGuard`，不通过时直接回退规则 plan。
 - **本地任务队列与调度器**：支持 cron/queue 风格的分层采集和 clue build。
 - **memory/sql 双后端**：默认内存模式，可切到 SQLite/PostgreSQL。
 
 ## 运行边界
 
-- Agent 不再启动 Web 服务，也没有 `/api/v1/...` 路由。
+- Agent 默认不启动 Web 服务，也没有生产 `/api/v1/...` 路由。
+- `scripts/serve_demo_api.py` 是本机答辩 demo/UI，默认绑定 `127.0.0.1`，只调用本地样本和 runtime，不代表线上多租户 API。
 - `main.py` 只是 CLI 包装入口，不创建 `app` 或 `create_app`。
 - `pyproject.toml` 不再依赖 FastAPI/uvicorn/httpx。
 - 保留内部 HTTP feed 采集器、X/TG 等第三方接口客户端、OpenAI-compatible LLM provider 配置；这些是 agent 内部运行依赖，不是对外暴露接口。
@@ -83,6 +84,16 @@ python scripts/run_agent_cli.py --demo-sample
 ```
 
 `--demo-sample` 没有显式 `--query` 时会自动使用内置默认 query，适合非交互 smoke。
+
+一键答辩 demo/API/UI：
+
+```powershell
+# 只生成一次 JSON 结果
+python scripts/serve_demo_api.py --oneshot-output data/demo_api_report.json
+
+# 本机 UI/API（浏览器打开 http://127.0.0.1:8765）
+python scripts/serve_demo_api.py --host 127.0.0.1 --port 8765
+```
 
 指定 query：
 
@@ -239,11 +250,24 @@ python scripts/evaluate_pipeline.py `
 python scripts/generate_source_smoke_report.py `
   --source-config config/intel_sources.public.yaml `
   --output data/source_smoke_report.json
+
+python scripts/run_live_source_smoke.py `
+  --output data/source_live_smoke_report.json
+
+python scripts/run_ocr_demo.py `
+  --output data/ocr_demo_report.json
+
+python scripts/run_scale_benchmark.py `
+  --sample-sizes 10000 100000 `
+  --batch-size 2000 `
+  --profile fast `
+  --output data/scale_benchmark_report.json
 ```
 
 Evaluation 中 `classification_f1` 兼容旧字段，但真实质量门禁建议使用
 `primary_classification_f1 / secondary_classification_f1 / hierarchical_classification_f1`。
-二级标签在没有 gold 标注时仅作为辅助字段，不参与正式门禁。
+当前 `tests/evaluation/gold_classification.jsonl` 已补二级 gold，`classification_granularity=auto`
+会自动进入层级评估；二级标签在没有 gold 标注时才仅作为辅助字段。
 线索质量需分别查看 `standard_clue_eval` 与 `graph_clue_eval`，人工负载看
 `overall_review_load_eval`。
 `--ablation` 会对比 `fast/off`、`high_recall/off`、`high_recall/mock`，输出

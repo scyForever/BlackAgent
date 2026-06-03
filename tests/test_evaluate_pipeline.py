@@ -22,17 +22,24 @@ def test_evaluate_pipeline_reports_classification_entity_and_clue_metrics():
     assert report["false_positive_rate"] <= 0.3
     assert report["clue"]["actual_clue_count"] >= 1
     assert "shared_contact_48h" in report["clue"]["actual_clue_types"]
+    assert "entity_graph_tool_trade_cluster" in report["clue"]["actual_clue_types"]
     assert report["clue"]["standard_clue_eval"]["expected_clue_types"] == ["shared_contact_48h", "shared_domain_multi_source"]
-    assert report["clue"]["graph_clue_eval"]["expected_clue_count"] == 0
+    assert report["clue"]["graph_clue_eval"]["expected_clue_count"] == 1
+    assert report["clue"]["graph_clue_eval"]["status"] == "completed"
     assert report["clue"]["overall_review_load_eval"]["metric_note"] == "review_load_is_reported_separately_from_standard_vs_graph_quality"
+    assert report["clue"]["clue_overgeneration_ratio"] == 1.0
     assert report["classification"]["primary"]["fp"] <= 30
     assert "primary_classification_f1" in report
     assert "secondary_classification_f1" in report
     assert "hierarchical_classification_f1" in report
-    assert report["classification"]["overall"]["metric_note"] == "primary_only_f1"
-    assert report["classification"]["secondary"]["status"] == "not_applicable"
-    assert report["secondary_classification_f1"] is None
-    assert report["secondary_label_policy"] == "assistive_field_not_formal_metric"
+    assert report["classification"]["overall"]["metric_note"] == "hierarchical_primary_secondary_f1"
+    assert report["classification"]["secondary"]["status"] == "completed"
+    assert report["classification"]["hierarchical"]["status"] == "completed"
+    assert report["classification"]["secondary_gold"]["ready"] is True
+    assert report["classification"]["confusion_analysis"]["status"] == "completed"
+    assert report["secondary_classification_f1"] >= 0.9
+    assert report["hierarchical_classification_f1"] >= 0.9
+    assert report["secondary_label_policy"] == "formal_metric"
     assert "rule_version" in report
     assert "llm_calls_per_1000_records" in report
     assert "profile_comparison_dimensions" in report

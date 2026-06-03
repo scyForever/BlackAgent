@@ -1,10 +1,13 @@
 from scripts.generate_source_smoke_report import build_report, load_sources
+from scripts.run_live_source_smoke import run_smoke as run_live_source_smoke
+from scripts.run_scale_benchmark import run_benchmark as run_scale_benchmark
+from scripts.serve_demo_api import run_demo_request
 from src.agent.user_request_parser import _fallback_intent
 from src.conversation import ConversationMemoryStore, ConversationResolver, FollowupParser
 from src.enhancement.source_intake import MultimodalTextExtractor
 from src.enhancement.strategy import EvidenceChainRenderer, RiskClue
 from src.ml import LocalBertAdapter, LocalBertConfig
-from src.ocr import OCRImageTextAdapter
+from src.ocr import BitmapGlyphOCREngine, OCRImageTextAdapter, render_demo_pbm
 from src.query import PreflightQueryParser
 
 
@@ -61,6 +64,17 @@ def test_ocr_adapter_marks_image_text_modality_without_external_engine():
     assert "TG:ocr001" in ocr.text
 
 
+def test_bitmap_ocr_engine_reads_demo_image_pixels(tmp_path):
+    image_path = render_demo_pbm("TG:OCR001", tmp_path / "ocr_demo.pbm")
+
+    ocr = OCRImageTextAdapter(engine=BitmapGlyphOCREngine()).extract({"trace_id": "ocr-pixel", "image_path": str(image_path)})
+
+    assert ocr.status == "completed"
+    assert ocr.content_modality == "image_text"
+    assert ocr.text == "TG:OCR001"
+    assert "ocr_engine.image_path" in ocr.sources
+
+
 def test_local_bert_adapter_provides_no_dependency_prestage_contract():
     result = LocalBertAdapter(config=LocalBertConfig(enabled=False)).analyze("群控脚本接码上车，联系 TG:bert001")
 
@@ -99,3 +113,33 @@ def test_source_smoke_report_covers_three_required_source_classes():
     assert report["status"] == "completed"
     assert set(report["covered_source_classes"]) == {"im_or_group", "social_or_forum", "vertical_or_technical"}
     assert all("legal_basis" in row and row["run_type"] == "dry_run_catalog_smoke" for row in report["sources"])
+
+
+def test_authorized_live_source_smoke_collects_loopback_feed():
+    report = run_live_source_smoke()
+
+    assert report["status"] == "completed"
+    assert report["run_type"] == "live_authorized_loopback_collection_smoke"
+    assert report["authorization_enforced"] is True
+    assert report["fetched_count"] == 2
+    assert report["high_risk_candidate_count"] >= 1
+
+
+def test_one_click_demo_api_runs_without_external_network():
+    report = run_demo_request({"query": "复核 demo 中的群控接码线索"})
+
+    assert report["status"] == "completed"
+    assert report["run_type"] == "local_one_click_defense_demo"
+    assert report["input_count"] >= 1
+    assert report["execution_summary"]
+
+
+def test_scale_benchmark_reports_latency_and_token_budget_on_small_sample():
+    report = run_scale_benchmark(sample_sizes=[20], batch_size=10, profile="fast")
+
+    scenario = report["scenarios"][0]
+    assert report["status"] == "completed"
+    assert scenario["sample_size"] == 20
+    assert scenario["classified_count"] == 20
+    assert scenario["records_per_second"] > 0
+    assert "estimated_tokens_per_1000_records" in scenario
