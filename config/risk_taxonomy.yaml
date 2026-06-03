@@ -212,8 +212,14 @@ theme_priors:
     bonus: 2
 
 classifier_policy:
-  review_only_categories: [众包服务]
+  review_only_categories: []
   review_only_secondary_labels: [拉群语义, 打粉引流, 订单卡单, 卡单玩法, 手工做单]
+  review_auto_clear:
+    secondary_labels: [代投服务, 拉群获客, 打粉卖量, 代运营]
+    min_confidence: 0.78
+    min_evidence: 2
+    require_resolved_conflict: true
+    require_non_theme_only: true
   secondary_label_gate:
     min_markers_for_final: 2
     allow_single_marker_with_entity_context: true

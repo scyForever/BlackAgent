@@ -39,7 +39,7 @@ Request
 - **情报处理流水线**：`IntelligencePipeline` 已接入 Clean/Dedup/Classify/Extract/Normalize/EntityGraph/CluePromotion 真实 stage；`LLMEnrich` 和 `Correlate/Score` 作为内部增强点折叠在流水线与线索生成中，不作为对外主流程节点。分类前置 `RiskPolarityScorer` 区分公告/反诈/研究/否定语境，抽取侧通过 `EntityNormalizer` 统一邀请码、TG、URL、联系方式的 normalized/hash/masked 字段。
 - **分类仲裁**：LLM 不再直接覆盖规则结果，分类结构保留 `classification.rule / classification.llm / classification.final / classification.resolution`；下游只消费 `final`，同时保留 `strategy / reason / review_required` 供人工复核和审计。
 - **Clue 分层**：线索先进入 `candidate_clues`，再由 `CluePromotionStage` 按跨源、观察次数、实体支撑和防御语境规则提升为 `actionable_clues`；弱线索进入 `archived_weak_clues`，避免召回优先阶段直接放大复核负担。
-- **评估分层**：`scripts/evaluate_pipeline.py` 同时输出一级/二级/层级分类 F1、`confusion_analysis`、`standard_clue_eval / graph_clue_eval / overall_review_load_eval`，标准线索、图谱线索和人工复核负载不再混用同一口径。
+- **评估分层**：`scripts/evaluate_pipeline.py` 同时输出一级/二级/层级分类 F1、`confusion_analysis`、`typical_errors`、`classification_review_load`、`standard_clue_eval / graph_clue_eval / overall_review_load_eval`；`scripts/build_heldout_eval.py` 可从本地公开/授权语料生成独立 held-out split，标准线索、图谱线索和人工复核负载不再混用同一口径。
 - **LLM 预算与路由**：`routing_profiles.yaml + ModelRouter + BudgetController + ClueRanker + LLMValueGate` 统一控制 intent/plan/query rewrite/record enrich/clue refine 的调用、token、候选条数和时延预算；简单 query 先走规则 parser，复杂 query / runtime 黑话上下文 / live source 规划才走固定 JSON schema 的 LLM parser/plan；`BudgetController` 使用 `peek/reserve/consume` lease 语义，pre-check 不污染 ledger，真实调用异常分支会记入 failed/network ledger。
 - **Query Preflight**：`src/query/preflight_parser.py` / `blackagent.query` 提供正式 `PreflightIntent`，在 LLM 解析前先抽取 risk_types、keywords、slang_terms、entity_types、freshness、preferred_source_types 和 cross-source 需求。
 - **多轮会话合同**：`src/conversation/` / `blackagent.conversation` 支持“展开第 N 条线索、解释依据、追踪实体、修改 source/profile 后重跑、基于当前线索生成报告”的 follow-up 解析与 session memory。
@@ -47,6 +47,7 @@ Request
 - **作弊剧本与证据链**：`PlaybookBuilder / CountermeasureSummaryBuilder / EvidenceChainRenderer` 可把线索组织成作弊剧本、复核建议和逐来源证据链；所有对抗建议默认 review-only，不触发自动处置。
 - **规则配置化**：`RuleRegistry` 统一加载 `risk_taxonomy.yaml / entity_patterns.yaml / slang_dictionary.yaml / context_polarity.yaml / clue_generation_rules.yaml`，分类主词、二级标签、promotion marker、防御语境、实体正则和 clue promotion 门槛均可通过配置扩展；evaluation 输出 `rule_version` 用于定位规则版本影响。
 - **OCR / 本地模型适配器**：`src/ocr` 接受上游 OCR 字段或注入 OCR engine，并提供 `BitmapGlyphOCREngine` demo 与可选 `TesseractCliOCREngine`；`content_modality=text/image_text/mixed` 会进入记录元数据；`src/ml` 提供本地 BERT 分类/NER 前置适配合同，默认不下载模型、不新增依赖，未配置时回退到本地确定性规则。
+- **P0-P2 展示与监控**：`scripts/run_cross_source_graph_demo.py` 展示同一 TG/域名跨 IM/论坛/授权 feed 出现时如何提升线索可信度；`scripts/generate_ops_dashboard.py` 汇总采集失败率、源覆盖、复核负载、时延、token 成本和 LLM 价值门控，输出 dashboard-friendly JSON。
 - **Safety 边界**：`src/safety/` 已接入 LLM prompt wrapping、refine 输出校验和 PII masking；LLM plan 里的执行动作必须先通过 `PolicyGuard`，不通过时直接回退规则 plan。
 - **本地任务队列与调度器**：支持 cron/queue 风格的分层采集和 clue build。
 - **memory/sql 双后端**：默认内存模式，可切到 SQLite/PostgreSQL。
@@ -63,6 +64,7 @@ Request
 ## 交付与使用文档
 
 - `docs/使用文档.md`：面向使用者的完整运行说明，覆盖安装、demo、文本/文件输入、联网采集、routing profile、真实 LLM、阶段脚本、结果解读和验收命令。
+- `docs/deployment.md`：本机 demo、Docker 演示容器、服务器部署边界与 P0-P2 复跑命令。
 - `docs/交付文档.md`：按 `黑灰产情报分析Agent.docx` 逐项映射分阶段目标和核心挑战，说明每一项如何实现、对应代码/配置/脚本、交付产物和当前统计结果。
 - `docs/collection_phase_delivery.md`：数据采集阶段产物说明。
 - `docs/cleaning_phase_delivery.md`：智能清洗阶段产物说明。
@@ -223,7 +225,7 @@ BlackAgent/
 ## 验证
 
 ```powershell
-python -m compileall -q src tests main.py scripts\run_agent_cli.py scripts\collect_public_sources.py scripts\smoke_llm_real.py
+python -m compileall -q src tests main.py scripts\run_agent_cli.py scripts\collect_public_sources.py scripts\smoke_llm_real.py scripts\build_heldout_eval.py scripts\run_live_source_smoke.py scripts\run_ocr_demo.py scripts\run_cross_source_graph_demo.py scripts\generate_ops_dashboard.py scripts\serve_demo_api.py scripts\run_scale_benchmark.py
 python -m pytest -m "not integration and not network"
 python -m pytest -m integration
 python -m pytest tests/test_local_runtime.py tests/test_run_agent_cli.py tests/test_refactor_boundaries.py -q
@@ -247,6 +249,23 @@ python scripts/evaluate_pipeline.py `
   --ablation `
   --output data/eval_llm_ablation.json
 
+python scripts/build_heldout_eval.py `
+  --limit 60 `
+  --per-category 12 `
+  --output tests/evaluation/heldout_classification.jsonl
+
+python scripts/evaluate_pipeline.py `
+  --gold tests/evaluation/heldout_classification.jsonl `
+  --classification-granularity auto `
+  --dataset-name blackagent_local_public_authorized_heldout_v1 `
+  --dataset-kind heldout_public_authorized_seed `
+  --profile fast `
+  --min-primary-classification-f1 0.90 `
+  --min-secondary-classification-f1 0.80 `
+  --min-hierarchical-classification-f1 0.80 `
+  --max-classification-review-rate 0.70 `
+  --output data/eval_heldout_report.json
+
 python scripts/generate_source_smoke_report.py `
   --source-config config/intel_sources.public.yaml `
   --output data/source_smoke_report.json
@@ -256,6 +275,15 @@ python scripts/run_live_source_smoke.py `
 
 python scripts/run_ocr_demo.py `
   --output data/ocr_demo_report.json
+
+python scripts/run_cross_source_graph_demo.py `
+  --output data/cross_source_graph_demo_report.json
+
+python scripts/generate_ops_dashboard.py `
+  --classification-summary data/classification_extraction_phase_high_risk_summary.json `
+  --review-records data/cleaning_phase_high_risk_corpus.jsonl `
+  --review-limit 393 `
+  --output data/ops_dashboard_report.json
 
 python scripts/run_scale_benchmark.py `
   --sample-sizes 10000 100000 `
@@ -268,6 +296,9 @@ Evaluation 中 `classification_f1` 兼容旧字段，但真实质量门禁建议
 `primary_classification_f1 / secondary_classification_f1 / hierarchical_classification_f1`。
 当前 `tests/evaluation/gold_classification.jsonl` 已补二级 gold，`classification_granularity=auto`
 会自动进入层级评估；二级标签在没有 gold 标注时才仅作为辅助字段。
+held-out 报告会额外输出 `dataset.is_heldout`、`annotation_sources`、`typical_errors`
+和 `classification_review_load`；`heldout_public_authorized_seed` 只证明本地公开/授权
+split，不能冒充线上泛化。
 线索质量需分别查看 `standard_clue_eval` 与 `graph_clue_eval`，人工负载看
 `overall_review_load_eval`。
 `--ablation` 会对比 `fast/off`、`high_recall/off`、`high_recall/mock`，输出

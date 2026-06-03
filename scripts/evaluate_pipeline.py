@@ -28,6 +28,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--entities-gold", default=None, help="Optional JSONL focused on entity extraction.")
     parser.add_argument("--clues-gold", default=None, help="Optional JSONL focused on clue aggregation.")
     parser.add_argument("--hard-negative", default=None, help="Optional JSONL where no risk prediction is expected.")
+    parser.add_argument("--dataset-name", default=None, help="Human-readable dataset name written to the report.")
+    parser.add_argument(
+        "--dataset-kind",
+        default=None,
+        help="Dataset split/kind such as synthetic_gold, heldout_public_authorized, or smoke.",
+    )
     parser.add_argument("--profile", default="high_recall", choices=["fast", "balanced", "high_recall"], help="Routing profile to evaluate.")
     parser.add_argument(
         "--classification-granularity",
@@ -69,6 +75,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-llm-calls-per-1000", type=float, default=None, help="Fail if profile LLM calls per 1000 records exceed this threshold.")
     parser.add_argument("--max-clue-overgeneration-ratio", type=float, default=None, help="Fail if actual clue count greatly exceeds expected count.")
     parser.add_argument("--max-review-load-per-100-records", type=float, default=None, help="Fail if actionable clue review load is above this threshold.")
+    parser.add_argument("--max-classification-review-rate", type=float, default=None, help="Fail if classification review_required rate is above this threshold.")
     parser.add_argument("--output", default="data/eval_report.json", help="Where to write JSON metrics.")
     return parser.parse_args(argv)
 
@@ -102,6 +109,8 @@ def evaluate(
     llm_mode: str = "off",
     with_budget: bool = False,
     classification_granularity: str = "auto",
+    dataset_name: str | None = None,
+    dataset_kind: str | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     classification_records = list(records)
@@ -143,6 +152,11 @@ def evaluate(
     pipeline_summary = classification_result.execution_summary.model_dump()
     report = {
         "status": "completed",
+        "dataset": dataset_profile(
+            [*classification_records, *hard_negative_records],
+            explicit_name=dataset_name,
+            explicit_kind=dataset_kind,
+        ),
         "profile": profile,
         "record_count": len(classification_records),
         "classification_record_count": len(classification_records),
@@ -174,6 +188,9 @@ def evaluate(
         "clue_f1": clue_metrics["overall"]["f1"],
         "high_risk_recall": classification_metrics["primary"]["recall"],
         "false_positive_rate": classification_metrics["false_positive_rate"],
+        "classification_review_load": classification_metrics["review_load"],
+        "classification_review_rate": classification_metrics["review_load"]["review_rate"],
+        "classification_review_load_per_100_records": classification_metrics["review_load"]["review_load_per_100_records"],
         "hard_negative": classification_metrics["hard_negative"],
         "llm_calls_per_1000_records": llm_calls_per_1000,
         "runtime_value_gate_applied": False,
@@ -269,6 +286,12 @@ def quality_gate_failures(report: Mapping[str, Any], args: argparse.Namespace) -
         failures.append(f"clue_overgeneration_ratio_above_threshold:{report['clue']['clue_overgeneration_ratio']}>{args.max_clue_overgeneration_ratio}")
     if getattr(args, "max_review_load_per_100_records", None) is not None and float(report["clue"]["review_load_per_100_records"]) > args.max_review_load_per_100_records:
         failures.append(f"review_load_per_100_records_above_threshold:{report['clue']['review_load_per_100_records']}>{args.max_review_load_per_100_records}")
+    if getattr(args, "max_classification_review_rate", None) is not None:
+        review_rate = report.get("classification_review_rate")
+        if review_rate is None:
+            failures.append("classification_review_rate_not_applicable:non_standard_report")
+        elif float(review_rate) > args.max_classification_review_rate:
+            failures.append(f"classification_review_rate_above_threshold:{review_rate}>{args.max_classification_review_rate}")
     return failures
 
 
@@ -284,9 +307,10 @@ def evaluate_classification(
     primary_confusion: defaultdict[str, Counter[str]] = defaultdict(Counter)
     secondary_confusion: defaultdict[str, Counter[str]] = defaultdict(Counter)
     hierarchical_confusion: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    actual_item_list = [dict(item) for item in actual_items]
     actual_by_trace = {
         str(item.get("source_trace_id") or ""): item
-        for item in actual_items
+        for item in actual_item_list
     }
     hard_tn = hard_fp = 0
     positive_record_count = 0
@@ -398,6 +422,13 @@ def evaluate_classification(
                 else "secondary_hierarchical_confusion_requires_secondary_gold"
             ),
         },
+        "typical_errors": _classification_error_examples(
+            records,
+            actual_by_trace,
+            include_secondary=hierarchical_gold_ready,
+            limit=10,
+        ),
+        "review_load": _classification_review_load(actual_item_list, record_count=len(records)),
         "granularity": resolved_granularity,
         "evaluation_mode": evaluation_mode,
         "positive_record_count": positive_record_count,
@@ -525,6 +556,107 @@ def _expected_clue_gold(records: list[dict[str, Any]], *, layer: str) -> tuple[i
         )
     expected_count = max(expected_count, len(expected_types))
     return expected_count, expected_types
+
+
+def dataset_profile(
+    records: list[dict[str, Any]],
+    *,
+    explicit_name: str | None = None,
+    explicit_kind: str | None = None,
+) -> dict[str, Any]:
+    """Summarize dataset provenance so held-out results are not mixed with smoke gold."""
+
+    names = _counter_payload(Counter(str(record.get("dataset_name") or "").strip() for record in records if str(record.get("dataset_name") or "").strip()))
+    kinds = _counter_payload(Counter(str(record.get("dataset_kind") or "").strip() for record in records if str(record.get("dataset_kind") or "").strip()))
+    annotation_sources = _counter_payload(
+        Counter(str(record.get("annotation_source") or "unspecified") for record in records)
+    )
+    source_types = _counter_payload(Counter(str(record.get("source_type") or "unknown") for record in records))
+    source_names = _counter_payload(Counter(str(record.get("source_name") or "unknown") for record in records), limit=12)
+    content_modalities = _counter_payload(Counter(str(record.get("content_modality") or "text") for record in records))
+    holdout_splits = _counter_payload(Counter(str(record.get("holdout_split") or "").strip() for record in records if str(record.get("holdout_split") or "").strip()))
+    resolved_kind = explicit_kind or (kinds[0]["value"] if kinds else "unspecified_gold")
+    return {
+        "name": explicit_name or (names[0]["value"] if names else None),
+        "kind": resolved_kind,
+        "record_count": len(records),
+        "is_heldout": "heldout" in str(resolved_kind).lower() or bool(holdout_splits),
+        "annotation_sources": annotation_sources,
+        "source_types": source_types,
+        "source_names_top": source_names,
+        "content_modalities": content_modalities,
+        "holdout_splits": holdout_splits,
+        "claim_boundary": (
+            "Held-out/public-authorized reports prove only this local annotated split; "
+            "they must not be described as full online generalization."
+        ),
+    }
+
+
+def _classification_review_load(actual_items: list[dict[str, Any]], *, record_count: int) -> dict[str, Any]:
+    review_items = [item for item in actual_items if bool(item.get("review_required"))]
+    return {
+        "review_required_count": len(review_items),
+        "record_count": record_count,
+        "review_rate": round(len(review_items) / max(record_count, 1), 4),
+        "review_load_per_100_records": round(len(review_items) / max(record_count, 1) * 100.0, 4),
+        "by_risk_category": _counter_payload(Counter(str(item.get("risk_category") or "unknown") for item in review_items)),
+        "by_secondary_label": _counter_payload(Counter(str(item.get("secondary_label") or "待研判") for item in review_items)),
+        "by_conflict_status": _counter_payload(Counter(str(item.get("conflict_status") or "RESOLVED") for item in review_items)),
+    }
+
+
+def _classification_error_examples(
+    records: list[dict[str, Any]],
+    actual_by_trace: Mapping[str, Mapping[str, Any]],
+    *,
+    include_secondary: bool,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    for record in records:
+        trace_id = _trace_id(record)
+        expected_primary = predicted_categories(record)
+        expected_secondary = expected_secondary_labels(record)
+        actual = actual_by_trace.get(trace_id, {})
+        actual_primary = predicted_categories(actual)
+        actual_secondary = actual_secondary_labels(actual)
+        primary_mismatch = expected_primary != actual_primary
+        secondary_mismatch = include_secondary and expected_secondary != actual_secondary
+        if not primary_mismatch and not secondary_mismatch:
+            continue
+        errors.append(
+            {
+                "source_trace_id": trace_id,
+                "source_name": record.get("source_name"),
+                "source_type": record.get("source_type"),
+                "expected_primary": sorted(expected_primary),
+                "actual_primary": sorted(actual_primary),
+                "expected_secondary": sorted(expected_secondary),
+                "actual_secondary": sorted(actual_secondary),
+                "mismatch_type": (
+                    "primary_and_secondary"
+                    if primary_mismatch and secondary_mismatch
+                    else "primary"
+                    if primary_mismatch
+                    else "secondary"
+                ),
+                "text_excerpt": _text_excerpt(record),
+            }
+        )
+        if len(errors) >= max(0, int(limit)):
+            break
+    return errors
+
+
+def _counter_payload(counter: Counter[str], *, limit: int | None = None) -> list[dict[str, Any]]:
+    pairs = counter.most_common(limit)
+    return [{"value": value, "count": count} for value, count in pairs if value]
+
+
+def _text_excerpt(record: Mapping[str, Any], *, limit: int = 160) -> str:
+    text = str(record.get("content_text") or record.get("clean_text") or "")
+    return text[:limit] + ("..." if len(text) > limit else "")
 
 
 def predicted_categories(classification: Mapping[str, Any]) -> set[str]:
@@ -664,6 +796,8 @@ def main(argv: list[str] | None = None) -> int:
             llm_mode=args.llm_mode,
             with_budget=args.with_budget,
             classification_granularity=args.classification_granularity,
+            dataset_name=args.dataset_name,
+            dataset_kind=args.dataset_kind,
         )
     )
     if args.ablation and args.write_latest_llm_value:

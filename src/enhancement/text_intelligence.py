@@ -311,6 +311,21 @@ class FineGrainedIntentClassifier:
         )
         self.review_only_categories = set(_as_tuple(policy.get("review_only_categories")))
         self.review_only_secondary_labels = set(_as_tuple(policy.get("review_only_secondary_labels")))
+        auto_clear = policy.get("review_auto_clear") if isinstance(policy.get("review_auto_clear"), Mapping) else {}
+        self.review_auto_clear_secondary_labels = set(
+            _as_tuple(auto_clear.get("secondary_labels") if isinstance(auto_clear, Mapping) else ())
+        )
+        self.review_auto_clear_min_confidence = _float_value(
+            auto_clear.get("min_confidence") if isinstance(auto_clear, Mapping) else None,
+            0.78,
+        )
+        self.review_auto_clear_min_evidence = int(auto_clear.get("min_evidence") or 2) if isinstance(auto_clear, Mapping) else 2
+        self.review_auto_clear_require_resolved_conflict = bool(
+            auto_clear.get("require_resolved_conflict", True) if isinstance(auto_clear, Mapping) else True
+        )
+        self.review_auto_clear_require_non_theme_only = bool(
+            auto_clear.get("require_non_theme_only", True) if isinstance(auto_clear, Mapping) else True
+        )
         secondary_gate = policy.get("secondary_label_gate") if isinstance(policy.get("secondary_label_gate"), Mapping) else {}
         self.secondary_min_markers_for_final = int(secondary_gate.get("min_markers_for_final") or 2) if isinstance(secondary_gate, Mapping) else 2
         self.secondary_allow_single_marker_with_entity_context = bool(
@@ -373,10 +388,11 @@ class FineGrainedIntentClassifier:
             float(fast_data.get("confidence", 0.0) or 0.0),
             min(0.96, 0.56 + top_score * 0.07 + len(secondary_evidence) * 0.03),
         )
+        theme_only = bool(theme_only_scores.get(top_category, False))
         review_required = bool(fast_data.get("review_required", False))
         if top_category in self.review_only_categories:
             review_required = True
-        if theme_only_scores.get(top_category, False):
+        if theme_only:
             review_required = True
             confidence = min(confidence, 0.72)
         if secondary_label in {"未细分", "待研判"}:
@@ -388,6 +404,14 @@ class FineGrainedIntentClassifier:
             conflict_status = "CONFLICT_REVIEW"
             review_required = True
             confidence = min(confidence, 0.74)
+        if self._can_auto_clear_review(
+            secondary_label=secondary_label,
+            confidence=confidence,
+            evidence=supporting_evidence,
+            has_conflict=bool(conflicts),
+            theme_only=theme_only,
+        ):
+            review_required = False
 
         return FineClassificationResult(
             source_trace_id=trace_id,
@@ -568,6 +592,30 @@ class FineGrainedIntentClassifier:
             and hits
             and has_entity_context
         )
+
+    def _can_auto_clear_review(
+        self,
+        *,
+        secondary_label: str,
+        confidence: float,
+        evidence: list[str],
+        has_conflict: bool,
+        theme_only: bool,
+    ) -> bool:
+        if not self.review_auto_clear_secondary_labels:
+            return False
+        if secondary_label not in self.review_auto_clear_secondary_labels:
+            return False
+        if secondary_label in self.review_only_secondary_labels or secondary_label in {"未细分", "待研判"}:
+            return False
+        if self.review_auto_clear_require_resolved_conflict and has_conflict:
+            return False
+        if self.review_auto_clear_require_non_theme_only and theme_only:
+            return False
+        if confidence < self.review_auto_clear_min_confidence:
+            return False
+        non_theme_evidence = [item for item in evidence if not str(item).startswith("theme:")]
+        return len(non_theme_evidence) >= self.review_auto_clear_min_evidence
 
     def _marker_hits(self, text: str, markers: Iterable[str]) -> list[str]:
         lowered_text = text.lower()
@@ -777,6 +825,13 @@ def _as_tuple(value: Any) -> tuple[str, ...]:
     else:
         values = ()
     return tuple(dict.fromkeys(str(item) for item in values if str(item).strip()))
+
+
+def _float_value(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _ordered_unique(values: Iterable[str]) -> list[str]:

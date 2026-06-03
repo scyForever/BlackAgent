@@ -1,4 +1,7 @@
+from scripts.build_heldout_eval import build_heldout_records
+from scripts.generate_ops_dashboard import build_dashboard
 from scripts.generate_source_smoke_report import build_report, load_sources
+from scripts.run_cross_source_graph_demo import run_demo as run_cross_source_graph_demo
 from scripts.run_live_source_smoke import run_smoke as run_live_source_smoke
 from scripts.run_scale_benchmark import run_benchmark as run_scale_benchmark
 from scripts.serve_demo_api import run_demo_request
@@ -6,6 +9,7 @@ from src.agent.user_request_parser import _fallback_intent
 from src.conversation import ConversationMemoryStore, ConversationResolver, FollowupParser
 from src.enhancement.source_intake import MultimodalTextExtractor
 from src.enhancement.strategy import EvidenceChainRenderer, RiskClue
+from src.enhancement.text_intelligence import FineGrainedIntentClassifier
 from src.ml import LocalBertAdapter, LocalBertConfig
 from src.ocr import BitmapGlyphOCREngine, OCRImageTextAdapter, render_demo_pbm
 from src.query import PreflightQueryParser
@@ -83,6 +87,35 @@ def test_local_bert_adapter_provides_no_dependency_prestage_contract():
     assert any(entity["entity_type"] == "contact" and entity["normalized_value"] == "bert001" for entity in result.entities)
 
 
+def test_review_load_calibration_auto_clears_high_confidence_crowd_secondary():
+    result = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "crowd-auto-clear",
+            "content_text": "承接TG私信代发广告投放，支持客户包量，业务联系 @demo，长期合作担保。",
+            "matched_themes": ["众包任务"],
+            "matched_keywords": ["代发", "接单", "广告"],
+        }
+    )
+
+    assert result.risk_category == "众包服务"
+    assert result.secondary_label == "代投服务"
+    assert result.review_required is False
+
+
+def test_review_only_secondary_stays_in_manual_review():
+    result = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "review-only-order",
+            "content_text": "支付通道调整后出现卡单和支付失败，下单用户请联系客服处理退款和补发。",
+            "matched_themes": ["刷单作弊"],
+            "matched_keywords": ["卡单"],
+        }
+    )
+
+    assert result.secondary_label == "订单卡单"
+    assert result.review_required is True
+
+
 def test_evidence_chain_renderer_outputs_reviewable_rows():
     clue = RiskClue(
         clue_id="clue-1",
@@ -132,6 +165,52 @@ def test_one_click_demo_api_runs_without_external_network():
     assert report["run_type"] == "local_one_click_defense_demo"
     assert report["input_count"] >= 1
     assert report["execution_summary"]
+
+
+def test_heldout_builder_creates_reviewable_local_split():
+    records = [
+        {"trace_id": "h1", "source_name": "tg", "source_type": "IM", "content_text": "群控脚本接码，联系 TG:h001"},
+        {"trace_id": "h2", "source_name": "forum", "source_type": "Forum", "content_text": "私域导流返利拉新，开户链接 https://h2.example/a"},
+        {"trace_id": "h3", "source_name": "feed", "source_type": "THREAT_INTEL", "content_text": "代发广告投放业务，客户包量，联系 @h3"},
+    ]
+
+    heldout = build_heldout_records(records, limit=3, per_category=2)
+
+    assert heldout
+    assert all(item["dataset_kind"] == "heldout_public_authorized_seed" for item in heldout)
+    assert all(item["annotation_source"] == "seeded_from_local_authorized_corpus_for_manual_review" for item in heldout)
+
+
+def test_cross_source_graph_demo_outputs_multi_source_clue():
+    report = run_cross_source_graph_demo()
+
+    assert report["status"] == "completed"
+    assert report["source_count"] == 3
+    assert report["cross_source_clue_count"] >= 1
+    assert any(clue["clue_type"] == "shared_contact_48h" for clue in report["cross_source_clues"])
+
+
+def test_ops_dashboard_aggregates_monitoring_metrics():
+    dashboard = build_dashboard(
+        collection_stats={"total_raw_records": 10, "source_counts": [{"source_name": "a", "count": 10}]},
+        classification_summary={"classification_count": 4, "review_required_count": 2},
+        source_smoke={
+            "sources": [
+                {"source_name": "ok", "compliance_status": "SCHEDULABLE"},
+                {"source_name": "bad", "compliance_status": "REJECTED", "failure_reason": "blocked"},
+            ],
+            "covered_source_classes": ["im_or_group"],
+            "missing_source_classes": ["social_or_forum"],
+        },
+        scale_report={"scenarios": [{"sample_size": 100, "records_per_second": 20.0, "p95_record_latency_ms": 1.2, "llm_calls_per_1000_records": 0.0, "estimated_tokens_per_1000_records": 0.0}]},
+        llm_value={"record_enrich_policy": "conflict_only", "should_enable_record_enrich": False},
+        review_records=[{"trace_id": "r1", "content_text": "代发广告投放业务，客户包量，联系 @demo"}],
+    )
+
+    assert dashboard["status"] == "completed"
+    assert dashboard["source_quality"]["failure_rate"] == 0.5
+    assert dashboard["classification_review_load"]["baseline"]["review_rate"] == 0.5
+    assert dashboard["llm_cost_and_value"]["record_enrich_policy"] == "conflict_only"
 
 
 def test_scale_benchmark_reports_latency_and_token_budget_on_small_sample():
