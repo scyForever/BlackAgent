@@ -98,6 +98,7 @@ def _fresh_review_load(records: list[dict[str, Any]]) -> dict[str, Any]:
     category_counter: Counter[str] = Counter()
     secondary_counter: Counter[str] = Counter()
     conflict_counter: Counter[str] = Counter()
+    reason_counter: Counter[str] = Counter()
     for raw in records:
         content = str(raw.get("content_text") or raw.get("clean_text") or "").strip()
         if not content:
@@ -108,6 +109,7 @@ def _fresh_review_load(records: list[dict[str, Any]]) -> dict[str, Any]:
             category_counter[str(result.get("risk_category") or "unknown")] += 1
             secondary_counter[str(result.get("secondary_label") or "待研判")] += 1
             conflict_counter[str(result.get("conflict_status") or "RESOLVED")] += 1
+            reason_counter[str(result.get("review_decision_reason") or "unknown")] += 1
     return {
         "record_count": len(records),
         "review_required_count": reviewed,
@@ -116,6 +118,7 @@ def _fresh_review_load(records: list[dict[str, Any]]) -> dict[str, Any]:
         "by_risk_category": _counter_rows(category_counter),
         "by_secondary_label": _counter_rows(secondary_counter),
         "by_conflict_status": _counter_rows(conflict_counter),
+        "by_review_decision_reason": _counter_rows(reason_counter),
     }
 
 

@@ -225,7 +225,7 @@ BlackAgent/
 ## 验证
 
 ```powershell
-python -m compileall -q src tests main.py scripts\run_agent_cli.py scripts\collect_public_sources.py scripts\smoke_llm_real.py scripts\build_heldout_eval.py scripts\run_live_source_smoke.py scripts\run_ocr_demo.py scripts\run_cross_source_graph_demo.py scripts\generate_ops_dashboard.py scripts\serve_demo_api.py scripts\run_scale_benchmark.py
+python -m compileall -q src tests main.py scripts\run_agent_cli.py scripts\collect_public_sources.py scripts\smoke_llm_real.py scripts\build_heldout_eval.py scripts\export_manual_heldout_review.py scripts\validate_manual_heldout.py scripts\generate_source_smoke_report.py scripts\run_live_source_smoke.py scripts\run_ocr_demo.py scripts\build_ocr_hardset.py scripts\run_cross_source_graph_demo.py scripts\generate_ops_dashboard.py scripts\serve_demo_api.py scripts\run_scale_benchmark.py
 python -m pytest -m "not integration and not network"
 python -m pytest -m integration
 python -m pytest tests/test_local_runtime.py tests/test_run_agent_cli.py tests/test_refactor_boundaries.py -q
@@ -254,6 +254,22 @@ python scripts/build_heldout_eval.py `
   --per-category 12 `
   --output tests/evaluation/heldout_classification.jsonl
 
+python scripts/export_manual_heldout_review.py `
+  --input tests/evaluation/heldout_classification.jsonl `
+  --output data/manual_review/heldout_review_task.csv `
+  --readme data/manual_review/README.md `
+  --report data/manual_review/heldout_review_task_report.json `
+  --limit 60 `
+  --min-target 50
+
+# 未经人工填写 CSV 时应保持 insufficient_confirmed_records，防止 seeded label 冒充人工 gold。
+python scripts/validate_manual_heldout.py `
+  --input tests/evaluation/heldout_classification.jsonl `
+  --review-csv data/manual_review/heldout_review_task.csv `
+  --output tests/evaluation/manual_heldout_classification.jsonl `
+  --report data/manual_heldout_report.json `
+  --min-records 50
+
 python scripts/evaluate_pipeline.py `
   --gold tests/evaluation/heldout_classification.jsonl `
   --classification-granularity auto `
@@ -270,17 +286,39 @@ python scripts/generate_source_smoke_report.py `
   --source-config config/intel_sources.public.yaml `
   --output data/source_smoke_report.json
 
+python scripts/generate_source_smoke_report.py `
+  --source-config config/intel_sources.public.yaml `
+  --network-enabled `
+  --max-records 3 `
+  --timeout-seconds 10 `
+  --output data/source_external_smoke_report.json
+
 python scripts/run_live_source_smoke.py `
   --output data/source_live_smoke_report.json
 
 python scripts/run_ocr_demo.py `
   --output data/ocr_demo_report.json
 
+python scripts/build_ocr_hardset.py `
+  --output tests/evaluation/ocr_image_text_hardset.jsonl `
+  --image-dir data/ocr_hardset_images `
+  --report data/ocr_hardset_report.json `
+  --count 20
+
+python scripts/evaluate_pipeline.py `
+  --gold tests/evaluation/ocr_image_text_hardset.jsonl `
+  --classification-granularity auto `
+  --dataset-name blackagent_ocr_image_text_hardset_v1 `
+  --dataset-kind ocr_image_text_hardset `
+  --profile fast `
+  --output data/eval_ocr_hardset_report.json
+
 python scripts/run_cross_source_graph_demo.py `
   --output data/cross_source_graph_demo_report.json
 
 python scripts/generate_ops_dashboard.py `
   --classification-summary data/classification_extraction_phase_high_risk_summary.json `
+  --source-smoke data/source_smoke_report.json `
   --review-records data/cleaning_phase_high_risk_corpus.jsonl `
   --review-limit 393 `
   --output data/ops_dashboard_report.json
@@ -298,7 +336,9 @@ Evaluation 中 `classification_f1` 兼容旧字段，但真实质量门禁建议
 会自动进入层级评估；二级标签在没有 gold 标注时才仅作为辅助字段。
 held-out 报告会额外输出 `dataset.is_heldout`、`annotation_sources`、`typical_errors`
 和 `classification_review_load`；`heldout_public_authorized_seed` 只证明本地公开/授权
-split，不能冒充线上泛化。
+split，不能冒充线上泛化。人工版 held-out 只有在 `validate_manual_heldout.py`
+看到 `confirmed / corrected` 且 `annotator / review_date / final_risk_categories /
+conflict_handling` 等字段完整时才会输出 `manual_heldout_public_authorized`。
 线索质量需分别查看 `standard_clue_eval` 与 `graph_clue_eval`，人工负载看
 `overall_review_load_eval`。
 `--ablation` 会对比 `fast/off`、`high_recall/off`、`high_recall/mock`，输出

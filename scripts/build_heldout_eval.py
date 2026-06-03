@@ -84,6 +84,16 @@ def build_heldout_records(
                     "Expected labels are deterministically seeded from current rules; "
                     "human analysts should confirm before making online-generalization claims."
                 ),
+                "human_review": {
+                    "status": "pending_human_confirmation",
+                    "annotator": "",
+                    "review_date": "",
+                    "final_risk_categories": [],
+                    "final_secondary_labels": [],
+                    "conflict_handling": "",
+                    "typical_error": "",
+                    "notes": "",
+                },
             }
         )
 
@@ -136,6 +146,10 @@ def write_jsonl(records: Iterable[dict[str, Any]], path: str | Path) -> Path:
 
 
 def build_report(records: list[dict[str, Any]], *, output_path: str | Path) -> dict[str, Any]:
+    human_review_statuses = Counter(
+        str((record.get("human_review") or {}).get("status") or "missing_human_review")
+        for record in records
+    )
     return {
         "status": "completed",
         "run_type": "build_local_public_authorized_heldout",
@@ -144,6 +158,21 @@ def build_report(records: list[dict[str, Any]], *, output_path: str | Path) -> d
         "category_counts": dict(Counter(next(iter(record["expected_risk_categories"]), "unknown") for record in records)),
         "secondary_label_counts": dict(Counter((record.get("expected_secondary_labels") or ["未细分"])[0] for record in records)),
         "source_type_counts": dict(Counter(str(record.get("source_type") or "unknown") for record in records)),
+        "human_review": {
+            "status_counts": dict(human_review_statuses),
+            "required_fields": [
+                "human_review.annotator",
+                "human_review.review_date",
+                "human_review.final_risk_categories",
+                "human_review.conflict_handling",
+                "human_review.typical_error",
+            ],
+            "finalize_command": (
+                "python scripts/validate_manual_heldout.py "
+                "--input tests/evaluation/heldout_classification.jsonl "
+                "--output tests/evaluation/manual_heldout_classification.jsonl"
+            ),
+        },
         "claim_boundary": (
             "This is an independent local public/authorized held-out split seeded for analyst review; "
             "do not present it as live online generalization without human confirmation and fresh external validation."

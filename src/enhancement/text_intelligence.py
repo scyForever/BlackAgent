@@ -124,7 +124,8 @@ class FineClassificationResult:
     conflict_status: str = "RESOLVED"
     conflict_categories: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
-    classifier_version: str = "fine_grained_v2_conflict_v3"
+    review_decision_reason: str = "default_review_policy"
+    classifier_version: str = "fine_grained_v2_conflict_v4"
 
     def model_dump(self) -> dict[str, Any]:
         return asdict(self)
@@ -326,6 +327,16 @@ class FineGrainedIntentClassifier:
         self.review_auto_clear_require_non_theme_only = bool(
             auto_clear.get("require_non_theme_only", True) if isinstance(auto_clear, Mapping) else True
         )
+        self.review_auto_clear_conflict_secondary_labels = set(
+            _as_tuple(auto_clear.get("conflict_secondary_labels") if isinstance(auto_clear, Mapping) else ())
+        )
+        self.review_auto_clear_conflict_min_confidence = _float_value(
+            auto_clear.get("conflict_min_confidence") if isinstance(auto_clear, Mapping) else None,
+            0.92,
+        )
+        self.review_auto_clear_conflict_min_margin = int(
+            auto_clear.get("conflict_min_margin") or 2
+        ) if isinstance(auto_clear, Mapping) else 2
         secondary_gate = policy.get("secondary_label_gate") if isinstance(policy.get("secondary_label_gate"), Mapping) else {}
         self.secondary_min_markers_for_final = int(secondary_gate.get("min_markers_for_final") or 2) if isinstance(secondary_gate, Mapping) else 2
         self.secondary_allow_single_marker_with_entity_context = bool(
@@ -359,19 +370,34 @@ class FineGrainedIntentClassifier:
         )
 
         if not category_scores:
-            return FineClassificationResult(trace_id, UNKNOWN, "待研判", 0.35, True, "UNKNOWN", [], [])
+            return FineClassificationResult(
+                source_trace_id=trace_id,
+                risk_category=UNKNOWN,
+                secondary_label="待研判",
+                confidence=0.35,
+                review_required=True,
+                final_secondary_label=None,
+                candidate_secondary_labels=[],
+                conflict_status="UNKNOWN",
+                conflict_categories=[],
+                evidence=[],
+                review_decision_reason="no_category_score",
+            )
         topic_terms = [term for values in category_evidence.values() for term in values if not str(term).startswith("theme:")]
         polarity = self.polarity_scorer.score(text, topic_terms=topic_terms)
         if self._is_defensive_context(match_text) or polarity.polarity == NEGATIVE_RISK_ASSERTION:
             return FineClassificationResult(
-                trace_id,
-                NORMAL_NOISE,
-                "研究讨论" if polarity.actor_intent == "research" else "防御语境",
-                max(0.8, polarity.confidence),
-                False,
-                "NEGATIVE_RISK_ASSERTION",
-                [],
-                polarity.evidence or ["defensive_context"],
+                source_trace_id=trace_id,
+                risk_category=NORMAL_NOISE,
+                secondary_label="研究讨论" if polarity.actor_intent == "research" else "防御语境",
+                confidence=max(0.8, polarity.confidence),
+                review_required=False,
+                final_secondary_label=None,
+                candidate_secondary_labels=[],
+                conflict_status="NEGATIVE_RISK_ASSERTION",
+                conflict_categories=[],
+                evidence=polarity.evidence or ["defensive_context"],
+                review_decision_reason="defensive_or_negative_context",
             )
 
         ordered = sorted(
@@ -379,10 +405,21 @@ class FineGrainedIntentClassifier:
             key=lambda item: (-item[1], -self.category_priority.get(item[0], 0), item[0]),
         )
         top_category, top_score = ordered[0]
-        conflicts = [category for category, score in ordered[1:] if score == top_score or (top_score - score <= 1 and score >= 2)]
+        raw_conflicts = [category for category, score in ordered[1:] if score == top_score or (top_score - score <= 1 and score >= 2)]
         conflict_status = "RESOLVED"
         secondary_label, secondary_evidence, secondary_candidates = self._secondary_label(top_category, match_text, matched_keywords)
         supporting_evidence = self._ordered_unique((*category_evidence.get(top_category, []), *secondary_evidence))
+        conflicts = self._calibrated_conflicts(
+            raw_conflicts,
+            top_category=top_category,
+            top_score=top_score,
+            ordered_scores=ordered,
+            secondary_label=secondary_label,
+            secondary_evidence=secondary_evidence,
+            supporting_evidence=supporting_evidence,
+            category_evidence=category_evidence,
+            text=match_text,
+        )
 
         confidence = max(
             float(fast_data.get("confidence", 0.0) or 0.0),
@@ -390,19 +427,25 @@ class FineGrainedIntentClassifier:
         )
         theme_only = bool(theme_only_scores.get(top_category, False))
         review_required = bool(fast_data.get("review_required", False))
+        review_reason = "fast_classifier_review" if review_required else "auto_resolved"
         if top_category in self.review_only_categories:
             review_required = True
+            review_reason = "review_only_category"
         if theme_only:
             review_required = True
+            review_reason = "theme_only_evidence"
             confidence = min(confidence, 0.72)
         if secondary_label in {"未细分", "待研判"}:
             review_required = True
+            review_reason = "secondary_label_unresolved"
         if secondary_label in self.review_only_secondary_labels:
             review_required = True
+            review_reason = "review_only_secondary_label"
             confidence = min(confidence, 0.78)
         if conflicts:
             conflict_status = "CONFLICT_REVIEW"
             review_required = True
+            review_reason = "category_conflict"
             confidence = min(confidence, 0.74)
         if self._can_auto_clear_review(
             secondary_label=secondary_label,
@@ -412,6 +455,7 @@ class FineGrainedIntentClassifier:
             theme_only=theme_only,
         ):
             review_required = False
+            review_reason = "high_confidence_auto_clear"
 
         return FineClassificationResult(
             source_trace_id=trace_id,
@@ -424,6 +468,7 @@ class FineGrainedIntentClassifier:
             conflict_status=conflict_status,
             conflict_categories=conflicts,
             evidence=supporting_evidence,
+            review_decision_reason=review_reason,
         )
 
     def _is_defensive_context(self, text: str) -> bool:
@@ -616,6 +661,79 @@ class FineGrainedIntentClassifier:
             return False
         non_theme_evidence = [item for item in evidence if not str(item).startswith("theme:")]
         return len(non_theme_evidence) >= self.review_auto_clear_min_evidence
+
+    def _calibrated_conflicts(
+        self,
+        raw_conflicts: list[str],
+        *,
+        top_category: str,
+        top_score: int,
+        ordered_scores: list[tuple[str, int]],
+        secondary_label: str,
+        secondary_evidence: list[str],
+        supporting_evidence: list[str],
+        category_evidence: Mapping[str, list[str]],
+        text: str,
+    ) -> list[str]:
+        if not raw_conflicts:
+            return []
+        if self._can_safely_resolve_conflict(
+            top_category=top_category,
+            top_score=top_score,
+            ordered_scores=ordered_scores,
+            secondary_label=secondary_label,
+            secondary_evidence=secondary_evidence,
+            supporting_evidence=supporting_evidence,
+            category_evidence=category_evidence,
+            text=text,
+        ):
+            return []
+        return raw_conflicts
+
+    def _can_safely_resolve_conflict(
+        self,
+        *,
+        top_category: str,
+        top_score: int,
+        ordered_scores: list[tuple[str, int]],
+        secondary_label: str,
+        secondary_evidence: list[str],
+        supporting_evidence: list[str],
+        category_evidence: Mapping[str, list[str]],
+        text: str,
+    ) -> bool:
+        if not self.review_auto_clear_conflict_secondary_labels:
+            return False
+        if secondary_label not in self.review_auto_clear_conflict_secondary_labels:
+            return False
+        if secondary_label in self.review_only_secondary_labels or secondary_label in {"未细分", "待研判"}:
+            return False
+        if len(secondary_evidence) < self.review_auto_clear_min_evidence:
+            return False
+        non_theme_evidence = [item for item in supporting_evidence if not str(item).startswith("theme:")]
+        if len(non_theme_evidence) < self.review_auto_clear_min_evidence:
+            return False
+        if top_score < max(score for _category, score in ordered_scores[1:] or [(UNKNOWN, 0)]):
+            return False
+        best_secondary_confidence = max(
+            [
+                float(item.get("confidence") or 0.0)
+                for item in self._secondary_label(top_category, text, ())[2]
+                if item.get("label") == secondary_label
+            ]
+            or [0.0]
+        )
+        if best_secondary_confidence < self.review_auto_clear_conflict_min_confidence:
+            return False
+        top_non_theme_count = len([item for item in category_evidence.get(top_category, []) if not str(item).startswith("theme:")])
+        competing_non_theme_count = max(
+            (
+                len([item for item in category_evidence.get(category, []) if not str(item).startswith("theme:")])
+                for category, _score in ordered_scores[1:]
+            ),
+            default=0,
+        )
+        return top_non_theme_count - competing_non_theme_count >= self.review_auto_clear_conflict_min_margin
 
     def _marker_hits(self, text: str, markers: Iterable[str]) -> list[str]:
         lowered_text = text.lower()
