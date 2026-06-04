@@ -130,6 +130,8 @@ def main() -> int:
         high_risk_only=bool(args.high_risk_only),
         min_quality_score=float(args.min_quality_score or 0.0),
     )
+    raw_snapshot_record_count = len(backend.list_raw())
+    cleaned_snapshot_record_count = len(backend.list_cleaned())
     backend.close()
 
     selected_rows = rows
@@ -185,9 +187,24 @@ def main() -> int:
         "mode": "classification_extraction_phase",
         "db_path": str(db_path),
         "input_source": resolved_source,
+        "raw_snapshot_record_count": raw_snapshot_record_count,
+        "cleaned_snapshot_record_count": cleaned_snapshot_record_count,
         "source_total_count": source_total_count,
-        "raw_record_count": source_total_count if resolved_source == "raw" else len(selected_rows),
+        "raw_record_count": raw_snapshot_record_count,
+        "derived_input_total_count": source_total_count,
         "phase_input_count": len(selected_rows),
+        "snapshot_alignment": {
+            "raw_record_count": raw_snapshot_record_count,
+            "cleaned_record_count": cleaned_snapshot_record_count,
+            "derived_input_total_count": source_total_count,
+            "phase_input_count": len(selected_rows),
+            "classification_count": len(classifications),
+            "entity_count": len(entities),
+            "claim_boundary": (
+                "raw_record_count is the collection snapshot size; phase_input_count is the filtered "
+                "classification/extraction view after cleaned/high-risk/quality/labeled gates."
+            ),
+        },
         "only_labeled": bool(args.only_labeled),
         "high_risk_only": bool(args.high_risk_only),
         "min_quality_score": float(args.min_quality_score or 0.0),

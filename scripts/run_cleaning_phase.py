@@ -141,6 +141,9 @@ def _copy_cleaning_context(cleaned_row: dict[str, Any], source_row: Mapping[str,
         "multimodal_text_extracted",
         "multimodal_text_sources",
         "multimodal_signal_count",
+        "multimodal_reference_fields",
+        "multimodal_reference_count",
+        "content_modality",
     ):
         if field_name in source_row:
             cleaned_row[field_name] = source_row.get(field_name)

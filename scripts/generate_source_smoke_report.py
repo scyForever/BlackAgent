@@ -26,11 +26,12 @@ from src.enhancement.source_intake import AuthorizedSourcePolicy, ComplianceSour
 from src.cleaner.text_filter import normalize_text
 from src.collector import HTTPFeedCollector, HTTPFeedConfig
 from src.collector.base_collector import model_dump
+from src.collector.source_metadata import classify_collection_failure, normalize_source_access_type
 from src.enhancement.text_intelligence import FineGrainedIntentClassifier
 
 
 SOURCE_CLASSES = {
-    "im_or_group": {"IM", "Group", "Telegram", "X"},
+    "im_or_group": {"IM", "Group", "Telegram"},
     "social_or_forum": {"Social", "Forum", "News", "Blog"},
     "vertical_or_technical": {"Vertical", "THREAT_INTEL", "Technical", "TechForum"},
 }
@@ -75,14 +76,15 @@ def build_report(
     source_config: str | Path = "config/intel_sources.public.yaml",
     max_records: int = 5,
     timeout_seconds: float = 10.0,
+    min_records_per_class: int = 3,
 ) -> dict[str, Any]:
     source_counts = source_counts or Counter()
     collection_metrics = collection_metrics or {}
     policy = AuthorizedSourcePolicy()
     discovery = ComplianceSourceDiscovery()
     rows: list[dict[str, Any]] = []
-    live_representative_names = _live_representative_names(sources) if network_enabled else set()
     live_attempted_classes: set[str] = set()
+    live_collected_by_class: Counter[str] = Counter()
     covered: set[str] = set()
     for source in sources:
         source_class = _source_class(source)
@@ -102,8 +104,7 @@ def build_report(
         metrics = dict(collection_metrics.get(str(source.get("source_name") or ""), {}))
         should_attempt_live = (
             network_enabled
-            and str(source.get("source_name") or source.get("name") or "unknown_source") in live_representative_names
-            and source_class not in live_attempted_classes
+            and live_collected_by_class[source_class] < min_records_per_class
             and decision.allowed
             and compliance.status in {"SCHEDULABLE", "NEEDS_RATE_LIMIT"}
         )
@@ -112,6 +113,7 @@ def build_report(
                 **metrics,
                 **_collect_live_metrics(source, max_records=max_records, timeout_seconds=timeout_seconds),
             }
+            live_collected_by_class[source_class] += int(metrics.get("collected_count") or 0)
             live_attempted_classes.add(source_class)
         rows.append(
             {
@@ -120,6 +122,12 @@ def build_report(
                 "source_type": str(source.get("source_type") or source.get("type") or "unknown"),
                 "platform": str(source.get("platform") or ""),
                 "legal_basis": str(source.get("legal_basis") or ""),
+                "source_access_type": normalize_source_access_type(
+                    source.get("source_access_type"),
+                    legal_basis=source.get("legal_basis"),
+                    source_name=str(source.get("source_name") or source.get("name") or "unknown_source"),
+                    source_url=str(source.get("source_url") or source.get("url") or ""),
+                ),
                 "authorization_statement": str(
                     source.get("authorization_statement")
                     or _default_authorization_statement(source, network_enabled=network_enabled)
@@ -144,17 +152,21 @@ def build_report(
 
     selected = _pick_one_per_class(rows)
     missing = sorted(set(SOURCE_CLASSES) - {item["source_class"] for item in selected})
+    per_class_evidence = _per_class_evidence(rows, min_records_per_class=min_records_per_class)
     return {
         "status": "completed" if not missing else "incomplete",
         "source_config": str(source_config),
         "network_enabled": bool(network_enabled),
         "run_type": "live_authorized_smoke" if network_enabled else "dry_run_catalog_smoke",
+        "min_records_per_class": min_records_per_class,
         "required_source_classes": sorted(SOURCE_CLASSES),
         "covered_source_classes": sorted({item["source_class"] for item in selected}),
         "missing_source_classes": missing,
+        "per_class_evidence": per_class_evidence,
         "claim_boundary": (
             "dry_run validates configured source metadata and compliance gates; "
-            "live collection requires explicit --network-enabled and authorized domains."
+            "live collection requires explicit --network-enabled and authorized domains; "
+            "per_class_evidence records whether each class reached the small 3-5 record smoke target."
         ),
         "sources": selected,
         "candidate_source_count": len(rows),
@@ -183,6 +195,10 @@ def main(argv: list[str] | None = None) -> int:
 def _source_class(source: Mapping[str, Any]) -> str:
     source_type = str(source.get("source_type") or source.get("type") or "")
     platform = str(source.get("platform") or "")
+    if platform.lower() in {"x", "twitter"} or source_type.lower() in {"x", "twitter"}:
+        return "social_or_forum"
+    if platform.lower() in {"telegram", "tg"}:
+        return "im_or_group"
     haystack = {source_type, platform, source_type.title(), platform.title()}
     for source_class, markers in SOURCE_CLASSES.items():
         if haystack & markers:
@@ -273,6 +289,7 @@ def _collect_live_metrics(
                 # a minute-long scheduled collection.
                 rate_limit_per_minute=0,
                 retry_attempts=0,
+                source_access_type=source.get("source_access_type"),
                 network_enabled=True,
             )
         )
@@ -303,9 +320,42 @@ def _collect_live_metrics(
             "filtered_count": 0,
             "duplicate_rate": None,
             "high_risk_candidate_count": 0,
-            "failure_reason": f"{type(exc).__name__}:{exc}",
+            "failure_reason": classify_collection_failure(exc),
+            "failure_detail": f"{type(exc).__name__}:{exc}",
             "live_smoke_attempted": True,
         }
+
+
+def _per_class_evidence(rows: list[dict[str, Any]], *, min_records_per_class: int) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    for source_class in sorted(SOURCE_CLASSES):
+        class_rows = [row for row in rows if row.get("source_class") == source_class]
+        total_collected = sum(int(row.get("collected_count") or 0) for row in class_rows)
+        failures = [
+            {
+                "source_name": row.get("source_name"),
+                "failure_reason": row.get("failure_reason"),
+                "compliance_status": row.get("compliance_status"),
+            }
+            for row in class_rows
+            if row.get("failure_reason")
+        ]
+        evidence.append(
+            {
+                "source_class": source_class,
+                "configured_source_count": len(class_rows),
+                "collected_count": total_collected,
+                "target_min_records": min_records_per_class,
+                "target_met": total_collected >= min_records_per_class,
+                "failure_reasons": failures,
+                "authorization_statements": [
+                    row.get("authorization_statement")
+                    for row in class_rows[:3]
+                    if row.get("authorization_statement")
+                ],
+            }
+        )
+    return evidence
 
 
 def _allowed_domains(source: Mapping[str, Any]) -> tuple[str, ...]:

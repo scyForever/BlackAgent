@@ -14,6 +14,8 @@ from importlib import import_module
 from typing import Any, Iterable, Mapping, Protocol
 from uuid import uuid4
 
+from .source_metadata import build_collection_metadata
+
 
 RAW_SCHEMA_MODEL = None
 
@@ -98,8 +100,9 @@ def build_raw_intelligence(record: Mapping[str, Any]) -> Any:
         or ""
     )
     now = datetime.now(timezone.utc).isoformat()
+    metadata = build_collection_metadata(record, content_text=content_text, now_iso=now)
     payload: dict[str, Any] = {
-        "hash_id": str(record.get("hash_id") or sha256(content_text.encode("utf-8")).hexdigest()),
+        "hash_id": str(record.get("hash_id") or metadata["content_hash"] or sha256(content_text.encode("utf-8")).hexdigest()),
         "trace_id": str(record.get("trace_id") or uuid4()),
         "source_type": str(record.get("source_type") or "IM"),
         "source_name": str(record.get("source_name") or "mock_jsonl_fixture"),
@@ -112,7 +115,10 @@ def build_raw_intelligence(record: Mapping[str, Any]) -> Any:
         "publish_time": record.get("publish_time") or record.get("crawl_time") or now,
         "content_text": content_text,
     }
-    extras = {key: value for key, value in record.items() if key not in payload}
+    extras = {
+        **metadata,
+        **{key: value for key, value in record.items() if key not in payload},
+    }
 
     schema_model = _load_raw_schema_model()
     try:

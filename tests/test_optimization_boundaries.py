@@ -182,7 +182,7 @@ def test_source_smoke_report_covers_three_required_source_classes():
     assert all("authorization_statement" in row for row in report["sources"])
 
 
-def test_live_source_smoke_attempts_one_representative_per_class(monkeypatch):
+def test_live_source_smoke_attempts_until_each_class_has_min_records(monkeypatch):
     calls = []
 
     def fake_collect(source, *, max_records=5, timeout_seconds=10.0):
@@ -202,8 +202,12 @@ def test_live_source_smoke_attempts_one_representative_per_class(monkeypatch):
 
     assert report["status"] == "completed"
     assert set(report["live_attempted_source_classes"]) == {"im_or_group", "social_or_forum", "vertical_or_technical"}
-    assert len(calls) == 3
+    assert len(calls) >= 3
     assert "telegram_group_public_timeline" in calls
+    assert all(
+        item["target_met"] or item["collected_count"] == item["configured_source_count"]
+        for item in report["per_class_evidence"]
+    )
     assert all(row["live_smoke_attempted"] for row in report["sources"])
 
 

@@ -13,6 +13,7 @@ from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
 from src.config_loader import PROJECT_ROOT, Settings, get_settings, resolve_project_path
+from src.collector.source_metadata import classify_collection_failure
 from src.infra import RuntimeContainer
 from storage import InMemoryClueRepo, connect
 
@@ -135,6 +136,7 @@ def collect_source_records(settings: Settings, source: Mapping[str, Any]) -> lis
                 else settings.network.retry_backoff_multiplier
             ),
             retry_statuses=tuple(request.get("retry_statuses") or settings.network.retry_statuses),
+            source_access_type=request.get("source_access_type"),
             text_fields=tuple(request.get("text_fields") or HTTPFeedConfig.text_fields),
             network_enabled=settings.network.enabled,
         )
@@ -319,24 +321,31 @@ class LocalAgentRuntime:
                         "source_name": source_request["source_name"],
                         "source_url": source_request["source_url"],
                         "source_type": source_request.get("source_type") or "THREAT_INTEL",
+                        "source_access_type": source_request.get("source_access_type"),
+                        "source_class": source_request.get("source_class"),
                         "fetched_count": len(records),
                         "network_attempted": True,
                         "raw_records": records,
                         "error": None,
+                        "failure_reason": None,
                     }
                 )
                 succeeded_count += 1
             except Exception as exc:  # noqa: BLE001 - batch mode reports per-source failures.
+                failure_reason = classify_collection_failure(exc)
                 failed_count += 1
                 results.append(
                     {
                         "source_name": source_request.get("source_name"),
                         "source_url": source_request.get("source_url"),
                         "source_type": source_request.get("source_type") or "THREAT_INTEL",
+                        "source_access_type": source_request.get("source_access_type"),
+                        "source_class": source_request.get("source_class"),
                         "fetched_count": 0,
                         "network_attempted": True,
                         "raw_records": [],
                         "error": str(exc),
+                        "failure_reason": failure_reason,
                     }
                 )
                 if not continue_on_error:
@@ -742,6 +751,8 @@ def _normalize_source_request(source: Mapping[str, Any]) -> dict[str, Any]:
     payload.setdefault("headers", {})
     payload.setdefault("allowed_domains", [])
     payload.setdefault("text_fields", [])
+    payload.setdefault("source_access_type", None)
+    payload.setdefault("source_class", None)
     payload.setdefault("include_keywords", [])
     payload.setdefault("exclude_keywords", [])
     payload.setdefault("include_themes", [])

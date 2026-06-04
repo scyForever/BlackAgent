@@ -15,6 +15,14 @@ from .relevance import (
     normalize_themes,
 )
 from .source_config import SourceCatalogError, load_source_catalog
+from .source_metadata import (
+    SOURCE_ACCESS_TYPES,
+    build_collection_metadata,
+    build_collection_quality_profile,
+    classify_collection_failure,
+    normalize_source_access_type,
+    source_class_for_record,
+)
 
 __all__ = [
     "BaseCollector",
@@ -28,7 +36,11 @@ __all__ = [
     "NetworkCollectionDisabled",
     "SourceCatalogError",
     "SourceAuthorizationError",
+    "SOURCE_ACCESS_TYPES",
+    "build_collection_metadata",
+    "build_collection_quality_profile",
     "build_raw_intelligence",
+    "classify_collection_failure",
     "decide_text_relevance",
     "get_record_field",
     "get_theme_search_variants",
@@ -36,6 +48,8 @@ __all__ = [
     "load_source_catalog",
     "load_theme_synonym_registry",
     "model_dump",
+    "normalize_source_access_type",
     "normalize_keywords",
     "normalize_themes",
+    "source_class_for_record",
 ]

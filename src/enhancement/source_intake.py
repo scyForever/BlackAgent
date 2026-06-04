@@ -87,6 +87,14 @@ class MultimodalTextExtractor:
         "subtitle_text",
     )
     ATTACHMENT_TEXT_FIELDS = ("ocr_text", "alt_text", "caption", "description", "image_ocr_text", "poster_text", "subtitle_text", "text")
+    MEDIA_REFERENCE_FIELDS = (
+        "image_url",
+        "poster_url",
+        "poster_image_url",
+        "screenshot_ref",
+        "screenshot_url",
+        "image_path",
+    )
     NESTED_COLLECTION_FIELDS = ("attachments", "media", "images", "screenshots", "albums", "cards", "frames", "ocr_blocks", "text_blocks")
 
     def extract_text(self, record: Mapping[str, Any] | Any) -> str:
@@ -100,11 +108,14 @@ class MultimodalTextExtractor:
             if not key.startswith("_") and not callable(getattr(record, key))
         }
         parts, sources = self._collect_text_parts(record)
+        media_refs = self._collect_media_references(record)
         data["content_text"] = normalize_text(" ".join(parts))
         data["multimodal_text_extracted"] = True
         data["multimodal_text_sources"] = sorted(sources)
         data["multimodal_signal_count"] = len(sources)
-        data["content_modality"] = _content_modality(sources)
+        data["multimodal_reference_fields"] = sorted(media_refs)
+        data["multimodal_reference_count"] = len(media_refs)
+        data["content_modality"] = _content_modality(sources, media_refs)
         return data
 
     def _collect_text_parts(self, record: Mapping[str, Any] | Any, *, _depth: int = 0) -> tuple[list[str], set[str]]:
@@ -135,6 +146,28 @@ class MultimodalTextExtractor:
                 parts.extend(sub_parts)
                 sources.update({f"{field_name}.{name}" for name in sub_sources} or {field_name})
         return parts, sources
+
+    def _collect_media_references(self, record: Mapping[str, Any] | Any, *, _depth: int = 0) -> set[str]:
+        if _depth > 4:
+            return set()
+        refs: set[str] = set()
+        for field_name in self.MEDIA_REFERENCE_FIELDS:
+            if get_record_field(record, field_name):
+                refs.add(field_name)
+        for field_name in self.NESTED_COLLECTION_FIELDS:
+            nested = get_record_field(record, field_name)
+            if not nested:
+                continue
+            if isinstance(nested, Mapping):
+                nested_items = [nested]
+            elif isinstance(nested, Iterable) and not isinstance(nested, (str, bytes)):
+                nested_items = list(nested)
+            else:
+                continue
+            for item in nested_items:
+                sub_refs = self._collect_media_references(item, _depth=_depth + 1)
+                refs.update({f"{field_name}.{name}" for name in sub_refs} or {field_name})
+        return refs
 
 
 @dataclass(frozen=True)
@@ -171,7 +204,8 @@ class ComplianceSourceDiscovery:
         return ComplianceCandidate(source_name, source_url, "SCHEDULABLE", "compliance_precheck_passed", "schedule_with_rate_limit", dict(candidate))
 
 
-def _content_modality(sources: set[str]) -> str:
+def _content_modality(sources: set[str], media_refs: set[str] | None = None) -> str:
+    media_refs = media_refs or set()
     image_markers = ("ocr", "image", "photo", "poster", "screenshot", "caption", "alt_text")
     text_markers = {"content_text", "clean_text", "text", "raw_text"}
     has_image_text = any(any(marker in source for marker in image_markers) for source in sources)
@@ -180,6 +214,10 @@ def _content_modality(sources: set[str]) -> str:
         return "mixed"
     if has_image_text:
         return "image_text"
+    if media_refs and has_primary_text:
+        return "mixed"
+    if media_refs:
+        return "image_reference"
     return "text"
 
 
