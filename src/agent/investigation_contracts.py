@@ -15,6 +15,65 @@ SourceCollector = Callable[[dict[str, Any]], list[dict[str, Any]]]
 
 
 @dataclass
+class EvidenceGap:
+    need_more_samples: bool = False
+    need_recent_signals: bool = False
+    need_cross_source_support: bool = False
+    need_entity_chain: bool = False
+    need_contact_or_url: bool = False
+    preferred_source_types: list[str] = field(default_factory=list)
+    need_specific_source_types: list[str] = field(default_factory=list)
+    missing_entity_types: list[str] = field(default_factory=list)
+    current_high_quality_count: int = 0
+    required_high_quality_count: int = 0
+    reasons: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.preferred_source_types and self.need_specific_source_types:
+            self.preferred_source_types = list(self.need_specific_source_types)
+        if not self.need_specific_source_types and self.preferred_source_types:
+            self.need_specific_source_types = list(self.preferred_source_types)
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any] | None) -> "EvidenceGap":
+        if not isinstance(payload, Mapping):
+            return cls()
+        return cls(
+            need_more_samples=bool(payload.get("need_more_samples", False)),
+            need_recent_signals=bool(payload.get("need_recent_signals", False)),
+            need_cross_source_support=bool(payload.get("need_cross_source_support", False)),
+            need_entity_chain=bool(payload.get("need_entity_chain", False)),
+            need_contact_or_url=bool(payload.get("need_contact_or_url", False)),
+            preferred_source_types=[
+                str(item)
+                for item in (payload.get("preferred_source_types") or payload.get("need_specific_source_types") or [])
+                if str(item).strip()
+            ],
+            need_specific_source_types=[str(item) for item in (payload.get("need_specific_source_types") or []) if str(item).strip()],
+            missing_entity_types=[str(item) for item in (payload.get("missing_entity_types") or []) if str(item).strip()],
+            current_high_quality_count=int(payload.get("current_high_quality_count") or 0),
+            required_high_quality_count=int(payload.get("required_high_quality_count") or 0),
+            reasons=[str(item) for item in (payload.get("reasons") or []) if str(item).strip()],
+        )
+
+    @property
+    def is_sufficient(self) -> bool:
+        return not self.reasons and not (
+            self.need_more_samples
+            or self.need_recent_signals
+            or self.need_cross_source_support
+            or self.need_entity_chain
+            or self.need_contact_or_url
+        )
+
+    def model_dump(self) -> dict[str, Any]:
+        payload = asdict(self)
+        if not payload.get("need_specific_source_types"):
+            payload["need_specific_source_types"] = list(payload.get("preferred_source_types") or [])
+        return payload
+
+
+@dataclass
 class InvestigationRunResult:
     status: str
     mode: str
@@ -27,6 +86,11 @@ class InvestigationRunResult:
     intent: dict[str, Any]
     investigation_plan: dict[str, Any]
     llm_traces: list[dict[str, Any]] = field(default_factory=list)
+    llm_call_traces: list[dict[str, Any]] = field(default_factory=list)
+    llm_item_traces: list[dict[str, Any]] = field(default_factory=list)
+    model_route_traces: list[dict[str, Any]] = field(default_factory=list)
+    flow_decision_traces: list[dict[str, Any]] = field(default_factory=list)
+    safety_traces: list[dict[str, Any]] = field(default_factory=list)
     selected_sources: list[dict[str, Any]] = field(default_factory=list)
     collection_runs: list[dict[str, Any]] = field(default_factory=list)
     execution_summary: dict[str, Any] = field(default_factory=dict)
@@ -80,6 +144,10 @@ class _RunPlanningState:
     available_sources_list: list[dict[str, Any]]
     retrieval_filters: dict[str, Any]
     selected_sources: list[dict[str, Any]]
+    llm_gateway: Any | None = None
+    evidence_gap: EvidenceGap = field(default_factory=EvidenceGap)
+    planning_mode: str = "full"
+    flow_decision_traces: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -98,6 +166,7 @@ class _SemanticLocalState:
     summary: dict[str, Any]
     should_collect_live: bool
     live_collection_reasons: list[str]
+    evidence_gap: EvidenceGap = field(default_factory=EvidenceGap)
 
 
 @dataclass
@@ -107,6 +176,7 @@ class _LiveCollectionState:
     rewrite_traces: list[dict[str, Any]]
     selected_sources: list[dict[str, Any]]
     live_collection_reasons: list[str]
+    evidence_gap: EvidenceGap = field(default_factory=EvidenceGap)
 
 
 @dataclass
@@ -126,6 +196,7 @@ class _RefinementState:
     model_route_traces: list[dict[str, Any]]
     budget_controller_snapshot: Mapping[str, Any]
     actual_refined_count: int
+    refine_target_count: int
     requested_max_refine: int
     effective_max_refine: int
     refine_budget_reasons: list[str]
@@ -133,6 +204,7 @@ class _RefinementState:
 
 
 __all__ = [
+    "EvidenceGap",
     "InvestigationRunResult",
     "PlanExecutionControls",
     "RuntimeQualityGate",

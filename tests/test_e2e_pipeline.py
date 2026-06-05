@@ -39,9 +39,18 @@ def test_e2e_current_investigation_flow_builds_reviewable_clues():
     result = _orchestrator().run("找近24小时接码群控高质量线索", records=_records())
 
     assert result.status == "completed"
-    assert result.mode == "llm_driven_investigation"
+    assert result.mode == "provided_records_pipeline"
     assert result.input_count == 3
     assert result.execution_summary["mode"] == "investigation_processing"
+    assert [item["stage"] for item in result.execution_summary["main_flow_stages"]] == [
+        "input_task",
+        "route_and_guard",
+        "asset_retrieval",
+        "intelligence_pipeline",
+        "clue_generation_report",
+    ]
+    assert result.execution_summary["main_flow_stage_count"] == 5
+    assert result.execution_summary["main_flow_stages"][3]["status"] == "completed"
     assert result.execution_summary["risk_clue_count"] >= 2
     assert result.execution_summary["strategy_count"] >= 1
     assert result.high_quality_count >= 1
@@ -60,4 +69,9 @@ def test_e2e_current_investigation_flow_reuses_clue_pool_before_reprocessing():
     assert result.input_count == 0
     assert result.execution_summary["mode"] == "candidate_clue_retrieval"
     assert result.execution_summary["status"] == "retrieved_from_clue_pool"
+    assert result.execution_summary["main_flow_stage_count"] == 5
+    assert result.execution_summary["main_flow_stages"][2]["needs_fresh_data"] is True
+    assert result.execution_summary["main_flow_stages"][2]["decision_reason"] == "asset_retrieval_insufficient"
+    assert result.execution_summary["main_flow_stages"][3]["status"] == "skipped"
+    assert result.execution_summary["main_flow_stages"][3]["reason"] == "fresh_data_requested_but_no_records"
     assert result.high_quality_count + result.candidate_count >= 1

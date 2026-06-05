@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
-from src.cleaner.text_filter import calculate_noise_score, normalize_text, shannon_entropy, text_similarity
+from src.cleaner.text_filter import calculate_noise_score, normalize_intel_text, normalize_text, shannon_entropy, text_similarity
 from src.classifier.nlp_rule_matcher import (
     ACCOUNT_TRADING,
     CLICK_FARMING,
@@ -119,13 +119,159 @@ class FineClassificationResult:
     secondary_label: str
     confidence: float
     review_required: bool
+    final_secondary_label: str | None = None
+    candidate_secondary_labels: list[dict[str, Any]] = field(default_factory=list)
     conflict_status: str = "RESOLVED"
     conflict_categories: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
-    classifier_version: str = "fine_grained_v2_conflict_v3"
+    review_decision_reason: str = "default_review_policy"
+    classifier_version: str = "fine_grained_v2_conflict_v4"
 
     def model_dump(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class SlangVariantCandidate:
+    raw: str
+    normalized: str
+    entity_type: str
+    start_offset: int
+    end_offset: int
+    category_hint: str | None = None
+    context_confirmed: bool = False
+    context_hits: list[str] = field(default_factory=list)
+    confidence: float = 0.78
+    method: str = "slang_variant_normalizer_v1"
+
+    def model_dump(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SlangVariantAnalysis:
+    original_text: str
+    normalized_text: str
+    expanded_text: str
+    candidates: list[SlangVariantCandidate] = field(default_factory=list)
+    context_hits: list[str] = field(default_factory=list)
+
+    @property
+    def confirmed_candidates(self) -> list[SlangVariantCandidate]:
+        return [item for item in self.candidates if item.context_confirmed]
+
+    def model_dump(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+class SlangVariantNormalizer:
+    """Normalize black/gray slang variants only when context supports risk use.
+
+    The normalizer is intentionally deterministic and local: it does not mark a
+    record risky merely because a slang token appears.  A token becomes a
+    classification hint only when trading/recruiting/contact/url context is
+    present around the same text.
+    """
+
+    CONTEXT_MARKERS = (
+        "出售",
+        "卖",
+        "买",
+        "接单",
+        "招募",
+        "上车",
+        "拉群",
+        "进群",
+        "私聊",
+        "联系",
+        "客服",
+        "咨询",
+        "详聊",
+        "暗号",
+        "口令",
+        "邀请码",
+        "code:",
+        "tg:",
+        "telegram",
+        "@",
+        "http://",
+        "https://",
+        "hxxp://",
+        "hxxps://",
+        "短链",
+        "低价",
+        "价格",
+        "卡密",
+    )
+    VARIANT_SPECS: tuple[tuple[re.Pattern[str], str, str, str | None], ...] = (
+        (re.compile(r"(?i)(?:音\s*符|🎵|\bd\s*y\b)"), "抖音", "slang_term", "诈骗引流"),
+        (re.compile(r"(?i)(?:纸\s*飞\s*机|小\s*飞\s*机|飞\s*机|\bt\s*g\b(?!\s*[:：@])|telegram(?!\s*[:：@]))"), "Telegram", "slang_term", None),
+        (re.compile(r"(?i)(?:企\s*鹅|🐧|q\s*q)"), "QQ", "slang_term", None),
+        (re.compile(r"(?i)(?:\+?\s*v\s*x|[+＋➕]?\s*v\b|加\s*[vV薇微威围]|微\s*信|薇\s*信|威\s*信|围\s*信)"), "加v", "slang_term", "诈骗引流"),
+        (re.compile(r"(?i)(?:接\s*[🐴马m]\s*a?|j\s*m|接\s*码)"), "接码", "tool_name", "账号交易"),
+        (re.compile(r"(?:裙|羣|q\s*群)"), "群组", "slang_term", "诈骗引流"),
+        (re.compile(r"(?:料\s*子|客\s*资|数\s*据|库)"), "账号资料", "slang_term", "账号交易"),
+        (re.compile(r"群\s*控"), "群控", "tool_name", "工具交易"),
+        (re.compile(r"脚\s*本"), "脚本", "tool_name", "工具交易"),
+        (re.compile(r"卡\s*密"), "卡密", "tool_name", "工具交易"),
+    )
+
+    def analyze(self, text: str) -> SlangVariantAnalysis:
+        original = normalize_text(text)
+        normalized = self.normalize_text(original)
+        context_hits = _ordered_unique(self._context_hits(normalized))
+        candidates: list[SlangVariantCandidate] = []
+        occupied: list[range] = []
+        for pattern, target, entity_type, category_hint in self.VARIANT_SPECS:
+            for match in pattern.finditer(original):
+                raw = match.group(0)
+                span = range(match.start(), match.end())
+                if any(_ranges_overlap(span, used) for used in occupied):
+                    continue
+                local_hits = _ordered_unique(self._context_hits(original[max(0, match.start() - 24) : match.end() + 24]))
+                confirmed = bool(local_hits or context_hits)
+                candidates.append(
+                    SlangVariantCandidate(
+                        raw=raw,
+                        normalized=target,
+                        entity_type=entity_type,
+                        start_offset=match.start(),
+                        end_offset=match.end(),
+                        category_hint=category_hint,
+                        context_confirmed=confirmed,
+                        context_hits=local_hits or context_hits,
+                        confidence=0.9 if confirmed else 0.76,
+                    )
+                )
+                occupied.append(span)
+        expanded_terms = [
+            candidate.normalized
+            for candidate in candidates
+            if candidate.context_confirmed or candidate.entity_type in {"tool_name", "contact"}
+        ]
+        expanded_text = " ".join(_ordered_unique([normalized, *expanded_terms]))
+        return SlangVariantAnalysis(
+            original_text=original,
+            normalized_text=normalized,
+            expanded_text=expanded_text,
+            candidates=candidates,
+            context_hits=context_hits,
+        )
+
+    def normalize_text(self, text: str) -> str:
+        normalized = normalize_intel_text(_normalize_obfuscation(text))
+        normalized = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", normalized)
+        normalized = re.sub(r"(?i)\bt\s+g\b", "TG", normalized)
+        normalized = re.sub(r"(?i)\bd\s+y\b", "dy", normalized)
+        normalized = re.sub(r"(?i)j\s*m", "jm", normalized)
+        return normalize_text(normalized)
+
+    def candidates_in_text(self, text: str) -> list[SlangVariantCandidate]:
+        return self.analyze(text).candidates
+
+    def _context_hits(self, text: str) -> list[str]:
+        lowered = str(text or "").lower()
+        return [marker for marker in self.CONTEXT_MARKERS if marker.lower() in lowered]
 
 
 class FineGrainedIntentClassifier:
@@ -134,6 +280,7 @@ class FineGrainedIntentClassifier:
     def __init__(self, rule_registry: RuleRegistry | None = None) -> None:
         self.rule_registry = rule_registry or RuleRegistry()
         self.fast_classifier = RuleFastTrackClassifier(rule_registry=self.rule_registry)
+        self.slang_variant_normalizer = SlangVariantNormalizer()
         configured_terms = self.rule_registry.primary_terms_by_label()
         self.category_keywords = {category: tuple(terms) for category, terms in configured_terms.items()}
         configured_promotions = self.rule_registry.promotion_markers_by_label()
@@ -165,6 +312,39 @@ class FineGrainedIntentClassifier:
         )
         self.review_only_categories = set(_as_tuple(policy.get("review_only_categories")))
         self.review_only_secondary_labels = set(_as_tuple(policy.get("review_only_secondary_labels")))
+        auto_clear = policy.get("review_auto_clear") if isinstance(policy.get("review_auto_clear"), Mapping) else {}
+        self.review_auto_clear_secondary_labels = set(
+            _as_tuple(auto_clear.get("secondary_labels") if isinstance(auto_clear, Mapping) else ())
+        )
+        self.review_auto_clear_min_confidence = _float_value(
+            auto_clear.get("min_confidence") if isinstance(auto_clear, Mapping) else None,
+            0.78,
+        )
+        self.review_auto_clear_min_evidence = int(auto_clear.get("min_evidence") or 2) if isinstance(auto_clear, Mapping) else 2
+        self.review_auto_clear_require_resolved_conflict = bool(
+            auto_clear.get("require_resolved_conflict", True) if isinstance(auto_clear, Mapping) else True
+        )
+        self.review_auto_clear_require_non_theme_only = bool(
+            auto_clear.get("require_non_theme_only", True) if isinstance(auto_clear, Mapping) else True
+        )
+        self.review_auto_clear_conflict_secondary_labels = set(
+            _as_tuple(auto_clear.get("conflict_secondary_labels") if isinstance(auto_clear, Mapping) else ())
+        )
+        self.review_auto_clear_conflict_min_confidence = _float_value(
+            auto_clear.get("conflict_min_confidence") if isinstance(auto_clear, Mapping) else None,
+            0.92,
+        )
+        self.review_auto_clear_conflict_min_margin = int(
+            auto_clear.get("conflict_min_margin") or 2
+        ) if isinstance(auto_clear, Mapping) else 2
+        secondary_gate = policy.get("secondary_label_gate") if isinstance(policy.get("secondary_label_gate"), Mapping) else {}
+        self.secondary_min_markers_for_final = int(secondary_gate.get("min_markers_for_final") or 2) if isinstance(secondary_gate, Mapping) else 2
+        self.secondary_allow_single_marker_with_entity_context = bool(
+            secondary_gate.get("allow_single_marker_with_entity_context", True)
+        ) if isinstance(secondary_gate, Mapping) else True
+        self.secondary_entity_context_markers = _as_tuple(
+            secondary_gate.get("entity_context_markers") if isinstance(secondary_gate, Mapping) else ()
+        )
         self.category_priority = {str(key): int(value) for key, value in (policy.get("category_priority") or {}).items()} if isinstance(policy.get("category_priority"), Mapping) else {}
         self.theme_priors = self.rule_registry.theme_priors()
         self.polarity_scorer = polarity_from_config(polarity)
@@ -172,27 +352,52 @@ class FineGrainedIntentClassifier:
 
     def classify(self, record: Mapping[str, Any] | Any) -> FineClassificationResult:
         text = _text(record)
+        slang_analysis = self.slang_variant_normalizer.analyze(text)
+        match_text = slang_analysis.expanded_text or text
         trace_id = str(get_record_field(record, "source_trace_id") or get_record_field(record, "trace_id") or "unknown")
         matched_keywords = self._signal_terms(record, "matched_keywords")
         matched_themes = self._signal_terms(record, "matched_themes")
-        fast = self.fast_classifier.classify(record)
+        fast_payload = dict(record) if isinstance(record, Mapping) else {"content_text": text}
+        fast_payload["clean_text"] = match_text
+        fast = self.fast_classifier.classify(fast_payload)
         fast_data = fast.model_dump() if hasattr(fast, "model_dump") else dict(fast)
-        category_scores, category_evidence, theme_only_scores = self._category_scores(text, matched_keywords, matched_themes)
+        category_scores, category_evidence, theme_only_scores = self._category_scores(match_text, matched_keywords, matched_themes)
+        self._apply_slang_variant_scores(
+            category_scores,
+            category_evidence,
+            slang_analysis=slang_analysis,
+            text=match_text,
+        )
 
         if not category_scores:
-            return FineClassificationResult(trace_id, UNKNOWN, "待研判", 0.35, True, "UNKNOWN", [], [])
+            return FineClassificationResult(
+                source_trace_id=trace_id,
+                risk_category=UNKNOWN,
+                secondary_label="待研判",
+                confidence=0.35,
+                review_required=True,
+                final_secondary_label=None,
+                candidate_secondary_labels=[],
+                conflict_status="UNKNOWN",
+                conflict_categories=[],
+                evidence=[],
+                review_decision_reason="no_category_score",
+            )
         topic_terms = [term for values in category_evidence.values() for term in values if not str(term).startswith("theme:")]
         polarity = self.polarity_scorer.score(text, topic_terms=topic_terms)
-        if self._is_defensive_context(text) or polarity.polarity == NEGATIVE_RISK_ASSERTION:
+        if self._is_defensive_context(match_text) or polarity.polarity == NEGATIVE_RISK_ASSERTION:
             return FineClassificationResult(
-                trace_id,
-                NORMAL_NOISE,
-                "研究讨论" if polarity.actor_intent == "research" else "防御语境",
-                max(0.8, polarity.confidence),
-                False,
-                "NEGATIVE_RISK_ASSERTION",
-                [],
-                polarity.evidence or ["defensive_context"],
+                source_trace_id=trace_id,
+                risk_category=NORMAL_NOISE,
+                secondary_label="研究讨论" if polarity.actor_intent == "research" else "防御语境",
+                confidence=max(0.8, polarity.confidence),
+                review_required=False,
+                final_secondary_label=None,
+                candidate_secondary_labels=[],
+                conflict_status="NEGATIVE_RISK_ASSERTION",
+                conflict_categories=[],
+                evidence=polarity.evidence or ["defensive_context"],
+                review_decision_reason="defensive_or_negative_context",
             )
 
         ordered = sorted(
@@ -200,40 +405,70 @@ class FineGrainedIntentClassifier:
             key=lambda item: (-item[1], -self.category_priority.get(item[0], 0), item[0]),
         )
         top_category, top_score = ordered[0]
-        conflicts = [category for category, score in ordered[1:] if score == top_score or (top_score - score <= 1 and score >= 2)]
+        raw_conflicts = [category for category, score in ordered[1:] if score == top_score or (top_score - score <= 1 and score >= 2)]
         conflict_status = "RESOLVED"
-        secondary_label, secondary_evidence = self._secondary_label(top_category, text, matched_keywords)
+        secondary_label, secondary_evidence, secondary_candidates = self._secondary_label(top_category, match_text, matched_keywords)
         supporting_evidence = self._ordered_unique((*category_evidence.get(top_category, []), *secondary_evidence))
+        conflicts = self._calibrated_conflicts(
+            raw_conflicts,
+            top_category=top_category,
+            top_score=top_score,
+            ordered_scores=ordered,
+            secondary_label=secondary_label,
+            secondary_evidence=secondary_evidence,
+            supporting_evidence=supporting_evidence,
+            category_evidence=category_evidence,
+            text=match_text,
+        )
 
         confidence = max(
             float(fast_data.get("confidence", 0.0) or 0.0),
             min(0.96, 0.56 + top_score * 0.07 + len(secondary_evidence) * 0.03),
         )
+        theme_only = bool(theme_only_scores.get(top_category, False))
         review_required = bool(fast_data.get("review_required", False))
+        review_reason = "fast_classifier_review" if review_required else "auto_resolved"
         if top_category in self.review_only_categories:
             review_required = True
-        if theme_only_scores.get(top_category, False):
+            review_reason = "review_only_category"
+        if theme_only:
             review_required = True
+            review_reason = "theme_only_evidence"
             confidence = min(confidence, 0.72)
         if secondary_label in {"未细分", "待研判"}:
             review_required = True
+            review_reason = "secondary_label_unresolved"
         if secondary_label in self.review_only_secondary_labels:
             review_required = True
+            review_reason = "review_only_secondary_label"
             confidence = min(confidence, 0.78)
         if conflicts:
             conflict_status = "CONFLICT_REVIEW"
             review_required = True
+            review_reason = "category_conflict"
             confidence = min(confidence, 0.74)
+        if self._can_auto_clear_review(
+            secondary_label=secondary_label,
+            confidence=confidence,
+            evidence=supporting_evidence,
+            has_conflict=bool(conflicts),
+            theme_only=theme_only,
+        ):
+            review_required = False
+            review_reason = "high_confidence_auto_clear"
 
         return FineClassificationResult(
             source_trace_id=trace_id,
             risk_category=top_category,
             secondary_label=secondary_label,
+            final_secondary_label=None if secondary_label in {"未细分", "待研判"} else secondary_label,
+            candidate_secondary_labels=secondary_candidates,
             confidence=round(confidence, 4),
             review_required=review_required,
             conflict_status=conflict_status,
             conflict_categories=conflicts,
             evidence=supporting_evidence,
+            review_decision_reason=review_reason,
         )
 
     def _is_defensive_context(self, text: str) -> bool:
@@ -296,6 +531,7 @@ class FineGrainedIntentClassifier:
                 *self._marker_hits(text, self.crowd_promotion_markers),
             ]
         )
+
         if crowd_markers and self._matches_any(text, matched_keyword_set, self.secondary_rules[CROWD_SERVICE]["拉群获客"]):
             score_map[CROWD_SERVICE] = score_map.get(CROWD_SERVICE, 0) + min(2, len(crowd_markers))
             evidence_map[CROWD_SERVICE].extend(f"service:{marker}" for marker in crowd_markers[:2])
@@ -333,8 +569,33 @@ class FineGrainedIntentClassifier:
         }
         return score_map, {key: self._ordered_unique(value) for key, value in evidence_map.items()}, theme_only_scores
 
-    def _secondary_label(self, category: str, text: str, matched_keywords: tuple[str, ...]) -> tuple[str, list[str]]:
-        candidates = []
+    def _apply_slang_variant_scores(
+        self,
+        score_map: dict[str, int],
+        evidence_map: dict[str, list[str]],
+        *,
+        slang_analysis: SlangVariantAnalysis,
+        text: str,
+    ) -> None:
+        confirmed = slang_analysis.confirmed_candidates
+        if not confirmed:
+            return
+        normalized_terms = {candidate.normalized for candidate in confirmed}
+        has_contact_or_url = any(marker in text.lower() for marker in ("tg:", "telegram", "http://", "https://", "hxxp://", "hxxps://", "@", "加v", "微信"))
+        has_trade_or_recruit = bool(set(slang_analysis.context_hits).intersection({"出售", "卖", "接单", "招募", "上车", "拉群", "进群", "联系", "咨询", "短链", "暗号", "口令", "邀请码", "code:"}))
+        for candidate in confirmed:
+            if candidate.category_hint:
+                score_map[candidate.category_hint] = score_map.get(candidate.category_hint, 0) + 1
+                evidence_map.setdefault(candidate.category_hint, []).append(f"slang:{candidate.normalized}")
+        if has_contact_or_url and has_trade_or_recruit and normalized_terms.intersection({"抖音", "加v", "群组", "账号资料", "Telegram"}):
+            score_map[FRAUD_TRAFFIC] = score_map.get(FRAUD_TRAFFIC, 0) + 3
+            evidence_map.setdefault(FRAUD_TRAFFIC, []).append("slang_context:contact_or_url_plus_recruiting")
+        if normalized_terms.intersection({"群控", "脚本", "卡密"}) and has_trade_or_recruit:
+            score_map[TOOL_TRADING] = score_map.get(TOOL_TRADING, 0) + 2
+            evidence_map.setdefault(TOOL_TRADING, []).append("slang_context:tool_trade")
+
+    def _secondary_label(self, category: str, text: str, matched_keywords: tuple[str, ...]) -> tuple[str, list[str], list[dict[str, Any]]]:
+        candidates: list[tuple[str, list[str], bool]] = []
         matched_keyword_set = {value.lower() for value in matched_keywords}
         for label, keywords in self.secondary_rules.get(category, {}).items():
             hits = [
@@ -343,11 +604,136 @@ class FineGrainedIntentClassifier:
                 if keyword.lower() in text.lower() or normalize_text(keyword).lower() in matched_keyword_set
             ]
             if hits:
-                candidates.append((label, hits))
+                has_entity_context = any(marker.lower() in text.lower() for marker in self.secondary_entity_context_markers)
+                candidates.append((label, self._ordered_unique(hits), has_entity_context))
         if not candidates:
-            return "未细分", []
-        label, hits = max(candidates, key=lambda item: len(item[1]))
-        return label, self._ordered_unique(hits)
+            return "未细分", [], []
+        candidate_payloads = [
+            {
+                "label": label,
+                "confidence": round(min(0.92, 0.46 + 0.12 * len(hits) + (0.08 if has_entity_context else 0.0)), 4),
+                "evidence": hits,
+                "reason": (
+                    "secondary_gate_ready"
+                    if self._secondary_gate_ready(hits, has_entity_context)
+                    else "single_secondary_marker_only"
+                ),
+            }
+            for label, hits, has_entity_context in candidates
+        ]
+        label, hits, has_entity_context = max(
+            candidates,
+            key=lambda item: (len(item[1]), item[2], item[0]),
+        )
+        if self._secondary_gate_ready(hits, has_entity_context):
+            return label, hits, candidate_payloads
+        return "待研判", [], candidate_payloads
+
+    def _secondary_gate_ready(self, hits: list[str], has_entity_context: bool) -> bool:
+        if len(hits) >= self.secondary_min_markers_for_final:
+            return True
+        return bool(
+            self.secondary_allow_single_marker_with_entity_context
+            and hits
+            and has_entity_context
+        )
+
+    def _can_auto_clear_review(
+        self,
+        *,
+        secondary_label: str,
+        confidence: float,
+        evidence: list[str],
+        has_conflict: bool,
+        theme_only: bool,
+    ) -> bool:
+        if not self.review_auto_clear_secondary_labels:
+            return False
+        if secondary_label not in self.review_auto_clear_secondary_labels:
+            return False
+        if secondary_label in self.review_only_secondary_labels or secondary_label in {"未细分", "待研判"}:
+            return False
+        if self.review_auto_clear_require_resolved_conflict and has_conflict:
+            return False
+        if self.review_auto_clear_require_non_theme_only and theme_only:
+            return False
+        if confidence < self.review_auto_clear_min_confidence:
+            return False
+        non_theme_evidence = [item for item in evidence if not str(item).startswith("theme:")]
+        return len(non_theme_evidence) >= self.review_auto_clear_min_evidence
+
+    def _calibrated_conflicts(
+        self,
+        raw_conflicts: list[str],
+        *,
+        top_category: str,
+        top_score: int,
+        ordered_scores: list[tuple[str, int]],
+        secondary_label: str,
+        secondary_evidence: list[str],
+        supporting_evidence: list[str],
+        category_evidence: Mapping[str, list[str]],
+        text: str,
+    ) -> list[str]:
+        if not raw_conflicts:
+            return []
+        if self._can_safely_resolve_conflict(
+            top_category=top_category,
+            top_score=top_score,
+            ordered_scores=ordered_scores,
+            secondary_label=secondary_label,
+            secondary_evidence=secondary_evidence,
+            supporting_evidence=supporting_evidence,
+            category_evidence=category_evidence,
+            text=text,
+        ):
+            return []
+        return raw_conflicts
+
+    def _can_safely_resolve_conflict(
+        self,
+        *,
+        top_category: str,
+        top_score: int,
+        ordered_scores: list[tuple[str, int]],
+        secondary_label: str,
+        secondary_evidence: list[str],
+        supporting_evidence: list[str],
+        category_evidence: Mapping[str, list[str]],
+        text: str,
+    ) -> bool:
+        if not self.review_auto_clear_conflict_secondary_labels:
+            return False
+        if secondary_label not in self.review_auto_clear_conflict_secondary_labels:
+            return False
+        if secondary_label in self.review_only_secondary_labels or secondary_label in {"未细分", "待研判"}:
+            return False
+        if len(secondary_evidence) < self.review_auto_clear_min_evidence:
+            return False
+        non_theme_evidence = [item for item in supporting_evidence if not str(item).startswith("theme:")]
+        if len(non_theme_evidence) < self.review_auto_clear_min_evidence:
+            return False
+        if top_score < max(score for _category, score in ordered_scores[1:] or [(UNKNOWN, 0)]):
+            return False
+        best_secondary_confidence = max(
+            [
+                float(item.get("confidence") or 0.0)
+                for item in self._secondary_label(top_category, text, ())[2]
+                if item.get("label") == secondary_label
+            ]
+            or [0.0]
+        )
+        if best_secondary_confidence < self.review_auto_clear_conflict_min_confidence:
+            return False
+        top_non_theme_count = len([item for item in category_evidence.get(top_category, []) if not str(item).startswith("theme:")])
+        competing_non_theme_count = max(
+            (
+                len([item for item in category_evidence.get(category, []) if not str(item).startswith("theme:")])
+                for category, _score in ordered_scores[1:]
+            ),
+            default=0,
+        )
+        return top_non_theme_count - competing_non_theme_count >= self.review_auto_clear_conflict_min_margin
 
     def _marker_hits(self, text: str, markers: Iterable[str]) -> list[str]:
         lowered_text = text.lower()
@@ -438,10 +824,14 @@ class SlangDictionary:
     def candidates_in_text(self, text: str) -> list[tuple[str, str, int, int]]:
         results: list[tuple[str, str, int, int]] = []
         lowered = text.lower()
-        for raw, target in self._terms.items():
+        occupied: list[range] = []
+        for raw, target in sorted(self._terms.items(), key=lambda item: len(str(item[0])), reverse=True):
             start = lowered.find(raw.lower())
             while start >= 0:
-                results.append((raw, target, start, start + len(raw)))
+                span = range(start, start + len(raw))
+                if not any(_ranges_overlap(span, used) for used in occupied):
+                    results.append((raw, target, start, start + len(raw)))
+                    occupied.append(span)
                 start = lowered.find(raw.lower(), start + len(raw))
         return results
 
@@ -453,6 +843,7 @@ class AdvancedEntityExtractor:
         self.rule_registry = rule_registry or RuleRegistry()
         self.basic = BasicEntityExtractor(rule_registry=self.rule_registry)
         self.slang_dictionary = slang_dictionary or SlangDictionary(rule_registry=self.rule_registry)
+        self.slang_variant_normalizer = SlangVariantNormalizer()
         self.entity_normalizer = EntityNormalizer()
         self.configured_patterns = _compile_entity_patterns(self.rule_registry.load_entity_patterns())
 
@@ -460,7 +851,7 @@ class AdvancedEntityExtractor:
         text = _text(record)
         trace_id = str(get_record_field(record, "source_trace_id") or get_record_field(record, "trace_id") or "unknown")
         entities: list[AdvancedEntity] = []
-        seen: set[tuple[str, str, int, int]] = set()
+        seen: set[tuple[str, str]] = set()
 
         def add(entity_type: str, value: str, start: int, end: int, *, method: str = "advanced_rule_v2", confidence: float = 1.0) -> None:
             slang_normalized = self.slang_dictionary.normalize(_normalize_obfuscation(value))
@@ -471,7 +862,7 @@ class AdvancedEntityExtractor:
             )
             normalized = normalized_entity.normalized_value
             final_type = normalized_entity.entity_type
-            key = (final_type, normalized, start, end)
+            key = (final_type, normalized)
             if key in seen or not normalized:
                 return
             seen.add(key)
@@ -499,6 +890,17 @@ class AdvancedEntityExtractor:
 
         for raw, _target, start, end in self.slang_dictionary.candidates_in_text(text):
             add("slang_term", raw, start, end, method="slang_dictionary", confidence=0.88)
+        for candidate in self.slang_variant_normalizer.candidates_in_text(text):
+            if not candidate.context_confirmed and candidate.category_hint:
+                continue
+            add(
+                candidate.entity_type,
+                candidate.raw,
+                candidate.start_offset,
+                candidate.end_offset,
+                method=candidate.method,
+                confidence=candidate.confidence,
+            )
         for regex, entity_type, method in self.configured_patterns:
             for match in regex.finditer(text):
                 group_index = _first_group_index(match)
@@ -543,6 +945,13 @@ def _as_tuple(value: Any) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(item) for item in values if str(item).strip()))
 
 
+def _float_value(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _ordered_unique(values: Iterable[str]) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
@@ -556,6 +965,10 @@ def _ordered_unique(values: Iterable[str]) -> list[str]:
         seen.add(lowered)
         ordered.append(normalized)
     return ordered
+
+
+def _ranges_overlap(left: range, right: range) -> bool:
+    return left.start < right.stop and right.start < left.stop
 
 
 def context_relevance(text: str, start: int, end: int) -> float:
@@ -593,6 +1006,9 @@ __all__ = [
     "SimilarityCluster",
     "SimilarityClusterer",
     "SlangDictionary",
+    "SlangVariantAnalysis",
+    "SlangVariantCandidate",
+    "SlangVariantNormalizer",
     "context_relevance",
     "shannon_entropy",
 ]

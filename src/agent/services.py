@@ -11,7 +11,9 @@ from src.domain import RunPolicyContext
 from src.enhancement.llm_clue_refiner import LLMClueRefiner
 from src.agent.clue_ranker import ClueRanker
 from src.agent.model_router import ModelRouter
-from .user_request_parser import _fallback_intent, _fallback_plan
+from src.intelligence.entity_graph_retrieval import EntityGraphRetrievalService
+from .investigation_contracts import EvidenceGap
+from .user_request_parser import _fallback_intent, _fallback_plan, _should_use_rule_intent_parser
 
 
 class IntentPlanningService:
@@ -124,6 +126,9 @@ class RunStatePreparationService:
         routing_profile: str | None,
         policy_override: Any | None,
         run_state_type: type[Any],
+        planning_mode: str = "full",
+        evidence_gap: Mapping[str, Any] | EvidenceGap | None = None,
+        flow_decision_traces: list[dict[str, Any]] | None = None,
     ) -> Any:
         started_at = time.perf_counter()
         gateway_stats_start = self.gateway_stats_count()
@@ -135,8 +140,12 @@ class RunStatePreparationService:
             policy_override=normalized_policy_override,
         )
         initial_runtime_context = self.planner_runtime_context()
+        available_sources_list = [dict(source) for source in available_sources]
+        if available_sources_list and str(planning_mode or "full") != "preflight":
+            initial_runtime_context = {**initial_runtime_context, "force_llm_intent_parse": True}
         budget_controller = BudgetController(RuntimeBudget.from_mapping(self.profile_budget_defaults(profile_config)))
-        if bool(profile_config.get("enable_llm_intent_parse", True)):
+        preflight_mode = str(planning_mode or "full") == "preflight"
+        if bool(profile_config.get("enable_llm_intent_parse", True)) and not preflight_mode:
             intent, intent_trace = self.intent_parser.parse(
                 query,
                 runtime_context=initial_runtime_context,
@@ -147,16 +156,23 @@ class RunStatePreparationService:
             intent = _fallback_intent(query, runtime_context=initial_runtime_context)
             intent_trace = self.disabled_llm_trace(
                 "intent_parse",
-                reason="profile_disabled_llm_intent_parse",
+                reason="preflight_rule_intent" if preflight_mode else "profile_disabled_llm_intent_parse",
                 runtime_context=initial_runtime_context,
             )
         intent_payload = intent.model_dump()
-        available_sources_list = [dict(source) for source in available_sources]
-        if profile == "fast":
+        rule_plan_ok, rule_plan_reason = _should_use_rule_intent_parser(query, runtime_context=initial_runtime_context)
+        if profile == "fast" or preflight_mode:
             plan = _fallback_plan(intent, runtime_context=initial_runtime_context)
             plan_trace = self.disabled_llm_trace(
                 "investigation_plan",
-                reason="profile_fast_uses_deterministic_fallback_plan",
+                reason="preflight_defers_investigation_plan" if preflight_mode else "profile_fast_uses_deterministic_fallback_plan",
+                runtime_context=initial_runtime_context,
+            )
+        elif rule_plan_ok and not available_sources_list:
+            plan = _fallback_plan(intent, runtime_context=initial_runtime_context)
+            plan_trace = self.disabled_llm_trace(
+                "investigation_plan",
+                reason=rule_plan_reason,
                 runtime_context=initial_runtime_context,
             )
         else:
@@ -199,6 +215,8 @@ class RunStatePreparationService:
                 run_policy = run_policy.model_copy(update={"enable_llm_record_enrich": bool(override_payload["enable_llm_record_enrich"])})
             if "enable_llm_clue_refine" in override_payload:
                 run_policy = run_policy.model_copy(update={"enable_llm_clue_refine": bool(override_payload["enable_llm_clue_refine"])})
+            if "enable_graph_clue_generation" in override_payload:
+                run_policy = run_policy.model_copy(update={"enable_graph_clue_generation": bool(override_payload["enable_graph_clue_generation"])})
             run_policy = run_policy.model_copy(
                 update={
                     "llm_stage_policy": {
@@ -213,6 +231,7 @@ class RunStatePreparationService:
             available_sources_list,
             max_sources=budget["max_sources"],
             risk_types=intent.risk_types,
+            evidence_gap=evidence_gap,
         )
         if isinstance(budget.get("max_sources"), int) and budget["max_sources"] > 0:
             selected_sources = selected_sources[: int(budget["max_sources"])]
@@ -236,6 +255,10 @@ class RunStatePreparationService:
             available_sources_list=available_sources_list,
             retrieval_filters=dict(retrieval_filters or {}),
             selected_sources=selected_sources,
+            llm_gateway=getattr(self.intent_parser, "llm_gateway", None),
+            evidence_gap=evidence_gap if isinstance(evidence_gap, EvidenceGap) else EvidenceGap.from_mapping(evidence_gap),
+            planning_mode="preflight" if preflight_mode else "full",
+            flow_decision_traces=list(flow_decision_traces or []),
         )
 
 
@@ -260,6 +283,7 @@ class InitialCandidateRetrievalService:
         self.optional_float = optional_float
         self.summarize_retrieved_clues = summarize_retrieved_clues
         self.entity_graph = entity_graph
+        self.entity_graph_retrieval = EntityGraphRetrievalService(entity_graph) if entity_graph is not None else None
 
     def retrieve(
         self,
@@ -278,8 +302,18 @@ class InitialCandidateRetrievalService:
             allowed_source_types=run_state.retrieval_filters.get("source_types") or (),
             allowed_risk_types=run_state.retrieval_filters.get("risk_types") or (),
             min_quality_score=self.optional_float(run_state.retrieval_filters.get("min_quality_score")),
-            entity_graph=self.entity_graph,
+            entity_graph=None,
         )
+        graph_clues = (
+            self.entity_graph_retrieval.retrieve(
+                query=query,
+                intent=run_state.intent_payload,
+                limit=run_state.budget["max_candidate_clues"],
+            )
+            if self.entity_graph_retrieval is not None
+            else []
+        )
+        retrieved_clues = _merge_preflight_clues(retrieved_clues, graph_clues, limit=run_state.budget["max_candidate_clues"])
         retrieved_summary = self.summarize_retrieved_clues(
             retrieved_clues,
             time_range_hours=self.optional_positive_int(run_state.retrieval_filters.get("time_range_hours"))
@@ -342,10 +376,32 @@ class ClueRefinementService:
         pending_meta: list[dict[str, Any]] = []
         for clue in routed_clues:
             item = dict(clue)
+            selected, selector_reason = self._select_refine_target(item, quality_gate=quality_gate)
+            if not selected:
+                model_route_traces.append(
+                    {
+                        "stage": "model_route",
+                        "route_target": "clue_refine",
+                        "selector": "RefineTargetSelector",
+                        "selector_selected": False,
+                        "clue_id": str(item.get("clue_id") or "unknown_clue"),
+                        "action": "deterministic_only",
+                        "reason": selector_reason,
+                        "priority": 0,
+                        "max_tokens": 0,
+                        "deadline_ms": 0,
+                        "requires_review": False,
+                    }
+                )
+                refined.append(item)
+                continue
             route_decision = active_router.decide_clue_refinement(item)
             route_trace = {
                 "stage": "model_route",
                 "route_target": "clue_refine",
+                "selector": "RefineTargetSelector",
+                "selector_selected": True,
+                "selector_reason": selector_reason,
                 "clue_id": str(item.get("clue_id") or "unknown_clue"),
                 **route_decision.model_dump(),
             }
@@ -396,15 +452,57 @@ class ClueRefinementService:
             refined = [by_clue_id.get(str(item.get("clue_id") or ""), item) for item in refined]
             for trace in batch_traces:
                 meta = meta_by_clue_id.get(str(trace.get("clue_id") or ""), {})
-                trace["model_route_reason"] = meta.get("reason")
-                trace["model_route_priority"] = meta.get("priority")
-                trace["max_tokens_budgeted"] = meta.get("max_tokens")
+                if meta:
+                    trace["model_route_reason"] = meta.get("reason")
+                    trace["model_route_priority"] = meta.get("priority")
+                    trace["max_tokens_budgeted"] = meta.get("max_tokens")
             traces.extend(batch_traces)
         for item in refined:
             self.clue_repo.save(item)
         high_quality = [clue for clue in refined if self.quality_gate_checker(clue, quality_gate=quality_gate)]
         candidates = [clue for clue in refined if clue not in high_quality]
         return high_quality, candidates, traces, model_route_traces, active_budget_controller.snapshot()
+
+    def _select_refine_target(self, clue: Mapping[str, Any], *, quality_gate: Any) -> tuple[bool, str]:
+        quality_score = _float(clue.get("quality_score"))
+        confidence = _float(clue.get("confidence"))
+        evidence_count = len({str(item) for item in (clue.get("evidence_trace_ids") or []) if str(item).strip()})
+        cross_source_count = len({str(item) for item in (clue.get("source_names") or []) if str(item).strip()})
+        entity_values = {str(item).strip() for item in (clue.get("entity_values") or []) if str(item).strip()}
+        entity_count = len(entity_values)
+        risk_category = str(clue.get("risk_category") or "").strip().lower()
+        quality = clue.get("quality") if isinstance(clue.get("quality"), Mapping) else {}
+        review_required = bool(quality.get("review_required") or clue.get("review_required"))
+        has_refinement = isinstance(clue.get("refinement"), Mapping)
+        has_summary = bool(str(clue.get("summary") or clue.get("description") or "").strip())
+        minimum_quality = float(getattr(quality_gate, "minimum_quality_score", 0.65) or 0.65)
+
+        if self._weak_graph_clue(clue, risk_category=risk_category, entity_count=entity_count):
+            return False, "weak_graph_clue_without_sensitive_entity"
+        if has_refinement and quality_score >= max(minimum_quality, 0.82) and evidence_count >= 2:
+            return False, "already_refined_complete_high_quality"
+        if quality_score >= minimum_quality and evidence_count >= 2 and cross_source_count >= 2 and not review_required and has_summary:
+            return False, "actionable_complete_without_refine_need"
+        if review_required or str(quality.get("conflict_status") or clue.get("conflict_status") or "").upper() == "CONFLICT_REVIEW":
+            return True, "conflict_review"
+        if quality_score >= minimum_quality and (not has_summary or confidence < 0.78):
+            return True, "actionable_missing_summary_or_confidence"
+        if minimum_quality - 0.12 <= quality_score < minimum_quality and (entity_count > 0 or evidence_count > 0):
+            return True, "near_threshold_high_risk"
+        return False, "outside_refine_target_policy"
+
+    @staticmethod
+    def _weak_graph_clue(clue: Mapping[str, Any], *, risk_category: str, entity_count: int) -> bool:
+        origins = {str(item) for item in (clue.get("orchestration_origins") or []) if str(item).strip()}
+        retrieval_source = str(clue.get("retrieval_source") or "").strip().lower()
+        graph_backend = bool(clue.get("entity_graph_backend"))
+        if not (graph_backend or retrieval_source == "entity_graph" or "entity_graph" in origins):
+            return False
+        if risk_category not in {"", "unknown", "unknown_risk_pattern", "黑灰产情报"}:
+            return False
+        text = " ".join(str(item).lower() for item in (clue.get("entity_values") or []) if str(item).strip())
+        has_sensitive = any(token in text for token in ("tg:", "telegram", "http", ".com", "域名", "账号", "接码", "群控"))
+        return entity_count == 0 or not has_sensitive
 
 
 __all__ = [
@@ -422,3 +520,52 @@ def _budget_peek(budget: BudgetController, *, stage: str, estimated_tokens: int,
     if hasattr(budget, "peek"):
         return bool(budget.peek(stage=stage, estimated_tokens=estimated_tokens, item_count=item_count))
     return bool(budget.allow_llm_call(stage=stage, estimated_tokens=estimated_tokens, item_count=item_count))
+
+
+def _merge_preflight_clues(
+    pool_clues: Iterable[Mapping[str, Any]],
+    graph_clues: Iterable[Mapping[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for raw in [*pool_clues, *graph_clues]:
+        clue = dict(raw)
+        key = (
+            str(clue.get("clue_type") or "").lower(),
+            str(clue.get("key") or clue.get("entity_asset_id") or clue.get("clue_id") or "").lower(),
+            str(clue.get("risk_category") or "").lower(),
+        )
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = clue
+            continue
+        for field in ("evidence_trace_ids", "source_names", "source_types", "entity_values", "orchestration_origins"):
+            existing[field] = sorted(
+                {
+                    str(value)
+                    for value in [*(existing.get(field) or []), *(clue.get(field) or [])]
+                    if str(value).strip()
+                }
+            )
+        existing["retrieval_score"] = max(float(existing.get("retrieval_score") or 0.0), float(clue.get("retrieval_score") or 0.0))
+        existing["confidence"] = max(float(existing.get("confidence") or 0.0), float(clue.get("confidence") or 0.0))
+        if clue.get("risk_profile") and not existing.get("risk_profile"):
+            existing["risk_profile"] = clue["risk_profile"]
+    output = list(merged.values())
+    output.sort(
+        key=lambda item: (
+            float(item.get("retrieval_score") or 0.0),
+            float(item.get("quality_score") or 0.0),
+            float(item.get("confidence") or 0.0),
+        ),
+        reverse=True,
+    )
+    return output[: max(0, int(limit or 0))]
+
+
+def _float(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0

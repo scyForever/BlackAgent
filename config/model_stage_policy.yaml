@@ -1,4 +1,27 @@
 model_stage_policy:
+  record_routing:
+    low_quality_min_score: 0.25
+    duplicate_auto_accept_confidence: 0.80
+    deterministic_auto_accept_confidence: 0.85
+    deterministic_auto_accept_min_entities: 2
+    value_gate_review_confidence: 0.70
+    value_gate_review_risk_score: 0.75
+    llm_min_rule_confidence_with_signal: 0.45
+    hard_case_max_rule_confidence: 0.68
+    hard_case_min_risk_score: 0.65
+    fast_record_max_tokens: 600
+    default_record_max_tokens: 900
+    fast_record_deadline_ms: 2500
+    default_record_deadline_ms: 6000
+  clue_routing:
+    low_quality_without_entities_score: 0.35
+    already_refined_quality_score: 0.82
+    review_confidence_threshold: 0.78
+    default_review_confidence_threshold: 0.70
+    fast_refine_max_tokens: 300
+    default_refine_max_tokens: 450
+    fast_refine_deadline_ms: 2500
+    default_refine_deadline_ms: 5000
   fast:
     intent_parse: false
     investigation_plan: false

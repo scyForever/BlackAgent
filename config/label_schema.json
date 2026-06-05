@@ -36,6 +36,11 @@
   "review_policy": {
     "confidence_threshold": 0.75,
     "unknown_labels_require_review": true,
-    "sandbox_outputs_require_human_review": true
+    "sandbox_outputs_require_human_review": true,
+    "secondary_label_mode": "assistive_until_gold_ready",
+    "secondary_final_gate": {
+      "min_secondary_markers": 2,
+      "allow_single_marker_with_entity_context": true
+    }
   }
 }

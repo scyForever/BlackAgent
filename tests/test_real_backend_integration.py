@@ -1,6 +1,11 @@
+import pytest
+
 from src.config_loader import Settings
 from src.local_runtime import LocalAgentRuntime
 from storage.sql_backend import connect
+
+
+pytestmark = pytest.mark.integration
 
 
 def backend_records():

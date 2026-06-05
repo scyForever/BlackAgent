@@ -101,3 +101,14 @@ sources:
     robots_allowed: true
     terms_allow_security_research: true
     rate_limit_per_minute: 3
+
+  - source_name: telegram_search_hub
+    source_type: IM
+    platform: telegram
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3At.me/s%20Telegram%20%E6%8E%A5%E7%A0%81
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    robots_allowed: true
+    terms_allow_security_research: true
+    rate_limit_per_minute: 3

@@ -23,6 +23,81 @@ def _utc_hours_ago(hours: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
 
 
+def test_preflight_satisfied_pool_skips_llm_intent_and_plan():
+    gateway = LLMGateway(dry_run=True, mock=True)
+    orchestrator = InvestigationOrchestrator(llm_gateway=gateway)
+    orchestrator.clue_repo.save(
+        {
+            "clue_id": "preflight-pool-1",
+            "clue_type": "shared_contact_48h",
+            "key": "preflight-contact",
+            "risk_category": "诈骗引流",
+            "source_names": ["tg-preflight", "forum-preflight"],
+            "source_types": ["IM", "Forum"],
+            "entity_values": ["TG:preflight01", "https://preflight.example/a"],
+            "evidence_trace_ids": ["preflight-a", "preflight-b"],
+            "quality_score": 0.82,
+            "confidence": 0.86,
+            "last_seen": _utc_hours_ago(1),
+        }
+    )
+    collected: list[str] = []
+
+    result = orchestrator.run(
+        "找诈骗引流相关线索",
+        available_sources=[
+            {
+                "source_name": "should-not-collect",
+                "source_type": "IM",
+                "source_url": "https://feed.example/preflight",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            }
+        ],
+        collect_source_records=lambda source: collected.append(str(source["source_name"])) or [],
+    )
+
+    assert result.status == "completed"
+    assert collected == []
+    assert result.execution_summary["main_flow_stage_count"] == 5
+    assert result.execution_summary["main_flow_stages"][2]["needs_fresh_data"] is False
+    assert result.execution_summary["main_flow_stages"][3]["status"] == "skipped"
+    assert result.execution_summary["main_flow_stages"][3]["mode"] == "history_assets_only"
+    assert result.execution_summary["flow_decision_traces"][0]["next_action"] == "skip_conditional_planning"
+    assert result.execution_summary["evidence_gap"]["reasons"] == []
+    assert not any(trace.get("stage") in {"intent_parse", "investigation_plan"} and trace.get("llm_ok") for trace in result.llm_traces)
+
+
+def test_fast_profile_can_use_semantic_local_even_when_live_collection_disabled():
+    orchestrator = _orchestrator()
+    orchestrator.phase_engine.run(
+        [
+            {
+                "trace_id": "fast-semantic-1",
+                "source_name": "tg-fast-semantic",
+                "source_type": "IM",
+                "legal_basis": "AUTHORIZED_PARTNER",
+                "publish_time": _utc_hours_ago(2),
+                "content_text": "群控脚本接码上车，联系 TG:fastsemantic01，落地 https://fastsemantic.example/a 第一条",
+            },
+            {
+                "trace_id": "fast-semantic-2",
+                "source_name": "forum-fast-semantic",
+                "source_type": "Forum",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "publish_time": _utc_hours_ago(1),
+                "content_text": "群控脚本接码上车，联系 TG:fastsemantic01，落地 https://fastsemantic.example/a 第二条",
+            },
+        ]
+    )
+
+    result = orchestrator.run("找群控脚本接码线索", routing_profile="fast")
+
+    assert result.execution_summary["routing_profile"] == "fast"
+    assert result.execution_summary["used_semantic_local_retrieval"] is True
+    assert result.execution_summary["used_live_collection"] is False
+    assert result.execution_summary["orchestration_route"] == "semantic_local_only"
+
+
 def test_investigation_orchestrator_collects_sources_by_priority_layer_before_general():
     call_order: list[str] = []
 
@@ -72,12 +147,12 @@ def test_investigation_orchestrator_collects_sources_by_priority_layer_before_ge
     )
 
     assert result.status == "completed"
-    assert call_order == ["theme-core-feed", "theme-variant-feed", "general-feed"]
-    assert [item["source_name"] for item in result.selected_sources] == call_order
+    assert call_order == ["theme-core-feed", "theme-variant-feed"]
+    assert result.collection_runs[-1]["layer_stop_reason"] == "evidence_gap_satisfied_after_layer"
+    assert [item["source_name"] for item in result.selected_sources][:2] == call_order
     assert [item["collection_layer"] for item in result.collection_runs] == [
         "theme_core",
         "theme_variant",
-        "global_core",
     ]
 
 

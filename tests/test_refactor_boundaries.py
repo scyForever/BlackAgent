@@ -3,6 +3,8 @@ from src.agent import (
     BudgetController,
     ClueMergeService,
     ClueRanker,
+    EvidenceGap,
+    FreshProcessingService,
     IntentPlanningService,
     InvestigationTelemetryService,
     ModelRouter,
@@ -17,6 +19,8 @@ from src.domain import (
     PipelineItem,
     RiskClassification,
     RunPolicyContext,
+    PipelineExecutionSummary,
+    PipelineLegacySnapshot,
 )
 from src.agent.query_rewriter import LLMSourceQueryRewriter
 from src.enhancement.llm_clue_refiner import LLMClueRefiner
@@ -115,6 +119,171 @@ def test_model_router_budget_controller_and_clue_ranker_control_refinement_spend
     assert denied_ledger["denied_calls"] == 1
 
 
+def test_refine_target_selector_skips_weak_graph_clues_and_targets_near_threshold():
+    orchestrator = InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
+    gate = orchestrator._runtime_quality_gate(
+        intent={"quality_profile": "balanced"},
+        plan={"quality_gate": {"minimum_quality_score": 0.65, "require_cross_source": False, "require_evidence_chain": True}},
+        policy_override=None,
+    )
+
+    high_quality, candidates, traces, routes, _snapshot = orchestrator.clue_refinement.refine(
+        [
+            {
+                "clue_id": "weak-graph",
+                "clue_type": "graph_shared_entity_cross_source",
+                "risk_category": "unknown",
+                "retrieval_source": "entity_graph",
+                "entity_graph_backend": "entity_graph_store",
+                "quality_score": 0.62,
+                "confidence": 0.6,
+                "evidence_trace_ids": ["g1"],
+                "source_names": ["graph-only"],
+                "entity_values": [],
+            },
+            {
+                "clue_id": "near-threshold",
+                "clue_type": "shared_contact_48h",
+                "risk_category": "工具交易",
+                "quality_score": 0.6,
+                "confidence": 0.63,
+                "evidence_trace_ids": ["n1"],
+                "source_names": ["tg-near"],
+                "entity_values": ["TG:near01"],
+            },
+        ],
+        query="找群控接码线索",
+        intent={"risk_types": ["工具交易"], "quality_profile": "balanced"},
+        quality_gate=gate,
+        max_refine=2,
+        routing_profile="balanced",
+    )
+
+    assert high_quality or candidates
+    assert len(routes) > sum(1 for route in routes if route.get("selector_selected"))
+    assert any(route["clue_id"] == "weak-graph" and route["selector_selected"] is False for route in routes)
+    assert any(route["clue_id"] == "near-threshold" and route["selector_selected"] is True for route in routes)
+    assert any(trace.get("stage") == "clue_refine" for trace in traces)
+
+
+def test_llm_value_gate_missing_report_routes_hard_cases_only(monkeypatch):
+    monkeypatch.setattr("src.pipeline.intelligence_pipeline.load_latest_llm_value_report", lambda: None)
+    pipeline = IntelligencePipeline(
+        clean_stage=PassThroughStage(),
+        dedup_stage=PassThroughStage(),
+        triage_stage=PassThroughStage(),
+        classify_stage=PassThroughStage(),
+        extract_stage=PassThroughStage(),
+        llm_enrich_stage=LLMEnrichStage(llm_gateway=LLMGateway(dry_run=True, mock=True)),
+        correlate_stage=PassThroughStage(),
+        score_stage=PassThroughStage(),
+        model_router=ModelRouter(),
+    )
+
+    low_value = pipeline.run(
+        [
+            {
+                "trace_id": "value-low",
+                "classification": {"risk_category": "账号交易", "confidence": 0.82},
+                "confidence": 0.82,
+                "risk_score": 0.4,
+                "quality_score": 0.7,
+                "has_contact": True,
+                "entity_count": 1,
+            }
+        ]
+    )
+    hard_case = pipeline.run(
+        [
+            {
+                "trace_id": "value-hard",
+                "classification": {"risk_category": "账号交易", "confidence": 0.5, "review_required": True},
+                "confidence": 0.5,
+                "risk_score": 0.86,
+                "quality_score": 0.7,
+                "has_contact": True,
+                "entity_count": 1,
+            }
+        ]
+    )
+
+    assert low_value.routed[0]["action"] == "deterministic_only"
+    assert hard_case.routed[0]["action"] == "llm_classify_extract"
+    assert low_value.execution_summary["llm_value_gate"]["record_enrich_policy"] == "hard_cases_only"
+    assert low_value.execution_summary["llm_value_gate"]["reason"] == "llm_value_report_missing_hard_cases_only"
+
+
+def test_source_selection_uses_structured_evidence_gap():
+    orchestrator = InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
+    selected = orchestrator._select_sources(
+        {"source_selection_strategy": {"match_query_keywords": ["接码"]}},
+        [
+            {
+                "source_name": "generic-im",
+                "source_type": "IM",
+                "search_query": "site:t.me/s 接码",
+            },
+            {
+                "source_name": "domain-forum",
+                "source_type": "Forum",
+                "search_query": "domain url 接码",
+                "entity_focus": "domain",
+            },
+        ],
+        max_sources=1,
+        risk_types=["接码"],
+        evidence_gap=EvidenceGap(
+            need_cross_source_support=True,
+            missing_entity_types=["domain"],
+            preferred_source_types=["forum"],
+            reasons=["insufficient_cross_source_support", "evidence_chain_not_satisfied_by_pool"],
+        ),
+    )
+
+    assert selected[0]["source_name"] == "domain-forum"
+
+
+def test_entity_graph_retrieval_service_feeds_preflight_candidates():
+    from src.intelligence import EntityGraphRetrievalService
+    from storage.entity_graph import EntityGraphStore
+
+    graph = EntityGraphStore()
+    records = [
+        {
+            "trace_id": "graph-preflight-a",
+            "source_name": "tg-graph",
+            "source_type": "IM",
+            "risk_category": "工具交易",
+        },
+        {
+            "trace_id": "graph-preflight-b",
+            "source_name": "forum-graph",
+            "source_type": "Forum",
+            "risk_category": "工具交易",
+        },
+    ]
+    for record in records:
+        graph.add_observation(
+            {
+                "entity_type": "contact",
+                "entity_value": "TG:graph01",
+                "normalized_value": "Telegram:graph01",
+                "source_trace_id": record["trace_id"],
+                "confidence": 0.9,
+            },
+            record,
+        )
+
+    clues = EntityGraphRetrievalService(graph).retrieve(
+        query="查群控工具交易 TG graph01",
+        intent={"risk_types": ["工具交易"]},
+    )
+
+    assert clues
+    assert clues[0]["retrieval_source"] == "entity_graph_preflight"
+    assert clues[0]["risk_profile"]["source_count"] == 2
+
+
 def test_application_service_and_runtime_container_wrap_existing_runtime_dependencies():
     settings = Settings.model_validate({"llm": {"provider": "mock", "enabled": False, "dry_run": True}})
     container = RuntimeContainer(settings)
@@ -179,12 +348,14 @@ def test_intelligence_pipeline_boundary_runs_composable_stages():
 
     assert isinstance(result, PipelineResult)
     assert result.execution_summary["input_count"] == 1
-    assert result.routed[0]["action"] == "llm_classify_extract"
+    assert result.routed[0]["action"] == "deterministic_only"
     assert result.execution_summary["routing_profile"] == "fast"
     assert result.execution_summary["model_router_profile"] == "fast"
     assert result.execution_summary["llm_stage_policy"]["record_enrich"] is False
-    assert result.execution_summary["pipeline_data_plane"] == "typed_pipeline_item_contract_primary_dict_compat_output"
-    assert result.items[0].payload["llm_enrich_skipped_reason"] == "policy_disabled_record_enrich"
+    assert result.execution_summary["pipeline_data_plane"] == "typed_first_pipeline_item_internal_legacy_snapshot_adapter"
+    assert isinstance(result.execution_summary, PipelineExecutionSummary)
+    assert isinstance(result.legacy_snapshot, PipelineLegacySnapshot)
+    assert "llm_enrich_skipped_reason" not in result.items[0].payload
 
 
 def test_intelligence_pipeline_default_stages_run_real_components():
@@ -226,12 +397,49 @@ def test_intelligence_pipeline_default_stages_run_real_components():
     assert result.clues
     assert result.items
     assert all(isinstance(item, PipelineItem) for item in result.items)
+    assert result.to_legacy_dict()["classified"] == result.classified
+    assert "classified" not in result.model_dump()
+    assert result.candidate_clues
+    assert result.actionable_clues
     assert result.items[0].cleaned is not None
     assert result.items[0].classification is not None
     assert result.items[0].classification_resolution is not None
     assert result.items[0].classification_resolution.final["risk_category"] == result.items[0].classification.risk_category
     assert result.items[0].route is not None
     assert result.items[0].payload
+
+
+def test_model_router_thresholds_come_from_rule_registry_config():
+    router = ModelRouter(profile="high_recall")
+    assert router.record_rules["llm_min_rule_confidence_with_signal"] == 0.45
+    assert router.clue_rules["fast_refine_max_tokens"] == 300
+
+    strict_router = ModelRouter(
+        profile="high_recall",
+        routing_rules={
+            "record_routing": {
+                "low_quality_min_score": 0.25,
+                "duplicate_auto_accept_confidence": 0.80,
+                "deterministic_auto_accept_confidence": 0.85,
+                "deterministic_auto_accept_min_entities": 2,
+                "value_gate_review_confidence": 0.70,
+                "value_gate_review_risk_score": 0.75,
+                "llm_min_rule_confidence_with_signal": 0.99,
+            }
+        },
+    )
+    decision = strict_router.decide_record(
+        rule_confidence=0.5,
+        risk_score=0.8,
+        entity_count=1,
+        has_contact=True,
+        has_url=False,
+        has_tool=False,
+        has_conflict=False,
+        is_duplicate=False,
+        quality_score=0.8,
+    )
+    assert decision.action == "deterministic_only"
 
 
 def test_safety_helpers_wrap_untrusted_text_mask_pii_and_validate_output():
@@ -247,10 +455,13 @@ def test_safety_helpers_wrap_untrusted_text_mask_pii_and_validate_output():
 
 def test_orchestrator_split_services_are_importable_and_operational():
     assert IntentPlanningService().name == "intent_planning"
+    assert hasattr(__import__("src.agent", fromlist=["PhaseDependency"]), "PhaseDependency")
     assert hasattr(__import__("src.agent", fromlist=["RunStatePreparationService"]), "RunStatePreparationService")
     assert hasattr(__import__("src.agent", fromlist=["InitialCandidateRetrievalService"]), "InitialCandidateRetrievalService")
     assert hasattr(__import__("src.agent", fromlist=["ClueRefinementService"]), "ClueRefinementService")
     assert SourceSelectionService().cap([{"source_name": "a"}, {"source_name": "b"}], 1) == [{"source_name": "a"}]
+    assert FreshProcessingService(lambda **kwargs: kwargs).dependency.phase_name == "fresh_processing"
+    assert FreshProcessingService(lambda **kwargs: kwargs).dependencies is None
     merged = ClueMergeService().merge(
         [
             {"clue_type": "shared", "key": "k", "risk_category": "r", "source_names": ["a"], "confidence": 0.5},
@@ -399,6 +610,49 @@ def test_clue_promotion_archives_weak_duplicates_and_caps_actionable_load():
     assert {item["clue_id"] for item in stage.archived_weak_clues} == {"candidate-2", "weak-tool"}
 
 
+def test_clue_promotion_accepts_new_configured_rule_without_python_branch(tmp_path):
+    import yaml
+
+    rules_path = tmp_path / "clue_generation_rules.yaml"
+    rules_path.write_text(
+        yaml.safe_dump(
+            {
+                "clue_generation_rules": {
+                    "clue_promotion": {
+                        "custom_cluster_rule": {
+                            "match_clue_types": ["custom_cluster_rule"],
+                            "require_all": [{"min_sources": 2}],
+                            "pass_reason": "custom_config_promoted",
+                            "fail_reason": "custom_config_failed",
+                        }
+                    }
+                }
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    registry = RuleRegistry(files={"clue_generation": str(rules_path)})
+    stage = CluePromotionStage(rule_registry=registry)
+
+    actionable = stage.run_batch(
+        [
+            {
+                "clue_id": "custom-1",
+                "clue_type": "custom_cluster_rule",
+                "key": "custom",
+                "risk_category": "工具交易",
+                "source_names": ["a", "b"],
+                "evidence_trace_ids": ["t1"],
+                "confidence": 0.7,
+            }
+        ]
+    )
+
+    assert len(actionable) == 1
+    assert actionable[0]["promotion_reason"] == "custom_config_promoted"
+
+
 def test_extracted_orchestrator_services_can_run_assigned_boundaries():
     orchestrator = InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
 
@@ -454,7 +708,7 @@ def test_extracted_orchestrator_services_can_run_assigned_boundaries():
     assert snapshot["llm_calls"] >= 1
 
 
-def test_orchestrator_llm_traces_include_model_route_decisions():
+def test_orchestrator_splits_model_route_decisions_from_llm_traces():
     orchestrator = InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
     result = orchestrator.run(
         "找接码群控线索",
@@ -476,7 +730,9 @@ def test_orchestrator_llm_traces_include_model_route_decisions():
         ],
     )
 
-    assert any(trace.get("stage") == "model_route" for trace in result.llm_traces)
+    assert not any(trace.get("stage") == "model_route" for trace in result.llm_traces)
+    assert any(trace.get("stage") == "model_route" for trace in result.model_route_traces)
+    assert any(trace.get("stage") == "model_route" for trace in result.execution_summary["model_route_traces"])
     assert result.execution_summary["model_route_summary"].get("llm_refine_only", 0) >= 1
 
 
@@ -589,7 +845,9 @@ def test_llm_enrich_stage_uses_model_router_budget_and_preserves_rule_fallback()
     assert enriched_item["rule_entities"][0]["entity_value"] == "TG:plain01"
     assert enriched_item["llm_entities"][0]["entity_type"] == "tool_name"
     assert result.execution_summary["llm_enrich_count"] == 1
-    assert result.execution_summary["llm_enrich_trace_count"] == 1
+    assert result.execution_summary["llm_enrich_trace_count"] == 2
+    assert len(result.execution_summary["llm_call_traces"]) == 1
+    assert len(result.execution_summary["llm_item_traces"]) == 1
     assert budget.snapshot()["classified_by_llm"] == 1
     prompt = str(gateway.calls[0]["messages"][-1]["content"])
     assert "TG:plain01" not in prompt
@@ -614,7 +872,7 @@ def test_llm_enrich_stage_budget_denial_keeps_rule_result():
         [
             {
                 "trace_id": "llm-budget-denied",
-                "classification": {"risk_category": "账号交易", "confidence": 0.5},
+                "classification": {"risk_category": "账号交易", "confidence": 0.5, "review_required": True},
                 "confidence": 0.5,
                 "risk_score": 0.8,
                 "quality_score": 0.7,
@@ -801,7 +1059,16 @@ def test_pr4_runtime_shell_workflow_and_services_meet_decomposition_contracts():
         retrieval_state_type=object,
     )
     result = workflow.run("q")
-    assert result.payload == {"query": "q", "summary": {"ok": True}}
+    assert result.payload["query"] == "q"
+    assert result.payload["summary"]["ok"] is True
+    assert result.payload["summary"]["main_flow_stage_count"] == 5
+    assert [item["stage"] for item in result.payload["summary"]["main_flow_stages"]] == [
+        "input_task",
+        "route_and_guard",
+        "asset_retrieval",
+        "intelligence_pipeline",
+        "clue_generation_report",
+    ]
     assert result.context.semantic_state == "semantic"
     assert result.context.refinement_state == "refine"
 
@@ -836,3 +1103,51 @@ def test_runtime_wiring_uses_public_service_factories_for_legacy_phase_callbacks
         "ResultRenderService",
     }
     assert not forbidden_direct_classes.intersection(calls)
+
+
+def test_fresh_processing_service_accepts_explicit_dependencies_without_legacy_callback():
+    from dataclasses import dataclass
+
+    from src.agent.runtime_services import FreshProcessingDependencies
+    from src.agent.investigation_contracts import _FreshProcessingState
+
+    class Builder:
+        def __init__(self):
+            self.controls = None
+
+        def set_runtime_controls(self, **kwargs):
+            self.controls = kwargs
+
+        def build(self, records, **kwargs):
+            return type("Build", (), {"execution_summary": {"status": "completed"}, "clues": [{"clue_id": "c1"}]})()
+
+    @dataclass
+    class State:
+        provided_records: list
+        records: list | None = None
+        phase_payload: dict | None = None
+
+    builder = Builder()
+    service = FreshProcessingService(FreshProcessingDependencies(offline_builder=builder))
+    result = service.run(
+        query="q",
+        run_state=type(
+            "Run",
+            (),
+            {
+                "budget_controller": object(),
+                "run_policy": RunPolicyContext(),
+                "llm_gateway": object(),
+                "available_sources_list": [],
+                "intent_payload": {},
+            },
+        )(),
+        retrieval_state=State(provided_records=[{"trace_id": "r1"}]),
+        semantic_state=State(provided_records=[], records=[]),
+        live_state=type("Live", (), {"records": [], "selected_sources": []})(),
+    )
+
+    assert isinstance(result, _FreshProcessingState)
+    assert result.built_clues == [{"clue_id": "c1"}]
+    assert service.dependencies is not None
+    assert builder.controls["policy"].routing_profile == "balanced"

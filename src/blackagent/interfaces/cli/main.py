@@ -550,6 +550,7 @@ def print_summary(payload: dict[str, Any], *, show_clues: bool) -> None:
         print("\n--- execution_summary ---")
         for key in (
             "status",
+            "run_mode",
             "mode",
             "budget",
             "accepted_count",
@@ -561,11 +562,27 @@ def print_summary(payload: dict[str, Any], *, show_clues: bool) -> None:
             "playbook_count",
             "strategy_count",
             "refined_clue_count",
+            "graph_clue_generation_enabled",
+            "model_route_count",
         ):
             if key in execution_summary:
                 print(f"{key}: {execution_summary[key]}")
         if execution_summary.get("live_collection_reasons"):
             print(f"live_collection_reasons: {execution_summary.get('live_collection_reasons')}")
+        main_flow_stages = execution_summary.get("main_flow_stages") or []
+        if main_flow_stages:
+            print("\n--- main_flow_stages ---")
+            for item in main_flow_stages:
+                line = f"{item.get('stage')}: status={item.get('status')}"
+                if "needs_fresh_data" in item:
+                    line += f" needs_fresh_data={item.get('needs_fresh_data')}"
+                if item.get("mode"):
+                    line += f" mode={item.get('mode')}"
+                if item.get("decision_reason"):
+                    line += f" decision={item.get('decision_reason')}"
+                if item.get("reason"):
+                    line += f" reason={item.get('reason')}"
+                print(line)
 
     collection_runs = payload.get("collection_runs") or []
     if collection_runs:
@@ -580,16 +597,32 @@ def print_summary(payload: dict[str, Any], *, show_clues: bool) -> None:
                 line += f" error={item.get('error')}"
             print(line)
 
-    traces = payload.get("llm_traces") or []
-    if traces:
-        print("\n--- llm_traces ---")
+    for section_name in ("llm_call_traces", "llm_item_traces", "model_route_traces", "flow_decision_traces", "safety_traces"):
+        traces = payload.get(section_name) or execution_summary.get(section_name) or []
+        if not traces:
+            continue
+        print(f"\n--- {section_name} ---")
         for item in traces:
-            print(
-                f"{item.get('stage')}: "
-                f"llm_ok={item.get('llm_ok')} "
-                f"used_fallback={item.get('used_fallback')} "
-                f"error={item.get('error')}"
-            )
+            if section_name == "model_route_traces":
+                print(
+                    f"{item.get('stage')}: "
+                    f"target={item.get('route_target')} "
+                    f"action={item.get('action')} "
+                    f"reason={item.get('reason')}"
+                )
+            elif section_name == "flow_decision_traces":
+                print(
+                    f"{item.get('stage')}: "
+                    f"next={item.get('next_action')} "
+                    f"reason={item.get('reason')}"
+                )
+            else:
+                print(
+                    f"{item.get('stage')}: "
+                    f"llm_ok={item.get('llm_ok')} "
+                    f"used_fallback={item.get('used_fallback')} "
+                    f"error={item.get('error')}"
+                )
 
     if show_clues:
         clues = list(payload.get("high_quality_clues") or []) + list(payload.get("candidate_clues") or [])

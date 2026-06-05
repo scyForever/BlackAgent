@@ -150,6 +150,12 @@ class ClassifyStage:
                 trace_id=str(classification.get("source_trace_id") or payload.get("trace_id") or current.record.trace_id),
                 risk_category=str(resolution.final.get("risk_category") or "unknown"),
                 secondary_label=str(resolution.final.get("secondary_label") or "待研判"),
+                final_secondary_label=_optional_str(resolution.final.get("final_secondary_label") or resolution.final.get("secondary_label")),
+                candidate_secondary_labels=[
+                    dict(item)
+                    for item in (resolution.final.get("candidate_secondary_labels") or [])
+                    if isinstance(item, Mapping)
+                ],
                 confidence=float(resolution.final.get("confidence") or 0.0),
                 conflict_status=_optional_str(resolution.final.get("conflict_status")),
                 evidence=[str(value) for value in (resolution.final.get("evidence") or [])],
@@ -316,6 +322,12 @@ def _coerce_pipeline_item(item: Mapping[str, Any] | PipelineItem) -> PipelineIte
             trace_id=trace_id,
             risk_category=str(final.get("risk_category") or "unknown"),
             secondary_label=str(final.get("secondary_label") or "待研判"),
+            final_secondary_label=_optional_str(final.get("final_secondary_label") or final.get("secondary_label")),
+            candidate_secondary_labels=[
+                dict(item)
+                for item in (final.get("candidate_secondary_labels") or [])
+                if isinstance(item, Mapping)
+            ],
             confidence=float(final.get("confidence") or 0.0),
             conflict_status=_optional_str(final.get("conflict_status")),
             evidence=[str(value) for value in (final.get("evidence") or [])],
@@ -494,6 +506,12 @@ def _sync_classification_contract(item: dict[str, Any], classification: Mapping[
         trace_id=trace_id,
         risk_category=str(final_classification.get("risk_category") or "unknown"),
         secondary_label=str(final_classification.get("secondary_label") or "待研判"),
+        final_secondary_label=_optional_str(final_classification.get("final_secondary_label") or final_classification.get("secondary_label")),
+        candidate_secondary_labels=[
+            dict(item)
+            for item in (final_classification.get("candidate_secondary_labels") or [])
+            if isinstance(item, Mapping)
+        ],
         confidence=float(final_classification.get("confidence") or 0.0),
         conflict_status=_optional_str(final_classification.get("conflict_status")),
         evidence=[str(value) for value in (final_classification.get("evidence") or [])],

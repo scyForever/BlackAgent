@@ -56,6 +56,33 @@ def test_http_feed_collector_fetches_authorized_json_rows():
     assert rows[0]["source_url"] == "https://feed.example/intel.json"
     assert rows[0]["legal_basis"] == "PUBLIC_COMPLIANT_DATA"
     assert "risk.example" in rows[0]["content_text"]
+    assert rows[0]["content_hash"]
+    assert rows[0]["last_seen_at"]
+    assert rows[0]["last_cursor"] == "1"
+    assert rows[0]["source_snapshot_id"].startswith("public-feed:")
+    assert rows[0]["source_access_type"] == "public_compliant"
+    assert rows[0]["source_class"] == "vertical_or_technical"
+    assert rows[0]["collection_quality"]["quality_version"] == "collection_quality_v1"
+
+
+def test_source_metadata_classifies_x_as_social_not_im():
+    collector = HTTPFeedCollector(
+        HTTPFeedConfig(
+            source_url="https://x.example/feed.json",
+            source_name="x-feed",
+            source_type="X",
+            legal_basis="PUBLIC_COMPLIANT_DATA",
+            network_enabled=True,
+            allowed_domains=("x.example",),
+        ),
+        opener=lambda request, timeout: FakeHTTPResponse(
+            json.dumps({"items": [{"full_text": "X 招募 TG:core01 落地 https://risk.example/path"}]})
+        ),
+    )
+
+    rows = [model_dump(item) for item in collector.collect()]
+
+    assert rows[0]["source_class"] == "social_or_forum"
 
 
 def test_http_feed_collector_fetches_authorized_html_snapshot():

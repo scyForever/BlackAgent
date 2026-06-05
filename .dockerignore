@@ -1,0 +1,16 @@
+.git
+.pytest_cache
+__pycache__/
+*.pyc
+*.pyo
+*.db
+*.sqlite
+*.sqlite3
+*.docx
+*.txt
+data/
+build/
+blackagent.egg-info/
+storage/*.db
+.env
+.vscode/

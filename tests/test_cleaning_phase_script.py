@@ -70,7 +70,7 @@ def test_run_cleaning_phase_materializes_multimodal_text_before_cleaning() -> No
             "legal_basis": "AUTHORIZED_PARTNER",
             "content_text": "主贴：普通招募文案",
             "attachments": [{"ocr_text": "海报OCR：接码平台继续放单，联系 TG:ocr9001"}],
-            "screenshots": [{"alt_text": "截图：拉裙上车，➕V demo001"}],
+            "screenshots": [{"screenshot_ref": "poster-001.png", "alt_text": "截图：拉裙上车，➕V demo001"}],
         }
     ]
 
@@ -84,6 +84,8 @@ def test_run_cleaning_phase_materializes_multimodal_text_before_cleaning() -> No
     assert cleaned_rows[0]["multimodal_signal_count"] >= 2
     assert "attachments.ocr_text" in cleaned_rows[0]["multimodal_text_sources"]
     assert "screenshots.alt_text" in cleaned_rows[0]["multimodal_text_sources"]
+    assert "screenshots.screenshot_ref" in cleaned_rows[0]["multimodal_reference_fields"]
+    assert cleaned_rows[0]["multimodal_reference_count"] >= 1
     assert len(high_risk_rows) == 1
 
 

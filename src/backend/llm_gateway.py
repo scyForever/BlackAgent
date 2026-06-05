@@ -99,11 +99,16 @@ class LLMCallStats:
     error: str | None = None
 
     def model_dump(self) -> dict[str, Any]:
+        gateway_request_estimated_tokens = self.prompt_tokens_estimated + self.completion_tokens_limit
         return {
             "stage": self.stage,
             "model": self.model,
             "prompt_tokens_estimated": self.prompt_tokens_estimated,
             "completion_tokens_limit": self.completion_tokens_limit,
+            "prompt_estimated_tokens": self.prompt_tokens_estimated,
+            "gateway_request_estimated_tokens": gateway_request_estimated_tokens,
+            "actual_usage_tokens": None,
+            "token_estimation_policy": "heuristic_chars_div_4_plus_completion_limit",
             "elapsed_ms": self.elapsed_ms,
             "cache_hit": self.cache_hit,
             "ok": self.ok,

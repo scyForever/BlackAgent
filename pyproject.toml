@@ -40,4 +40,8 @@ config = ["*.yaml", "*.json"]
 [tool.pytest.ini_options]
 pythonpath = [".", "src"]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m 'not integration and not network'"
+markers = [
+    "integration: slower cross-component tests that may touch persistent backends or broad runtime wiring",
+    "network: tests that require explicit authorized network access",
+]

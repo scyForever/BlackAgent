@@ -10,6 +10,7 @@ from __future__ import annotations
 import time  # re-exported for existing monkeypatch targets
 
 from .investigation_runtime import (
+    EvidenceGap,
     InvestigationRunResult,
     InvestigationRuntime,
     PlanExecutionControls,
@@ -30,6 +31,7 @@ class InvestigationOrchestrator(InvestigationRuntime):
 
 __all__ = [
     "InvestigationOrchestrator",
+    "EvidenceGap",
     "InvestigationRunResult",
     "PlanExecutionControls",
     "RuntimeQualityGate",

@@ -82,34 +82,17 @@ class CluePromotionStage:
         if observed_types.intersection({"contact", "account", "url", "domain", "tool_name", "price", "settlement"}):
             score = min(0.99, score + 0.18)
 
-        if any(token in clue_type for token in ("contact", "account", "invite")):
-            configured = _rule_promotion(self.rules, "shared_contact_48h")
-            min_sources = int(configured.get("require_min_sources") or 2)
-            min_observations = int(configured.get("require_min_observations") or 3)
-            if len(sources) >= min_sources or len(traces) >= min_observations:
-                return True, "contact_account_cross_source_or_three_observations", round(score, 4)
-            return False, "contact_account_requires_two_sources_or_three_observations", round(score, 4)
-
-        if any(token in clue_type for token in ("domain", "url")):
-            configured = _rule_promotion(self.rules, "shared_domain_multi_source")
-            required_entities = set(_string_list(configured.get("require_any_entity"))) or {"contact", "account", "tool_name"}
-            if len(sources) >= int(configured.get("require_min_sources") or 2) and observed_types.intersection(required_entities):
-                return True, "domain_url_cross_source_with_contact_or_tool", round(score, 4)
-            return False, "domain_url_requires_two_sources_and_contact_or_tool", round(score, 4)
-
-        if any(token in clue_type for token in ("tool", "slang")):
-            configured = _rule_promotion(self.rules, "tool_slang")
-            required_entities = set(_string_list(configured.get("require_any_entity"))) or {"contact", "account", "price", "url", "domain"}
-            if observed_types.intersection(required_entities) or len(sources) >= int(configured.get("require_min_sources") or 2):
-                return True, "tool_slang_has_transaction_or_cross_source_support", round(score, 4)
-            return False, "tool_slang_requires_contact_price_url_or_cross_source_support", round(score, 4)
-
-        if "template" in clue_type:
-            configured = _rule_promotion(self.rules, "high_frequency_template")
-            rejected = {item.lower() for item in _string_list(configured.get("reject_risk_categories"))} or {"normal_noise", "正常业务白噪声"}
-            if len(traces) >= int(configured.get("require_min_observations") or configured.get("min_records") or 3) and str(clue.get("risk_category") or "").lower() not in rejected:
-                return True, "template_repeated_three_times_non_defensive", round(score, 4)
-            return False, "template_requires_three_non_defensive_repetitions", round(score, 4)
+        configured_result = _configured_promotion_decision(
+            self.rules,
+            clue,
+            clue_type=clue_type,
+            traces=traces,
+            sources=sources,
+            observed_types=observed_types,
+            score=score,
+        )
+        if configured_result is not None:
+            return configured_result
 
         if not self.strict and len(traces) >= 2:
             return True, "non_strict_two_evidence_samples", round(score, 4)
@@ -125,14 +108,67 @@ def _actionable_rank(clue: Mapping[str, Any]) -> tuple[float, int, int, str]:
     )
 
 
-def _rule_promotion(rules: Mapping[str, Any], name: str) -> dict[str, Any]:
-    spec = rules.get(name) if isinstance(rules, Mapping) else {}
-    if not isinstance(spec, Mapping):
-        return {}
-    promotion = spec.get("promotion")
-    if isinstance(promotion, Mapping):
-        return {**dict(spec), **dict(promotion)}
-    return dict(spec)
+def _configured_promotion_decision(
+    rules: Mapping[str, Any],
+    clue: Mapping[str, Any],
+    *,
+    clue_type: str,
+    traces: set[str],
+    sources: set[str],
+    observed_types: set[str],
+    score: float,
+) -> tuple[bool, str, float] | None:
+    rule_map = rules.get("clue_promotion") if isinstance(rules, Mapping) else None
+    if not isinstance(rule_map, Mapping):
+        return None
+    for rule_name, raw_rule in rule_map.items():
+        if not isinstance(raw_rule, Mapping):
+            continue
+        rule = dict(raw_rule)
+        exact_types = {item.lower() for item in _string_list(rule.get("match_clue_types"))}
+        contains = [item.lower() for item in _string_list(rule.get("match_clue_type_contains"))]
+        if exact_types and clue_type not in exact_types:
+            continue
+        if contains and not any(token in clue_type for token in contains):
+            continue
+        rejected = {item.lower() for item in _string_list(rule.get("reject_risk_categories"))}
+        if rejected and str(clue.get("risk_category") or "").lower() in rejected:
+            return False, str(rule.get("fail_reason") or f"{rule_name}_rejected_risk_category"), round(score, 4)
+        passed = _requirements_pass(rule, traces=traces, sources=sources, observed_types=observed_types)
+        return (
+            passed,
+            str(rule.get("pass_reason") if passed else rule.get("fail_reason") or rule_name),
+            round(score, 4),
+        )
+    return None
+
+
+def _requirements_pass(rule: Mapping[str, Any], *, traces: set[str], sources: set[str], observed_types: set[str]) -> bool:
+    require_all = rule.get("require_all")
+    require_any = rule.get("require_any")
+    if isinstance(require_all, list) and require_all:
+        if not all(_requirement_pass(item, traces=traces, sources=sources, observed_types=observed_types) for item in require_all if isinstance(item, Mapping)):
+            return False
+    if isinstance(require_any, list) and require_any:
+        if not any(_requirement_pass(item, traces=traces, sources=sources, observed_types=observed_types) for item in require_any if isinstance(item, Mapping)):
+            return False
+    if "require_min_sources" in rule and len(sources) < int(rule.get("require_min_sources") or 0):
+        return False
+    if "require_min_observations" in rule and len(traces) < int(rule.get("require_min_observations") or 0):
+        return False
+    if "require_any_entity" in rule and not observed_types.intersection({item.lower() for item in _string_list(rule.get("require_any_entity"))}):
+        return False
+    return True
+
+
+def _requirement_pass(requirement: Mapping[str, Any], *, traces: set[str], sources: set[str], observed_types: set[str]) -> bool:
+    if "min_sources" in requirement and len(sources) < int(requirement.get("min_sources") or 0):
+        return False
+    if "min_observations" in requirement and len(traces) < int(requirement.get("min_observations") or 0):
+        return False
+    if "any_entity_type" in requirement and not observed_types.intersection({item.lower() for item in _string_list(requirement.get("any_entity_type"))}):
+        return False
+    return True
 
 
 def _string_list(value: Any) -> list[str]:

@@ -13,40 +13,43 @@
 
 ---
 
-## 2. 模块级架构图
+## 2. 对外主流程图：5 阶段
+
+主流程不展示十几步 Agent / service 链路，只保留围绕“情报采集 -> 智能清洗 -> 意图分类 -> 实体抽取 -> 线索报告”的 5 个阶段。内部 service、LLM gate、检索和复核节点只作为阶段内能力说明。
 
 ```mermaid
 flowchart TD
-    U[User / Analyst Query] --> LOCAL\[Local Runtime / CLI\]
-    LOCAL --> IP[LLM Intent Parser]
-    LOCAL --> PL[LLM Investigation Planner]
-    IP --> ORCH[Investigation Orchestrator]
-    PL --> ORCH
-
-    subgraph Online Path
-      ORCH --> RETR[Clue Retriever]
-      RETR --> CLUEPOOL[(Candidate Clue Pool)]
-      RETR --> REFINE[LLM Clue Refiner / Quality Gate]
-      REFINE --> REPORT[Result Renderer]
-    end
-
-    subgraph Offline Backbone
-      SRC[Authorized Sources] --> COL[Collectors / Source Config]
-      COL --> CLEAN[Cleaner / Dedup / Entropy Filter]
-      CLEAN --> FASTCLS[Rule + Light Classification]
-      FASTCLS --> FASTEXT[Basic / Advanced Extraction]
-      FASTEXT --> CLUSTER[Similarity / Entity / Contact / Domain Clustering]
-      CLUSTER --> CLUEBUILD[Candidate Clue Builder]
-      CLUEBUILD --> CLUEPOOL
-    end
-
-    FASTCLS --> SANDBOX[Exploration Sandbox]
-    SANDBOX --> REVIEW[Human Review Queue]
-    REVIEW --> WORDLIST[Dynamic Slang / Feedback Loop]
-    WORDLIST --> FASTCLS
-
-    REPORT --> OUT[High-quality Clues / Candidate Clues / Summary]
+    REQ["输入任务<br/>query / 样本 / source / 时间范围"] --> ROUTE["安全与任务路由<br/>PolicyGuard / SourcePolicyGuard<br/>routing profile / 预算"]
+    ROUTE --> ASSET["历史资产检索<br/>clue pool / entity graph / semantic cache"]
+    ASSET --> NEED{"已有资产足够?"}
+    NEED -- 是 --> PROMOTE["线索生成与复核<br/>CluePromotion / SelectiveRefine / ReviewRoute"]
+    NEED -- 否 --> COLLECT["按需采集 / 输入记录<br/>SourceSelection / LayeredCollection"]
+    COLLECT --> PIPE["情报处理流水线<br/>Clean / Dedup / Classify / Extract / Normalize"]
+    PIPE --> GRAPH["实体入库与关联<br/>EntityGraph / Correlate"]
+    GRAPH --> PROMOTE
+    PROMOTE --> REPORT["报告输出<br/>风险线索 / 风险样本 / 结构化实体库"]
 ```
+
+### 2.1 内部节点折叠关系
+
+| 内部细节点 | 对外主流程节点 |
+| --- | --- |
+| 用户 query、上传样本、指定 source、指定时间范围 | 输入任务 |
+| PreflightIntent、EvidenceGapGate、ConditionalPlanning | 安全与任务路由 |
+| PolicyGuard、SourcePolicyGuard、routing profile、BudgetController | 安全与任务路由 |
+| CluePoolRetrieval、EntityGraphRetrieval、SemanticLocalRetrieval | 历史资产检索 |
+| SourceSelection、LayeredCollection、source query rewrite | 按需采集 |
+| Clean、Dedup、Classify、Extract、LLMEnrich | 情报处理流水线 |
+| Normalize、EntityGraphUpsert、Correlate | 实体入库与关联 |
+| CluePromotion、RefineTargetSelector、LLMClueRefiner、ReviewRoute | 线索生成与复核 |
+| ReportService、Result Renderer | 报告输出 |
+
+### 2.2 在线 / 离线关系
+
+- **离线高吞吐主干**：持续把授权 source 的 raw records 处理成 candidate clue pool、entity graph 和 semantic cache，服务于“历史资产检索”。
+- **在线 investigation**：先做安全与任务路由，再查历史资产；资产足够时直接做线索提升和报告，不重新扫全量 raw。
+- **按需新采集**：只有证据不足或用户明确提供新样本 / source 时，才进入 Collection / Input Records，再跑情报处理流水线并反哺 entity graph 与 clue pool。
+- **LLM 使用点**：简单 query 先由规则 parser 解析；复杂 query、runtime 黑话上下文和 live source 规划才走固定 JSON schema 的 LLM intent/plan；LLM 产出的计划动作先过 PolicyGuard，不通过就回退规则 plan。query rewrite、record enrich、clue refine 仍是可控增强，不成为全量主路径。
 
 ---
 
@@ -60,7 +63,7 @@ flowchart TD
 - `src/application/`：新增 `InvestigationService`、`TaskService`、`ReviewService`、`ReportService`，把 CLI/runtime 入口和业务编排隔离。
 - `src/infra/container.py`：集中组装 LLM gateway、phase engine、orchestrator、task backend、clue repo，`LocalAgentRuntime` 继续保持原 API。
 - `src/agent/model_router.py`、`budget_controller.py`、`clue_ranker.py`：把 LLM refine 的路由、预算和 Top-K 排序从 orchestrator 中抽成可测模块。
-- `src/pipeline/intelligence_pipeline.py`：提供 Clean → Dedup → Triage → Classify → Extract → Correlate → Score 的可组合 stage 边界。
+- `src/pipeline/intelligence_pipeline.py`：提供 Clean → Dedup → Classify → Extract → Normalize → EntityGraph → CluePromotion 的可组合 stage 边界；Triage、LLMEnrich、Correlate、Score 保留为内部增强点。
 - `src/safety/`：提供 prompt guard、output validator、PII masker，并复用原 `PolicyGuard`。
 - `config/routing_profiles.yaml`：沉淀 fast / balanced / high_recall 的预算参考。
 
@@ -136,20 +139,21 @@ flowchart TD
 
 - `src/agent/user_request_parser.py`
 - `src/agent/investigation_orchestrator.py`
+- `src/workflows/investigation_workflow.py`
 
 职责：
 
-- 用户意图解析（LLM）
-- 任务编排（LLM）
-- clue 池检索优先
-- 必要时回退直接处理 records/source
+- 对外只呈现“输入任务 -> 安全与任务路由 -> 历史资产检索 -> 情报处理流水线 -> 线索生成与报告”五阶段
+- 内部完成用户意图解析、任务编排、证据缺口判断和预算控制
+- clue 池、实体图谱和本地语义缓存优先
+- 必要时回退到按需采集或用户输入 records 处理
 
 ### L6 用户任务层
 
 现有入口：
 
-- python scripts/run_agent_cli.py 
-- src.local_runtime.LocalAgentRuntime.run_investigation(...) 
+- python scripts/run_agent_cli.py
+- src.local_runtime.LocalAgentRuntime.run_investigation(...)
 
 ---
 
@@ -179,22 +183,23 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    U[User Query] --> P1[LLM Intent Parse]
-    P1 --> P2[LLM Plan]
-    P2 --> R[Retrieve Candidate Clues]
-    R --> Q{Enough clue hits?}
-    Q -- Yes --> F1[Top-N Quality Gate / LLM Refine]
-    Q -- No --> F2[Fallback: Collect / Run Backbone]
-    F2 --> S[Persist New Candidate Clues]
-    S --> F1
-    F1 --> O[High-quality Clue Output]
+    U[Input Task] --> G[Route & Guard]
+    G --> R[Asset Retrieval]
+    R --> Q{Need Fresh Data?}
+    Q -- No --> P[Clue Promotion]
+    Q -- Yes --> C[Collection / Input Records]
+    C --> B[Intelligence Pipeline]
+    B --> E[EntityGraph + Correlate]
+    E --> P
+    P --> O[Report]
 ```
 
 在线层重点：
 
-- 先查 clue 池
-- clue 池不足时再回退直接处理
-- 新结果反哺 clue 池
+- 先做安全与任务路由，再查 clue pool / entity graph / semantic cache。
+- 历史资产足够时直接做 clue promotion / selective refine / report。
+- 资产不足时才进入按需采集或处理用户输入样本。
+- 新结果反哺 entity graph 与 clue pool，供后续请求复用。
 
 ---
 
@@ -234,14 +239,13 @@ flowchart LR
 
 - `src/agent/investigation_orchestrator.py`
 
-逻辑：
+逻辑按 5 阶段表达：
 
-1. 用户 query -> LLM intent
-2. LLM plan
-3. 检索 clue pool
-4. 命中则直接做 quality gate / summarize
-5. 未命中时，对选中的授权 source 先做 LLM query rewrite
-6. 再回退直接处理 raw/source
+1. 输入任务：用户 query / 样本 / source / 时间范围。
+2. 安全与任务路由：简单 query 规则 intent，复杂 query 固定 schema LLM intent / plan，计划动作经过 PolicyGuard、SourcePolicyGuard、routing profile 与预算控制。
+3. 历史资产检索：优先查 clue pool、entity graph、semantic cache。
+4. 情报处理流水线：资产不足时才按授权 source 采集或处理输入 records，并执行 Clean / Dedup / Classify / Extract / Normalize / EntityGraph。
+5. 线索生成与报告：CluePromotion、SelectiveRefine、ReviewRoute、Report。
 
 ### 阶段 C：再补 LLM 精判器
 
@@ -276,4 +280,3 @@ BlackAgent 面向亿级数据的正确方向是：
 > **离线高吞吐 backbone 持续构建 candidate clue pool，在线 investigation 优先检索 clue pool，再用外部 LLM 对 top-N 高价值 clue 做精判与汇总。**
 
 这样才能把效果、成本、时延控制在同一个工程闭环里。
-

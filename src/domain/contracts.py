@@ -41,6 +41,8 @@ class RiskClassification(DomainModel):
     trace_id: str = Field(min_length=1)
     risk_category: str = Field(min_length=1)
     secondary_label: str = "待研判"
+    final_secondary_label: str | None = None
+    candidate_secondary_labels: list[dict[str, Any]] = Field(default_factory=list)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     conflict_status: str | None = None
     evidence: list[str] = Field(default_factory=list)
@@ -93,6 +95,62 @@ class ArchivedWeakClue(CandidateClue):
     archive_reason: str = ""
 
 
+class PipelineExecutionSummary(DomainModel):
+    """Typed summary shell for pipeline result metadata."""
+
+    status: str = "completed"
+    input_count: int = 0
+    cleaned_count: int = 0
+    classified_count: int = 0
+    entity_count: int = 0
+    candidate_clue_count: int = 0
+    actionable_clue_count: int = 0
+    archived_weak_clue_count: int = 0
+    rule_version: str | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    def __getitem__(self, key: str) -> Any:
+        if key in type(self).model_fields:
+            return getattr(self, key)
+        return self.extra[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if key in type(self).model_fields:
+            return getattr(self, key)
+        return self.extra.get(key, default)
+
+    def __contains__(self, key: object) -> bool:
+        return isinstance(key, str) and (key in type(self).model_fields or key in self.extra)
+
+    def keys(self):
+        return self.model_dump().keys()
+
+    def items(self):
+        return self.model_dump().items()
+
+    def values(self):
+        return self.model_dump().values()
+
+    def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        payload = super().model_dump(*args, **kwargs)
+        extra = payload.pop("extra", {})
+        if isinstance(extra, dict):
+            payload.update(extra)
+        return payload
+
+
+class PipelineLegacySnapshot(DomainModel):
+    """Compatibility-only view for callers that still need dict artifacts."""
+
+    cleaned: list[dict[str, Any]] = Field(default_factory=list)
+    classified: list[dict[str, Any]] = Field(default_factory=list)
+    entities: list[dict[str, Any]] = Field(default_factory=list)
+    routed: list[dict[str, Any]] = Field(default_factory=list)
+    enriched: list[dict[str, Any]] = Field(default_factory=list)
+    clues: list[dict[str, Any]] = Field(default_factory=list)
+    execution_summary: dict[str, Any] = Field(default_factory=dict)
+
+
 class ExtractedEntity(DomainModel):
     entity_id: str
     trace_id: str = Field(min_length=1)
@@ -139,6 +197,7 @@ class RunPolicyContext(DomainModel):
     enable_live_collection: bool = True
     enable_llm_record_enrich: bool = True
     enable_llm_clue_refine: bool = True
+    enable_graph_clue_generation: bool = False
     min_rule_confidence_for_auto_accept: float = Field(default=0.85, ge=0.0, le=1.0)
     llm_stage_policy: dict[str, bool] = Field(default_factory=dict)
 
@@ -164,6 +223,7 @@ class RunPolicyContext(DomainModel):
             enable_live_collection=bool(config.get("enable_live_collection", True)),
             enable_llm_record_enrich=enable_record,
             enable_llm_clue_refine=enable_refine,
+            enable_graph_clue_generation=bool(config.get("enable_graph_clue_generation", False)),
             min_rule_confidence_for_auto_accept=float(config.get("min_rule_confidence_for_auto_accept", 0.85)),
             llm_stage_policy={
                 "intent_parse": bool(config.get("enable_llm_intent_parse", True)),
@@ -194,6 +254,8 @@ __all__ = [
     "IntelRecord",
     "EntityGraphConfig",
     "PipelineItem",
+    "PipelineExecutionSummary",
+    "PipelineLegacySnapshot",
     "RiskClassification",
     "RiskClue",
     "RoutedRecord",

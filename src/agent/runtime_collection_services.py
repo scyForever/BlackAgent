@@ -18,6 +18,7 @@ from src.workflows import WorkflowContext
 
 from .budget_controller import RuntimeBudget
 from .investigation_contracts import (
+    EvidenceGap,
     InvestigationRunResult,
     PlanExecutionControls,
     RuntimeQualityGate,
@@ -45,6 +46,8 @@ def _normalize_source_pref(value: Any) -> str:
         return "forum"
     if text in {"im", "chat", "群", "私聊"}:
         return "im"
+    if text in {"threat_intel", "threat-intel", "feed", "intel", "情报源"}:
+        return "threat_intel"
     return text
 
 class InvestigationCollectionMixin:
@@ -57,9 +60,11 @@ class InvestigationCollectionMixin:
             *,
             max_sources: int | None,
             risk_types: Iterable[str] = (),
+            evidence_gap: Mapping[str, Any] | EvidenceGap | None = None,
         ) -> list[dict[str, Any]]:
             if not available_sources:
                 return []
+            gap = evidence_gap if isinstance(evidence_gap, EvidenceGap) else EvidenceGap.from_mapping(evidence_gap)
             selected_names = {item.lower() for item in (plan.get("selected_source_names") or []) if str(item).strip()}
             strategy = plan.get("source_selection_strategy") or {}
             preferred_types = {
@@ -67,6 +72,13 @@ class InvestigationCollectionMixin:
                 for item in (strategy.get("preferred_source_types") or [])
                 if _normalize_source_pref(item)
             }
+            gap_preferred_types = {
+                _normalize_source_pref(item)
+                for item in [*gap.preferred_source_types, *gap.need_specific_source_types]
+                if _normalize_source_pref(item)
+            }
+            if gap_preferred_types:
+                preferred_types = preferred_types.union(gap_preferred_types)
             match_keywords = {str(item).lower() for item in (strategy.get("match_query_keywords") or []) if str(item).strip()}
     
             scored: list[tuple[int, dict[str, Any]]] = []
@@ -80,6 +92,10 @@ class InvestigationCollectionMixin:
                     score += 4
                 if source_type and source_type in preferred_types:
                     score += 3
+                if gap.need_cross_source_support and source_type in {"im", "forum", "threat_intel", "telegram"}:
+                    score += 2
+                if gap.missing_entity_types:
+                    score += self._source_gap_score(source, gap)
                 if any(keyword in source_theme or keyword in source_query or keyword in source_name.lower() for keyword in match_keywords):
                     score += 1
                 scored.append((score, source))
@@ -102,6 +118,23 @@ class InvestigationCollectionMixin:
             )
 
 
+    @staticmethod
+    def _source_gap_score(source: Mapping[str, Any], gap: EvidenceGap) -> int:
+            text = " ".join(
+                str(source.get(field) or "").lower()
+                for field in ("source_name", "source_type", "query_theme", "search_query", "source_url", "entity_focus")
+            )
+            missing = {str(item).lower() for item in gap.missing_entity_types}
+            score = 0
+            if {"contact", "account"}.intersection(missing) and any(token in text for token in ("tg", "telegram", "im", "群", "contact")):
+                score += 2
+            if {"url", "domain"}.intersection(missing) and any(token in text for token in ("http", "domain", "url", "site", "forum")):
+                score += 2
+            if "tool_name" in missing and any(token in text for token in ("tool", "脚本", "群控", "工具")):
+                score += 2
+            return score
+
+
     def _collect_records_from_sources(
             self,
             selected_sources: list[dict[str, Any]],
@@ -110,6 +143,7 @@ class InvestigationCollectionMixin:
             max_raw_records: int,
             max_concurrent_sources: int,
             deadline_at: float | None = None,
+            layer_recheck: Any | None = None,
         ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
             collection_runs: list[dict[str, Any]] = []
             collected_records: list[dict[str, Any]] = []
@@ -138,7 +172,16 @@ class InvestigationCollectionMixin:
                 )
                 collected_records.extend(layer_records)
                 collection_runs.extend(layer_runs)
+                if layer_recheck is not None and layer_runs:
+                    should_stop, stop_reason, gap_payload = layer_recheck(collected_records)
+                    for run in layer_runs:
+                        run["layer_stop_reason"] = stop_reason
+                        run["evidence_gap_after_layer"] = gap_payload
+                    if should_stop:
+                        break
                 if len(collected_records) >= max_raw_records:
+                    for run in layer_runs:
+                        run.setdefault("layer_stop_reason", "max_raw_records_reached")
                     break
             return collected_records, collection_runs
 

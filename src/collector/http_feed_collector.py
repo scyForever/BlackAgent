@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .base_collector import build_raw_intelligence, model_dump
 from .relevance import decide_text_relevance
+from .source_metadata import classify_collection_failure, normalize_source_access_type
 
 
 _HOST_NEXT_ALLOWED_AT: dict[str, float] = {}
@@ -67,6 +68,7 @@ class HTTPFeedConfig:
     retry_backoff_seconds: float = 0.0
     retry_backoff_multiplier: float = 2.0
     retry_statuses: tuple[int, ...] = (429, 500, 502, 503, 504)
+    source_access_type: str | None = None
     text_fields: tuple[str, ...] = (
         "content_text",
         "text",
@@ -350,6 +352,12 @@ class HTTPFeedCollector:
             "source_name": str(data.get("source_name") or self.config.source_name),
             "source_url": str(data.get("source_url") or self.config.source_url),
             "legal_basis": str(data.get("legal_basis") or self.config.legal_basis),
+            "source_access_type": normalize_source_access_type(
+                data.get("source_access_type") or self.config.source_access_type,
+                legal_basis=data.get("legal_basis") or self.config.legal_basis,
+                source_name=str(data.get("source_name") or self.config.source_name),
+                source_url=str(data.get("source_url") or self.config.source_url),
+            ),
             "collector_version": "http_feed_collector_v1",
             "raw_payload_uri": self.config.source_url,
             "content_text": content_text,
@@ -553,4 +561,5 @@ __all__ = [
     "HTTPFeedConfig",
     "NetworkCollectionDisabled",
     "SourceAuthorizationError",
+    "classify_collection_failure",
 ]

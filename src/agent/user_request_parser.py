@@ -2,14 +2,136 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
 from src.backend import LLMGateway
-from src.safety import PromptGuard
+from src.query import PreflightQueryParser
+from src.safety import PolicyGuard, PromptGuard, SafetyPolicyViolation
 
 
 DEFAULT_INVESTIGATION_MAX_ELAPSED_SECONDS = 180
+
+
+INTENT_PARSE_RESPONSE_FORMAT: dict[str, Any] = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "blackagent_intent_parse",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "goal",
+                "risk_types",
+                "source_preferences",
+                "include_keywords",
+                "exclude_keywords",
+                "time_range_hours",
+                "quality_profile",
+                "output_type",
+                "require_cross_source",
+                "require_evidence_chain",
+            ],
+            "properties": {
+                "goal": {"type": "string"},
+                "risk_types": {"type": "array", "items": {"type": "string"}},
+                "source_preferences": {"type": "array", "items": {"type": "string"}},
+                "include_keywords": {"type": "array", "items": {"type": "string"}},
+                "exclude_keywords": {"type": "array", "items": {"type": "string"}},
+                "time_range_hours": {"type": "integer", "minimum": 1},
+                "quality_profile": {"type": "string", "enum": ["balanced", "high_precision", "high_recall"]},
+                "output_type": {"type": "string"},
+                "require_cross_source": {"type": "boolean"},
+                "require_evidence_chain": {"type": "boolean"},
+            },
+        },
+    },
+}
+
+
+INVESTIGATION_PLAN_RESPONSE_FORMAT: dict[str, Any] = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "blackagent_investigation_plan",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "goal",
+                "agent_steps",
+                "selected_source_names",
+                "source_selection_strategy",
+                "execution_notes",
+                "quality_gate",
+                "budget",
+            ],
+            "properties": {
+                "goal": {"type": "string"},
+                "agent_steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["agent", "action"],
+                        "properties": {
+                            "agent": {"type": "string"},
+                            "action": {"type": "string"},
+                        },
+                    },
+                },
+                "selected_source_names": {"type": "array", "items": {"type": "string"}},
+                "source_selection_strategy": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "preferred_source_types": {"type": "array", "items": {"type": "string"}},
+                        "match_query_keywords": {"type": "array", "items": {"type": "string"}},
+                        "collection_mode": {"type": "string", "enum": ["adaptive", "pool_only", "live_only", "hybrid"]},
+                        "query_rewrite_policy": {"type": "string", "enum": ["auto", "off"]},
+                    },
+                },
+                "execution_notes": {"type": "array", "items": {"type": "string"}},
+                "quality_gate": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "quality_profile",
+                        "minimum_quality_score",
+                        "require_cross_source",
+                        "require_evidence_chain",
+                    ],
+                    "properties": {
+                        "quality_profile": {"type": "string", "enum": ["balanced", "high_precision", "high_recall"]},
+                        "minimum_quality_score": {"type": "number", "minimum": 0, "maximum": 1},
+                        "require_cross_source": {"type": "boolean"},
+                        "require_evidence_chain": {"type": "boolean"},
+                    },
+                },
+                "budget": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "max_sources",
+                        "max_raw_records",
+                        "max_candidate_clues",
+                        "max_llm_refine_clues",
+                        "max_elapsed_seconds",
+                    ],
+                    "properties": {
+                        "max_sources": {"type": "integer", "minimum": 0},
+                        "max_raw_records": {"type": "integer", "minimum": 1},
+                        "max_candidate_clues": {"type": "integer", "minimum": 1},
+                        "max_llm_refine_clues": {"type": "integer", "minimum": 0},
+                        "max_elapsed_seconds": {"type": "integer", "minimum": 1},
+                    },
+                },
+            },
+        },
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -73,6 +195,22 @@ class LLMUserRequestParser:
         deadline_ms: int | None = None,
     ) -> tuple[UserIntent, LLMDecisionTrace]:
         runtime_context = dict(runtime_context or {})
+        use_rule_parser, rule_reason = _should_use_rule_intent_parser(query, runtime_context=runtime_context)
+        if use_rule_parser:
+            intent = _fallback_intent(query, runtime_context=runtime_context)
+            return intent, LLMDecisionTrace(
+                stage="intent_parse",
+                llm_ok=False,
+                used_fallback=False,
+                parsed_json={
+                    "parser_mode": "rule",
+                    "reason": rule_reason,
+                    "query_complexity": "simple",
+                    "runtime_slang_term_count": len(runtime_context.get("slang_terms", []) or []),
+                    "runtime_few_shot_count": len(runtime_context.get("few_shot_examples", []) or []),
+                },
+                error=None,
+            )
         guarded_query = PromptGuard().wrap_untrusted_text(query)
         response = self.llm_gateway.chat(
             [
@@ -81,7 +219,8 @@ class LLMUserRequestParser:
                     "content": (
                         "You are BlackAgent's intent parser. Extract a structured JSON object "
                         "for a cyber-fraud intelligence request. "
-                        "Return only JSON with fields: goal, risk_types, source_preferences, "
+                        "Return only JSON matching the fixed blackagent_intent_parse schema: "
+                        "goal, risk_types, source_preferences, "
                         "include_keywords, exclude_keywords, time_range_hours, quality_profile, "
                         "output_type, require_cross_source, require_evidence_chain. "
                         "Use runtime approved slang terms and few-shot review examples when they help disambiguate the request."
@@ -98,15 +237,16 @@ class LLMUserRequestParser:
             ],
             temperature=0.0,
             max_tokens=400,
-            response_format={"type": "json_object"},
+            response_format=INTENT_PARSE_RESPONSE_FORMAT,
             stage="intent_parse",
             budget=budget,
             cache_policy="read_write",
             deadline_ms=deadline_ms,
         )
         parsed = response.parsed_json or {}
+        schema_error = _intent_schema_error(parsed)
         intent = self._intent_from_payload(parsed, query=query, runtime_context=runtime_context)
-        used_fallback = not _intent_payload_usable(parsed)
+        used_fallback = schema_error is not None
         if used_fallback:
             intent = _fallback_intent(query, runtime_context=runtime_context)
         trace = LLMDecisionTrace(
@@ -116,16 +256,20 @@ class LLMUserRequestParser:
             parsed_json=(
                 {
                     **parsed,
+                    "parser_mode": "llm",
+                    "query_complexity": "complex",
                     "runtime_slang_term_count": len(runtime_context.get("slang_terms", []) or []),
                     "runtime_few_shot_count": len(runtime_context.get("few_shot_examples", []) or []),
                 }
                 if parsed
                 else {
+                    "parser_mode": "llm",
+                    "query_complexity": "complex",
                     "runtime_slang_term_count": len(runtime_context.get("slang_terms", []) or []),
                     "runtime_few_shot_count": len(runtime_context.get("few_shot_examples", []) or []),
                 }
             ),
-            error=response.error,
+            error=response.error or schema_error,
         )
         return intent, trace
 
@@ -184,9 +328,11 @@ class LLMInvestigationPlanner:
                     "role": "system",
                     "content": (
                     "You are BlackAgent's investigation planner. "
-                    "Return only JSON with fields: goal, agent_steps, selected_source_names, "
+                    "Return only JSON matching the fixed blackagent_investigation_plan schema: "
+                    "goal, agent_steps, selected_source_names, "
                     "source_selection_strategy, execution_notes, quality_gate, budget. "
                     "agent_steps must be an array of {agent, action}. "
+                    "Every planned action must remain reviewable, local, and compliant; never propose production writes, online enforcement, PII export, or unauthorized collection expansion. "
                     "Plan a multi-agent workflow but keep execution reviewable and compliant. "
                     "When useful, source_selection_strategy may include collection_mode "
                     "(adaptive|pool_only|live_only|hybrid) and query_rewrite_policy (auto|off). "
@@ -206,17 +352,20 @@ class LLMInvestigationPlanner:
             ],
             temperature=0.0,
             max_tokens=700,
-            response_format={"type": "json_object"},
+            response_format=INVESTIGATION_PLAN_RESPONSE_FORMAT,
             stage="investigation_plan",
             budget=budget,
             cache_policy="read_write",
             deadline_ms=deadline_ms,
         )
         parsed = response.parsed_json or {}
-        plan = self._plan_from_payload(parsed, intent=intent, runtime_context=runtime_context)
-        used_fallback = not _plan_payload_usable(parsed)
+        schema_error = _plan_schema_error(parsed)
+        policy_error = None if schema_error else _plan_policy_error(parsed)
+        used_fallback = schema_error is not None or policy_error is not None
         if used_fallback:
             plan = _fallback_plan(intent, runtime_context=runtime_context)
+        else:
+            plan = self._plan_from_payload(parsed, intent=intent, runtime_context=runtime_context)
         trace = LLMDecisionTrace(
             stage="investigation_plan",
             llm_ok=response.ok,
@@ -224,16 +373,20 @@ class LLMInvestigationPlanner:
             parsed_json=(
                 {
                     **parsed,
+                    "schema_name": "blackagent_investigation_plan",
+                    "policy_guard_checked": policy_error is None,
                     "runtime_slang_term_count": len(runtime_context.get("slang_terms", []) or []),
                     "runtime_few_shot_count": len(runtime_context.get("few_shot_examples", []) or []),
                 }
                 if parsed
                 else {
+                    "schema_name": "blackagent_investigation_plan",
+                    "policy_guard_checked": policy_error is None,
                     "runtime_slang_term_count": len(runtime_context.get("slang_terms", []) or []),
                     "runtime_few_shot_count": len(runtime_context.get("few_shot_examples", []) or []),
                 }
             ),
-            error=response.error,
+            error=response.error or schema_error or policy_error,
         )
         return plan, trace
 
@@ -284,20 +437,171 @@ class LLMInvestigationPlanner:
         )
 
 
+_COMPLEX_QUERY_HINTS = (
+    "比较",
+    "对比",
+    "研判",
+    "归因",
+    "分阶段",
+    "多轮",
+    "策略",
+    "计划",
+    "预算",
+    "只走",
+    "禁用",
+    "不要",
+    "强制",
+    "跨源",
+    "证据链",
+    "高质量",
+    "高置信",
+    "可复核",
+    "可复核报告",
+    "新黑话",
+    "未知模式",
+    "policy",
+    "pool_only",
+    "live_only",
+    "query rewrite",
+    "refine",
+    "fallback",
+)
+
+
+def _should_use_rule_intent_parser(
+    query: str,
+    *,
+    runtime_context: Mapping[str, Any] | None = None,
+) -> tuple[bool, str]:
+    """Return whether a query is cheap and deterministic enough for rules first."""
+
+    text = str(query or "").strip()
+    if not text:
+        return True, "empty_query_rule_parser"
+    if bool((runtime_context or {}).get("force_llm_intent_parse")):
+        return False, "runtime_forces_llm_parser"
+    if _runtime_context_matches_query(text, runtime_context=runtime_context):
+        return False, "runtime_context_requires_llm_disambiguation"
+    lowered = text.lower()
+    if len(text) > 60:
+        return False, "long_query_requires_llm_parser"
+    if any(hint in text or hint in lowered for hint in _COMPLEX_QUERY_HINTS):
+        return False, "complex_query_requires_llm_parser"
+    separator_count = sum(text.count(token) for token in ("，", "；", ";", "\n"))
+    if separator_count >= 2:
+        return False, "multi_clause_query_requires_llm_parser"
+    return True, "simple_query_rule_parser"
+
+
+def _runtime_context_matches_query(
+    query: str,
+    *,
+    runtime_context: Mapping[str, Any] | None = None,
+) -> bool:
+    runtime_context = dict(runtime_context or {})
+    candidates: list[str] = []
+    slang_terms = runtime_context.get("slang_terms") if isinstance(runtime_context.get("slang_terms"), list) else []
+    for item in slang_terms:
+        if not isinstance(item, Mapping):
+            continue
+        candidates.extend(
+            [
+                str(item.get("term") or "").strip(),
+                str(item.get("raw") or "").strip(),
+                str(item.get("normalized_term") or "").strip(),
+                str(item.get("target") or "").strip(),
+            ]
+        )
+    few_shot_examples = runtime_context.get("few_shot_examples") if isinstance(runtime_context.get("few_shot_examples"), list) else []
+    for item in few_shot_examples:
+        if isinstance(item, Mapping):
+            candidates.append(str(item.get("term") or "").strip())
+    lowered = query.lower()
+    return any(candidate and (candidate in query or candidate.lower() in lowered) for candidate in candidates)
+
+
+def _intent_schema_error(payload: Mapping[str, Any]) -> str | None:
+    if not isinstance(payload, Mapping) or not payload:
+        return "intent_schema_missing_object"
+    required = (
+        "goal",
+        "risk_types",
+        "source_preferences",
+        "include_keywords",
+        "exclude_keywords",
+        "time_range_hours",
+        "quality_profile",
+        "output_type",
+        "require_cross_source",
+        "require_evidence_chain",
+    )
+    missing = [field for field in required if field not in payload]
+    if missing:
+        return f"intent_schema_missing_fields:{','.join(missing)}"
+    if not _string_list(payload.get("risk_types")) and not _string_list(payload.get("include_keywords")):
+        return "intent_schema_empty_risk_or_keywords"
+    if _coerce_positive_int(payload.get("time_range_hours"), default=0) <= 0:
+        return "intent_schema_invalid_time_range_hours"
+    if _normalize_quality_profile(payload.get("quality_profile")) not in {"balanced", "high_precision", "high_recall"}:
+        return "intent_schema_invalid_quality_profile"
+    return None
+
+
+def _plan_schema_error(payload: Mapping[str, Any]) -> str | None:
+    if not isinstance(payload, Mapping) or not payload:
+        return "plan_schema_missing_object"
+    if not isinstance(payload.get("agent_steps"), list):
+        return "plan_schema_missing_agent_steps"
+    if not isinstance(payload.get("source_selection_strategy"), Mapping):
+        return "plan_schema_missing_source_selection_strategy"
+    if not isinstance(payload.get("quality_gate"), Mapping):
+        return "plan_schema_missing_quality_gate"
+    if not isinstance(payload.get("budget"), Mapping):
+        return "plan_schema_missing_budget"
+    return None
+
+
+def _plan_policy_error(payload: Mapping[str, Any]) -> str | None:
+    guard = PolicyGuard()
+    try:
+        for step in payload.get("agent_steps") or []:
+            if not isinstance(step, Mapping):
+                continue
+            guard.check_action_safety(
+                {
+                    "type": "planned_agent_action",
+                    "target": "local_sandbox",
+                    "agent": step.get("agent"),
+                    "action": step.get("action"),
+                }
+            )
+        strategy = payload.get("source_selection_strategy")
+        if isinstance(strategy, Mapping):
+            guard.check_action_safety(
+                {
+                    "type": "source_selection_strategy",
+                    "target": "local_sandbox",
+                    "payload": dict(strategy),
+                }
+            )
+        for note in _string_list(payload.get("execution_notes")):
+            guard.check_action_safety(
+                {
+                    "type": "execution_note",
+                    "target": "local_sandbox",
+                    "payload": note,
+                }
+            )
+    except SafetyPolicyViolation as exc:
+        return f"policy_guard:{exc.rule or 'violation'}"
+    return None
+
+
 def _fallback_intent(query: str, runtime_context: Mapping[str, Any] | None = None) -> UserIntent:
     normalized = query.lower()
     runtime_context = dict(runtime_context or {})
-    risk_types: list[str] = []
-    if "诈骗" in query or "引流" in query:
-        risk_types.append("诈骗引流")
-    if "接码" in query:
-        risk_types.append("接码")
-    if "跑分" in query or "代付" in query:
-        risk_types.append("跑分代付")
-    if "账号" in query or "卖号" in query:
-        risk_types.append("账号交易")
-    if not risk_types:
-        risk_types = ["黑灰产情报"]
+    preflight = PreflightQueryParser().parse(query, runtime_context=runtime_context)
+    risk_types: list[str] = _legacy_specific_risk_types(query, list(preflight.risk_types))
 
     runtime_labels: list[str] = []
     runtime_keywords: list[str] = []
@@ -330,32 +634,17 @@ def _fallback_intent(query: str, runtime_context: Mapping[str, Any] | None = Non
     if runtime_labels:
         risk_types = _dedupe_list([*risk_types, *runtime_labels])
 
-    sources: list[str] = []
-    for token in ("telegram", "tg", "电报"):
-        if token in normalized or token in query:
-            sources.append("telegram")
-            break
-    for token in ("forum", "论坛", "贴吧"):
-        if token in normalized or token in query:
-            sources.append("forum")
-            break
-    for token in ("im", "群", "私聊", "聊天"):
-        if token in normalized or token in query:
-            sources.append("im")
-            break
-    if not sources:
-        sources = ["telegram", "forum", "im"]
+    sources = list(preflight.preferred_source_types) or ["telegram", "forum", "im"]
 
-    time_range_hours = 24
-    if "48小时" in query or "48h" in normalized:
-        time_range_hours = 48
-    elif "72小时" in query or "72h" in normalized:
-        time_range_hours = 72
-    elif "当天" in query or "今日" in query or "今天" in query:
-        time_range_hours = 24
+    time_range_hours = preflight.time_range_hours or _extract_time_range_hours(query)
 
     quality_profile = "high_precision" if any(term in query for term in ("高质量", "高置信", "可复核")) else "balanced"
-    include_keywords = _dedupe_list([*risk_types, *runtime_keywords])
+    literal_keywords = [
+        token
+        for token in ("接码", "群控", "脚本", "跑分", "代付", "账号", "卖号", "刷单", "私域", "引流", "火苗")
+        if token in query
+    ]
+    include_keywords = _dedupe_list([*risk_types, *preflight.keywords, *preflight.slang_terms, *literal_keywords, *runtime_keywords])
     return UserIntent(
         goal="collect_high_quality_risk_clues",
         risk_types=risk_types,
@@ -365,8 +654,8 @@ def _fallback_intent(query: str, runtime_context: Mapping[str, Any] | None = Non
         time_range_hours=time_range_hours,
         quality_profile=quality_profile,
         output_type="clue_cards",
-        require_cross_source=True if quality_profile == "high_precision" else False,
-        require_evidence_chain=True,
+        require_cross_source=True if quality_profile == "high_precision" or preflight.need_cross_source else False,
+        require_evidence_chain=True if "不要证据链" not in query else False,
         raw_query=query,
     )
 
@@ -423,6 +712,41 @@ def _fallback_plan(intent: UserIntent, runtime_context: Mapping[str, Any] | None
         llm_ok=False,
         llm_reason="fallback_plan",
     )
+
+
+def _legacy_specific_risk_types(query: str, risk_types: list[str]) -> list[str]:
+    """Keep the public UserIntent contract stable for subcategory-like queries."""
+
+    replacements = {
+        "接码": ("接码", "账号交易"),
+        "跑分": ("跑分代付", "诈骗引流"),
+        "代付": ("跑分代付", "诈骗引流"),
+    }
+    output = list(risk_types)
+    for marker, (specific, generic) in replacements.items():
+        if marker not in query:
+            continue
+        if generic in output:
+            output[output.index(generic)] = specific
+        elif specific not in output:
+            output.insert(0, specific)
+    return _dedupe_list(output or ["黑灰产情报"])
+
+
+def _extract_time_range_hours(query: str) -> int:
+    normalized = str(query or "").lower()
+    match = re.search(r"(?:近|最近)?\s*(\d+)\s*(小时|小時|h|天|日|day|days)", normalized, flags=re.IGNORECASE)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2).lower()
+        return amount * 24 if unit in {"天", "日", "day", "days"} else amount
+    if "48小时" in query or "48h" in normalized:
+        return 48
+    if "72小时" in query or "72h" in normalized:
+        return 72
+    if "当天" in query or "今日" in query or "今天" in query:
+        return 24
+    return 24
 
 
 def _string_list(value: Any) -> list[str]:

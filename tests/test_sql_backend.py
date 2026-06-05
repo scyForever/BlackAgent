@@ -165,6 +165,53 @@ def test_sql_backend_persists_task_status_across_connections(tmp_path):
     second.close()
 
 
+def test_sql_repository_adapters_narrow_business_dependency_surface(tmp_path):
+    from storage import sql_repositories
+
+    db_path = tmp_path / "repos.db"
+    backend = connect(sqlite_dsn(db_path))
+    try:
+        backend.create_schema()
+        repos = sql_repositories(backend)
+        repos["raw"].save(
+            {
+                "trace_id": "repo-raw-1",
+                "source_type": "IM",
+                "source_name": "repo",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "content_text": "群控接码",
+            }
+        )
+        repos["clue"].save(
+            {
+                "clue_id": "repo-clue-1",
+                "clue_type": "shared_contact_48h",
+                "risk_category": "工具交易",
+                "confidence": 0.8,
+            }
+        )
+
+        assert repos["raw"].list()[0]["trace_id"] == "repo-raw-1"
+        assert repos["clue"].list(risk_category="工具交易")[0]["clue_id"] == "repo-clue-1"
+        assert type(repos["raw"]).__name__ == "RawSQLRepo"
+        assert {
+            "raw",
+            "cleaned",
+            "review",
+            "audit",
+            "clue",
+            "entity",
+            "task",
+            "queue",
+            "clue_batch",
+            "scheduler",
+        }.issubset(repos)
+        repos["task"].save({"task_id": "repo-task-1", "task_type": "eval", "status": "RUNNING"})
+        assert repos["task"].get("repo-task-1")["status"] == "RUNNING"
+    finally:
+        backend.close()
+
+
 def test_postgresql_dsn_without_psycopg_has_clear_runtime_error(monkeypatch):
     real_import = builtins.__import__
 

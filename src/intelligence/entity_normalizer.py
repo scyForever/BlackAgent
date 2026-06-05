@@ -89,7 +89,7 @@ def _normalize_value(entity_type: str, raw: str) -> str:
         return "Telegram"
     if raw in {"QQ", "企鹅"}:
         return "QQ"
-    if raw in {"微信", "加v", "加V", "VX", "vx"}:
+    if entity_type == CONTACT and raw in {"微信", "加v", "加V", "VX", "vx"}:
         return "WeChat"
     if entity_type == CONTACT:
         telegram = re.match(r"(?i)^(?:tg|telegram|飞机|纸飞机|小飞机|电报)[:：@\s]*([a-z][a-z0-9_]{2,31})$", value)

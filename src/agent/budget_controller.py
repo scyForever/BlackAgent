@@ -280,10 +280,19 @@ class BudgetController:
         return time.perf_counter() - self.started_at
 
     def snapshot(self) -> dict[str, Any]:
+        cost_summary = {
+            "budget_reserved_tokens": self.estimated_tokens,
+            "gateway_request_estimated_tokens": None,
+            "prompt_estimated_tokens": None,
+            "completion_token_limit": None,
+            "actual_usage_tokens": None,
+            "token_estimation_policy": "budget_stage_estimate_until_gateway_usage_available",
+        }
         return {
             "budget": self.budget.model_dump(),
             "llm_calls": self.llm_calls,
             "estimated_tokens": self.estimated_tokens,
+            "budget_reserved_tokens": self.estimated_tokens,
             "refined_clues": self.refined_clues,
             "llm_refine_calls": self.llm_refine_calls,
             "llm_refined_clue_count": self.refined_clues,
@@ -291,6 +300,7 @@ class BudgetController:
             "extracted_by_llm": self.extracted_by_llm,
             "elapsed_seconds": round(self.elapsed_seconds(), 4),
             "llm_budget": self.ledger.model_dump(),
+            "llm_cost": cost_summary,
         }
 
 

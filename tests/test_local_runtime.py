@@ -71,7 +71,7 @@ def test_local_runtime_has_no_public_api_surface():
         runtime.close()
 
 
-def test_local_runtime_runs_llm_driven_investigation():
+def test_local_runtime_runs_hybrid_investigation():
     runtime = _runtime()
     try:
         payload = runtime.run_investigation(
@@ -81,7 +81,7 @@ def test_local_runtime_runs_llm_driven_investigation():
     finally:
         runtime.close()
 
-    assert payload["mode"] == "llm_driven_investigation"
+    assert payload["mode"] == "provided_records_pipeline"
     assert payload["intent"]["goal"] == "collect_high_quality_risk_clues"
     assert payload["investigation_plan"]["agent_steps"][0]["agent"] == "intent_planner"
     assert payload["input_count"] == 3
@@ -102,8 +102,9 @@ def test_local_runtime_prefers_existing_clue_pool_before_reprocessing():
     finally:
         runtime.close()
 
-    assert payload["execution_summary"]["mode"] == "candidate_clue_retrieval"
-    assert payload["execution_summary"]["status"] == "retrieved_from_clue_pool"
+    assert payload["execution_summary"]["mode"] in {"candidate_clue_retrieval", "hybrid_investigation"}
+    assert payload["execution_summary"]["used_clue_pool"] is True
+    assert payload["execution_summary"]["used_live_collection"] is False
     assert payload["execution_summary"]["refined_clue_count"] >= 1
 
 
