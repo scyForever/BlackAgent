@@ -1,15 +1,19 @@
 # BlackAgent 答辩与验收材料
 
-本目录包含本次生成的最终交付物：
+本目录包含本次生成的最终交付物，已按“少用英文名词、通俗中文讲清细节”的口径重写：
 
 - `BlackAgent_答辩PPT.pptx`：12 页答辩 PPT，围绕阶段目标、核心挑战、实现证据、评测边界和下一步优化组织。
 - `BlackAgent_验收报告.docx`：可提交的 Word 版验收报告。
 - `BlackAgent_验收报告.md`：同内容 Markdown 版，便于仓库内审阅和后续维护。
 
+表达调整：
+
+- 将“source catalog、runtime、smoke、F1”等技术堆叠，改成“情报来源清单、本机运行入口、小规模试跑、综合准确率”等更容易答辩说明的说法。
+- 文件路径、脚本名和必要报告名仍按原样保留，便于评委或队友回到仓库核对证据。
+- 继续保留人工确认、图片文字抽取、来源结构均衡和线上生产化边界，避免把本机试跑或局部验证说成生产效果。
+
 验证摘要：
 
-- PPTX 使用 artifact-tool 生成并渲染预览，布局检查 0 error（仍有少量 tight-text warning，不影响预览可读性）。
-- DOCX 使用 Word COM 导出 PDF，并通过 `pdftoppm` 转成 6 页 PNG 逐页检查，未发现文字重叠或表格截断。
-- 代码侧执行 `python -m compileall -q src scripts tests main.py` 通过。
-
-边界说明：报告中保留 manual held-out、OCR hardset、source skew 和线上生产化边界，避免把 smoke test 或局部验证包装成生产效果。
+- PPTX 使用 artifact-tool 重新生成并渲染预览，布局检查 0 error。
+- DOCX 使用 python-docx 从 Markdown 生成，后续可用 Word/PDF 继续做视觉复核。
+- 本次仅优化答辩材料表达，不改业务代码。
