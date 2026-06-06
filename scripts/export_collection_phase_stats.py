@@ -20,6 +20,7 @@ from src.collector.relevance import (
     decide_text_relevance,
     load_theme_synonym_registry,
 )
+from src.collector.source_metadata import source_class_for_record
 from storage.sql_backend import connect
 
 
@@ -124,6 +125,58 @@ def refresh_relevance(rows: list[dict[str, Any]], *, write_back_backend: Any | N
     return refreshed_rows, refresh_summary
 
 
+def build_source_skew_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return auditable source-class skew metrics for the collection snapshot."""
+
+    total = len(rows)
+    source_counts: Counter[str] = Counter(str(row.get("source_name") or "unknown") for row in rows)
+    source_class_counts: Counter[str] = Counter(source_class_for_record(row) for row in rows)
+    for expected_class in ("im_or_group", "social_or_forum", "vertical_or_technical", "other_authorized"):
+        source_class_counts.setdefault(expected_class, 0)
+
+    top_source_name, top_source_count = source_counts.most_common(1)[0] if source_counts else ("", 0)
+    im_count = source_class_counts.get("im_or_group", 0)
+    non_im_count = total - im_count
+    source_class_shares = {
+        source_class: round(count / total, 4) if total else 0.0
+        for source_class, count in sorted(source_class_counts.items())
+    }
+    im_share = source_class_shares.get("im_or_group", 0.0)
+    top_source_share = round(top_source_count / total, 4) if total else 0.0
+    warnings: list[str] = []
+    if total == 0:
+        warnings.append("no_raw_records")
+    if im_share > 0.70:
+        warnings.append(f"im_or_group_overrepresented:{im_share}")
+    if top_source_share > 0.30:
+        warnings.append(f"top_source_overrepresented:{top_source_name}:{top_source_share}")
+    if source_class_counts.get("social_or_forum", 0) == 0:
+        warnings.append("missing_social_or_forum_records")
+    if source_class_counts.get("vertical_or_technical", 0) == 0:
+        warnings.append("missing_vertical_or_technical_records")
+
+    return {
+        "status": "skew_detected" if warnings else "balanced_enough",
+        "total_raw_records": total,
+        "source_class_counts": [
+            {"source_class": source_class, "count": count}
+            for source_class, count in source_class_counts.most_common()
+        ],
+        "source_class_shares": source_class_shares,
+        "im_or_group_share": im_share,
+        "non_im_or_group_count": non_im_count,
+        "top_source_name": top_source_name,
+        "top_source_count": top_source_count,
+        "top_source_share": top_source_share,
+        "warnings": warnings,
+        "claim_boundary": (
+            "Skew metrics describe the raw collection snapshot. A quota-balanced sample can reduce "
+            "downstream evaluation bias, but only a rerun or incremental collection can prove a less "
+            "IM/group-heavy raw corpus."
+        ),
+    }
+
+
 def main() -> int:
     args = parse_args()
     db_path = (PROJECT_ROOT / args.db).resolve() if not Path(args.db).is_absolute() else Path(args.db).resolve()
@@ -142,6 +195,7 @@ def main() -> int:
     backend.close()
 
     source_counts: Counter[str] = Counter()
+    source_class_counts: Counter[str] = Counter()
     theme_counts: Counter[str] = Counter()
     cross_counts: defaultdict[tuple[str, str], int] = defaultdict(int)
     unlabeled_count = 0
@@ -149,6 +203,7 @@ def main() -> int:
     for row in rows:
         source_name = str(row.get("source_name") or "unknown")
         source_counts[source_name] += 1
+        source_class_counts[source_class_for_record(row)] += 1
         themes = [str(item) for item in (row.get("matched_themes") or []) if str(item).strip()]
         if not themes:
             unlabeled_count += 1
@@ -163,6 +218,11 @@ def main() -> int:
         "theme_counting_rule": "multi_label_membership_count",
         "relevance_refreshed": bool(args.refresh_relevance),
         "relevance_write_back": bool(args.refresh_relevance and args.write_back),
+        "source_class_counts": [
+            {"source_class": source_class, "count": count}
+            for source_class, count in source_class_counts.most_common()
+        ],
+        "source_skew": build_source_skew_summary(rows),
         "theme_counts": [{"theme": theme, "count": count} for theme, count in theme_counts.most_common()],
         "source_counts": [{"source_name": name, "count": count} for name, count in source_counts.most_common()],
         "theme_source_counts": [

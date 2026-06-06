@@ -186,12 +186,14 @@ def source_class_for_record(record: Mapping[str, Any]) -> str:
     source_name = str(record.get("source_name") or record.get("name") or "").strip().lower()
     if platform in {"x", "twitter"} or source_name.startswith("x_") or "x_blackgray" in source_name:
         return "social_or_forum"
-    if platform in {"telegram", "tg"} or "telegram" in source_name:
+    if platform in {"telegram", "tg"}:
         return "im_or_group"
     markers = {source_type, platform}
     for source_class, aliases in SOURCE_CLASS_ALIASES.items():
         if markers & aliases:
             return source_class
+    if "telegram" in source_name:
+        return "im_or_group"
     if "tg_" in source_name or source_name.startswith("tg"):
         return "im_or_group"
     if any(marker in source_name for marker in ("forum", "tieba", "x_blackgray", "social")):

@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from blackagent.config import load_project_env_file, load_settings
+from blackagent.config import PROJECT_ROOT, load_project_env_file, load_settings, resolve_project_path
 
 DEFAULT_LOCAL_CORPUS_PATH = "data/cleaning_phase_high_risk_corpus.jsonl"
 DEFAULT_LOCAL_CORPUS_LIMIT = 200
@@ -161,7 +161,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def load_fixture_records(path: str | Path) -> list[dict[str, Any]]:
     fixture_path = Path(path)
     if not fixture_path.is_absolute():
-        fixture_path = PROJECT_ROOT / fixture_path
+        fixture_path = resolve_project_path(fixture_path)
     if not fixture_path.exists():
         raise FileNotFoundError(f"fixture file not found: {fixture_path}")
 
@@ -178,14 +178,14 @@ def load_fixture_records(path: str | Path) -> list[dict[str, Any]]:
 
 def discover_source_config_path(
     *,
-    config_dir: str | Path = PROJECT_ROOT / "config",
+    config_dir: str | Path = resolve_project_path("config"),
     candidates: tuple[str, ...] = DEFAULT_SOURCE_CONFIG_CANDIDATES,
 ) -> tuple[str | None, dict[str, Any]]:
     """Find the best project source catalog for a bare investigation query."""
 
     config_path = Path(config_dir)
     if not config_path.is_absolute():
-        config_path = PROJECT_ROOT / config_path
+        config_path = resolve_project_path(config_path)
     context: dict[str, Any] = {
         "mode": "source_config_auto_discovery",
         "source_config_auto_discovered": False,
@@ -197,7 +197,7 @@ def discover_source_config_path(
     for candidate in candidates:
         path = Path(candidate)
         if not path.is_absolute():
-            path = config_path / path.name if path.parts and path.parts[0] == "config" else PROJECT_ROOT / path
+            path = config_path / path.name if path.parts and path.parts[0] == "config" else resolve_project_path(path)
         ordered_paths.append(path)
     if config_path.exists():
         for path in sorted(config_path.glob("intel_sources*.yaml")):
@@ -262,7 +262,7 @@ def load_local_corpus_records(
 
     path = Path(corpus_path)
     if not path.is_absolute():
-        path = PROJECT_ROOT / path
+        path = resolve_project_path(path)
     context: dict[str, Any] = {
         "mode": "local_corpus_auto_seed",
         "corpus_path": str(path),
@@ -719,7 +719,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.output:
         output_path = Path(args.output)
         if not output_path.is_absolute():
-            output_path = PROJECT_ROOT / output_path
+            output_path = resolve_project_path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(response_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"saved: {output_path}")

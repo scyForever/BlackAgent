@@ -1,5 +1,7 @@
 from scripts.build_heldout_eval import build_heldout_records
 from scripts.build_ocr_hardset import build_records as build_ocr_hardset_records
+from scripts.collect_public_sources import balanced_source_slice
+from scripts.export_acceptance_e2e_evidence import build_evidence
 from scripts.export_manual_heldout_review import export_rows as export_manual_heldout_rows
 from scripts.generate_ops_dashboard import build_dashboard
 from scripts.generate_source_smoke_report import build_report, load_sources
@@ -10,6 +12,7 @@ from scripts.validate_manual_heldout import merge_review_csv, validate_records
 from scripts.serve_demo_api import run_demo_request
 from src.agent.user_request_parser import _fallback_intent
 from src.collector.source_config import load_source_catalog
+from src.collector.source_metadata import source_class_for_record
 from src.conversation import ConversationMemoryStore, ConversationResolver, FollowupParser
 from src.enhancement.source_intake import MultimodalTextExtractor
 from src.enhancement.strategy import EvidenceChainRenderer, RiskClue
@@ -372,6 +375,90 @@ def test_ocr_hardset_builder_creates_labeled_image_text_rows(tmp_path):
     }
     assert {"contact", "tool_name", "invite_code"} <= entity_types
     assert any(entity["entity_type"] == "url" for record in records for entity in record["expected_entities"])
+
+
+def test_collection_source_class_prefers_structured_vertical_type_over_name_text():
+    source = {
+        "source_name": "opt_crowdsourcing_telegram_automation",
+        "source_type": "Vertical",
+        "platform": "crowdsourcing",
+    }
+
+    assert source_class_for_record(source) == "vertical_or_technical"
+
+
+def test_collect_public_sources_balanced_slice_keeps_non_im_source_groups():
+    sources = [
+        {"source_name": "forum_a", "source_type": "Forum", "source_url": "https://example.test/a1"},
+        {"source_name": "forum_a", "source_type": "Forum", "source_url": "https://example.test/a2"},
+        {"source_name": "forum_b", "source_type": "Forum", "source_url": "https://example.test/b1"},
+        {"source_name": "vertical_a", "source_type": "Vertical", "source_url": "https://example.test/c1"},
+        {"source_name": "vertical_a", "source_type": "Vertical", "source_url": "https://example.test/c2"},
+        {"source_name": "vertical_b", "source_type": "Vertical", "source_url": "https://example.test/d1"},
+    ]
+
+    selected = balanced_source_slice(sources, max_sources=4)
+    selected_groups = {item["source_name"] for item in selected}
+    selected_classes = {source_class_for_record(item) for item in selected}
+
+    assert len(selected) == 4
+    assert {"social_or_forum", "vertical_or_technical"} <= selected_classes
+    assert {"forum_a", "forum_b", "vertical_a", "vertical_b"} == selected_groups
+
+
+def test_acceptance_evidence_export_tracks_high_quality_target_and_source_classes():
+    run = {
+        "status": "completed",
+        "mode": "live_collection_pipeline",
+        "query": "验收",
+        "input_count": 5,
+        "fetched_count": 5,
+        "selected_source_count": 2,
+        "high_quality_count": 2,
+        "candidate_count": 0,
+        "selected_sources": [
+            {"source_name": "forum", "source_type": "Forum"},
+            {"source_name": "vertical", "source_type": "Vertical"},
+        ],
+        "collection_runs": [
+            {"source_name": "forum", "source_type": "Forum", "collection_layer": "theme_core", "fetched_count": 3},
+            {"source_name": "vertical", "source_type": "Vertical", "collection_layer": "theme_core", "fetched_count": 2},
+        ],
+        "execution_summary": {
+            "accepted_count": 5,
+            "risk_clue_count": 2,
+            "refined_clue_count": 2,
+        },
+        "high_quality_clues": [
+            {
+                "clue_id": "c1",
+                "clue_type": "shared_contact_48h",
+                "risk_category": "诈骗引流",
+                "evidence_trace_ids": ["a", "b", "c"],
+                "source_names": ["forum"],
+                "source_types": ["Forum"],
+                "quality_score": 0.8,
+                "confidence": 0.85,
+            },
+            {
+                "clue_id": "c2",
+                "clue_type": "high_frequency_template",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": ["d", "e", "f"],
+                "source_names": ["vertical"],
+                "source_types": ["Vertical"],
+                "quality_score": 0.78,
+                "confidence": 0.9,
+            },
+        ],
+    }
+
+    evidence = build_evidence(run, run_path="run.json", smoke_path="smoke.txt", source_catalog="sources.yaml", command="cmd")
+
+    assert evidence["target"]["high_quality_count_met"] is True
+    assert evidence["counts"]["high_quality_count"] == 2
+    assert {"social_or_forum", "vertical_or_technical"} <= set(evidence["selected_source_classes"])
+    assert [item["evidence_trace_count"] for item in evidence["agent_final_output"]] == [3, 3]
 
 
 def test_cross_source_graph_demo_outputs_multi_source_clue():
