@@ -9,6 +9,7 @@ from scripts.run_scale_benchmark import run_benchmark as run_scale_benchmark
 from scripts.validate_manual_heldout import merge_review_csv, validate_records
 from scripts.serve_demo_api import run_demo_request
 from src.agent.user_request_parser import _fallback_intent
+from src.collector.source_config import load_source_catalog
 from src.conversation import ConversationMemoryStore, ConversationResolver, FollowupParser
 from src.enhancement.source_intake import MultimodalTextExtractor
 from src.enhancement.strategy import EvidenceChainRenderer, RiskClue
@@ -80,6 +81,23 @@ def test_bitmap_ocr_engine_reads_demo_image_pixels(tmp_path):
     assert ocr.content_modality == "image_text"
     assert ocr.text == "TG:OCR001"
     assert "ocr_engine.image_path" in ocr.sources
+
+
+def test_ocr_adapter_records_named_engine_comparison_outputs(tmp_path):
+    image_path = render_demo_pbm("TG:OCR002", tmp_path / "ocr_demo_compare.pbm")
+
+    ocr = OCRImageTextAdapter(
+        engines={
+            "bitmap_demo": BitmapGlyphOCREngine(),
+            "cloud_ocr_fixture": lambda path: "TG:OCR002 群控脚本",
+        }
+    ).extract({"trace_id": "ocr-compare", "image_path": str(image_path)})
+
+    assert ocr.status == "completed"
+    assert ocr.engine_outputs["bitmap_demo"] == "TG:OCR002"
+    assert ocr.engine_outputs["cloud_ocr_fixture"] == "TG:OCR002 群控脚本"
+    assert "ocr_engine.bitmap_demo" in ocr.sources
+    assert "ocr_engine.cloud_ocr_fixture" in ocr.sources
 
 
 def test_local_bert_adapter_provides_no_dependency_prestage_contract():
@@ -182,6 +200,16 @@ def test_source_smoke_report_covers_three_required_source_classes():
     assert all("authorization_statement" in row for row in report["sources"])
 
 
+def test_acceptance_catalog_contains_non_telegram_sources_for_live_e2e_quality():
+    sources = load_source_catalog("config/intel_sources.acceptance_telegramnav_live.yaml")
+    source_types = {str(source.get("source_type") or "") for source in sources}
+    source_names = {str(source.get("source_name") or "") for source in sources}
+
+    assert {"IM", "Forum", "Vertical"} <= source_types
+    assert "acceptance_tieba_public_search" in source_names
+    assert "acceptance_crowdsourcing_public_search" in source_names
+
+
 def test_live_source_smoke_attempts_until_each_class_has_min_records(monkeypatch):
     calls = []
 
@@ -273,6 +301,7 @@ def test_manual_heldout_validator_emits_only_human_confirmed_rows():
     assert len(confirmed) == 1
     assert confirmed[0]["annotation_source"] == "human_confirmed"
     assert confirmed[0]["dataset_kind"] == "manual_heldout_public_authorized"
+    assert report["manual_gold_claim"]["can_claim_manual_gold"] is True
 
 
 def test_manual_heldout_review_export_and_csv_merge_roundtrip():
@@ -311,8 +340,22 @@ def test_manual_heldout_review_export_and_csv_merge_roundtrip():
     assert rows[0]["status"] == "pending_human_confirmation"
     assert rows[0]["seed_expected_risk_categories"] == "工具交易"
     assert report["status"] == "completed"
+    assert report["manual_gold_claim"]["claim_status"] == "human_confirmed_gold_ready"
     assert confirmed[0]["expected_risk_categories"] == ["账号交易"]
     assert confirmed[0]["expected_secondary_labels"] == ["接码注册"]
+
+
+def test_manual_heldout_validator_keeps_pending_review_package_out_of_gold_claims():
+    confirmed, report = validate_records(
+        [{"trace_id": "m-pending", "human_review": {"status": "pending_human_confirmation"}}],
+        min_records=1,
+    )
+
+    assert confirmed == []
+    assert report["status"] == "insufficient_confirmed_records"
+    assert report["confirmed_record_gap"] == 1
+    assert report["manual_gold_claim"]["can_claim_manual_gold"] is False
+    assert report["manual_gold_claim"]["claim_status"] == "review_package_only"
 
 
 def test_ocr_hardset_builder_creates_labeled_image_text_rows(tmp_path):
@@ -322,6 +365,13 @@ def test_ocr_hardset_builder_creates_labeled_image_text_rows(tmp_path):
     assert all(record["content_modality"] == "image_text" for record in records)
     assert all(record["ocr_status"] == "completed" for record in records)
     assert all({"contact", "links", "slang", "tool_names"} <= set(record["manual_labels"]) for record in records)
+    entity_types = {
+        entity["entity_type"]
+        for record in records
+        for entity in record["expected_entities"]
+    }
+    assert {"contact", "tool_name", "invite_code"} <= entity_types
+    assert any(entity["entity_type"] == "url" for record in records for entity in record["expected_entities"])
 
 
 def test_cross_source_graph_demo_outputs_multi_source_clue():

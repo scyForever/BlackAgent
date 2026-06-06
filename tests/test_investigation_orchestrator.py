@@ -156,6 +156,79 @@ def test_investigation_orchestrator_collects_sources_by_priority_layer_before_ge
     ]
 
 
+def test_investigation_orchestrator_diversifies_source_classes_when_budget_allows():
+    orchestrator = InvestigationOrchestrator(
+        llm_gateway=LLMGateway(dry_run=True, mock=True),
+        routing_profiles={"high_recall": {"max_sources": 3, "max_query_rewrite_sources": 0}},
+    )
+    seen: list[str] = []
+
+    def collect_source(source: dict[str, object]) -> list[dict[str, object]]:
+        seen.append(str(source["source_name"]))
+        return [
+            {
+                "trace_id": f"trace-{source['source_name']}",
+                "source_name": source["source_name"],
+                "source_type": source.get("source_type") or "IM",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "publish_time": _utc_hours_ago(1),
+                "content_text": f"{source['source_name']} 接码群控 TG:diverse01 https://diverse.example/path",
+            }
+        ]
+
+    result = orchestrator.run(
+        "找最近24小时接码群控相关高质量线索",
+        available_sources=[
+            {
+                "source_name": "telegram-a",
+                "source_type": "IM",
+                "source_url": "https://feed.example/tg-a",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "query_theme": "接码",
+                "search_query": "site:t.me/s 接码",
+            },
+            {
+                "source_name": "telegram-b",
+                "source_type": "IM",
+                "source_url": "https://feed.example/tg-b",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "query_theme": "接码",
+                "search_query": "site:t.me/s 群控",
+            },
+            {
+                "source_name": "forum-a",
+                "source_type": "Forum",
+                "source_url": "https://feed.example/forum-a",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "query_theme": "接码",
+                "search_query": "site:tieba.baidu.com/p 接码",
+            },
+            {
+                "source_name": "vertical-tool-a",
+                "source_type": "Vertical",
+                "source_url": "https://feed.example/vertical-a",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "query_theme": "工具交易",
+                "search_query": "site:freelancer.com/jobs telegram automation",
+            },
+        ],
+        collect_source_records=collect_source,
+        max_concurrent_sources=1,
+        routing_profile="high_recall",
+    )
+
+    assert result.status == "completed"
+    assert result.selected_source_count == 3
+    assert set(result.execution_summary["selected_source_classes"]) >= {
+        "im_or_group",
+        "social_or_forum",
+        "vertical_or_technical",
+    }
+    assert any(name.startswith("telegram") for name in seen)
+    assert "forum-a" in seen
+    assert "vertical-tool-a" in seen
+
+
 def test_investigation_orchestrator_respects_max_concurrent_sources():
     active = {"count": 0, "max_seen": 0}
     release_queue: list[dict[str, object]] = []

@@ -21,7 +21,7 @@ model_stage_policy:
     fast_refine_max_tokens: 300
     default_refine_max_tokens: 450
     fast_refine_deadline_ms: 2500
-    default_refine_deadline_ms: 5000
+    default_refine_deadline_ms: 30000
   fast:
     intent_parse: false
     investigation_plan: false

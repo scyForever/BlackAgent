@@ -9,6 +9,7 @@ it does not bypass logins, CAPTCHA, robots/terms restrictions, or rate limits.
 from __future__ import annotations
 
 import csv
+import http.client
 import io
 import json
 import re
@@ -198,11 +199,14 @@ class HTTPFeedCollector:
             self._throttle_request_host()
             try:
                 with self.opener(req, timeout=self.config.timeout_seconds) as response:  # noqa: S310 - explicit authorized URL only
-                    raw_body = response.read()
                     content_type = ""
                     headers_obj = getattr(response, "headers", None)
                     if headers_obj is not None:
                         content_type = str(headers_obj.get("Content-Type", ""))
+                    try:
+                        raw_body = response.read()
+                    except http.client.IncompleteRead as exc:
+                        raw_body = exc.partial
                     charset = "utf-8"
                     if "charset=" in content_type:
                         charset = content_type.rsplit("charset=", 1)[-1].split(";", 1)[0].strip() or "utf-8"

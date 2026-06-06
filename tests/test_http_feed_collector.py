@@ -1,4 +1,5 @@
 import json
+from http.client import IncompleteRead
 from io import BytesIO
 from urllib.error import HTTPError
 
@@ -122,6 +123,41 @@ def test_http_feed_collector_fetches_authorized_html_snapshot():
     assert "TG:core01" in rows[0]["content_text"]
     assert "https://risk.example/path" in rows[0]["content_text"]
     assert rows[0]["feed_row_index"] == 1
+
+
+def test_http_feed_collector_uses_partial_body_on_incomplete_read():
+    class PartialHTTPResponse:
+        headers = {"Content-Type": "text/plain; charset=utf-8"}
+        status = 200
+
+        def read(self):
+            raise IncompleteRead(b"risk line TG:core01\n", 100)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    collector = HTTPFeedCollector(
+        HTTPFeedConfig(
+            source_url="https://feed.example/intel.txt",
+            source_name="partial-feed",
+            source_type="IM",
+            legal_basis="PUBLIC_COMPLIANT_DATA",
+            feed_format="txt",
+            include_keywords=("TG",),
+            network_enabled=True,
+            allowed_domains=("feed.example",),
+        ),
+        opener=lambda request, timeout: PartialHTTPResponse(),
+    )
+
+    rows = [model_dump(item) for item in collector.collect()]
+
+    assert len(rows) == 1
+    assert rows[0]["source_name"] == "partial-feed"
+    assert rows[0]["content_text"] == "risk line TG:core01"
 
 
 def test_http_feed_collector_filters_to_blackgray_rows_and_keeps_keyword_evidence():

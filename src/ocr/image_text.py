@@ -20,18 +20,36 @@ class OCRImageTextResult:
     content_modality: str
     sources: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    engine_outputs: dict[str, str] = field(default_factory=dict)
 
     def model_dump(self) -> dict[str, Any]:
         return asdict(self)
 
 
 class OCRImageTextAdapter:
-    """Materialize image text from supplied OCR fields or an injected engine."""
+    """Materialize image text from supplied OCR fields or injected engines.
+
+    ``engine`` keeps the original single-engine contract. ``engines`` is used
+    when operators want a Tesseract/cloud/local comparison over the same
+    authorized screenshot without changing the rest of the pipeline.
+    """
 
     IMAGE_PATH_FIELDS = ("image_path", "screenshot_path", "file_path")
 
-    def __init__(self, *, engine: OCREngine | None = None, extractor: MultimodalTextExtractor | None = None) -> None:
-        self.engine = engine
+    def __init__(
+        self,
+        *,
+        engine: OCREngine | None = None,
+        engines: Mapping[str, OCREngine] | None = None,
+        extractor: MultimodalTextExtractor | None = None,
+    ) -> None:
+        self.engines = {
+            str(name or "").strip() or "unnamed": candidate
+            for name, candidate in (engines or {}).items()
+            if candidate is not None
+        }
+        if engine is not None:
+            self.engines.setdefault("image_path", engine)
         self.extractor = extractor or MultimodalTextExtractor()
 
     def extract(self, record: Mapping[str, Any] | Any) -> OCRImageTextResult:
@@ -40,15 +58,22 @@ class OCRImageTextAdapter:
         sources = list(materialized.get("multimodal_text_sources") or [])
         errors: list[str] = []
         engine_texts: list[str] = []
-        for path in self._image_paths(record):
-            if self.engine is None:
+        engine_outputs: dict[str, str] = {}
+        image_paths = self._image_paths(record)
+        for path in image_paths:
+            if not self.engines:
                 errors.append(f"ocr_engine_not_configured:{path}")
                 continue
-            try:
-                engine_texts.append(normalize_text(self.engine(path)))
-                sources.append("ocr_engine.image_path")
-            except Exception as exc:  # pragma: no cover - defensive for injected engines
-                errors.append(f"ocr_engine_error:{path}:{exc}")
+            for engine_name, engine in self.engines.items():
+                output_key = engine_name if len(image_paths) == 1 else f"{engine_name}:{Path(path).name}"
+                try:
+                    extracted_text = normalize_text(engine(path))
+                    engine_outputs[output_key] = extracted_text
+                    if extracted_text and extracted_text not in engine_texts:
+                        engine_texts.append(extracted_text)
+                    sources.append("ocr_engine.image_path" if engine_name == "image_path" else f"ocr_engine.{engine_name}")
+                except Exception as exc:  # pragma: no cover - defensive for injected engines
+                    errors.append(f"ocr_engine_error:{engine_name}:{path}:{exc}")
         final_text = normalize_text(" ".join([text, *engine_texts]))
         content_modality = _merge_modality(
             str(materialized.get("content_modality") or "text"),
@@ -62,6 +87,7 @@ class OCRImageTextAdapter:
             content_modality=content_modality,
             sources=sorted(set(sources)),
             errors=errors,
+            engine_outputs=engine_outputs,
         )
 
     def materialize_record(self, record: Mapping[str, Any] | Any) -> dict[str, Any]:
@@ -72,6 +98,7 @@ class OCRImageTextAdapter:
         data["ocr_status"] = result.status
         data["ocr_sources"] = result.sources
         data["ocr_errors"] = result.errors
+        data["ocr_engine_outputs"] = result.engine_outputs
         return data
 
     def _image_paths(self, record: Mapping[str, Any] | Any) -> list[str]:

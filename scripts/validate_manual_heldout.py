@@ -93,12 +93,22 @@ def validate_records(records: Iterable[Mapping[str, Any]], *, min_records: int =
         "input_record_count": sum(status_counter.values()),
         "confirmed_record_count": len(confirmed),
         "min_required_records": max(1, int(min_records)),
+        "confirmed_record_gap": max(0, max(1, int(min_records)) - len(confirmed)),
         "human_review_status_counts": dict(status_counter),
         "annotator_counts": dict(annotator_counter),
         "conflict_handling_counts": dict(conflict_counter),
         "typical_error_counts": dict(typical_error_counter),
         "issue_count": len(issues),
         "issues": issues[:50],
+        "manual_gold_claim": {
+            "can_claim_manual_gold": len(confirmed) >= max(1, int(min_records)),
+            "claim_status": "human_confirmed_gold_ready"
+            if len(confirmed) >= max(1, int(min_records))
+            else "review_package_only",
+            "required_next_step": "Collect analyst-filled review_csv rows with confirmed/corrected status and required human fields."
+            if len(confirmed) < max(1, int(min_records))
+            else "Use output JSONL as manual held-out gold with the report attached.",
+        },
         "claim_boundary": (
             "Only rows with human_review.status in confirmed/corrected and required annotator/date/conflict fields "
             "are emitted as manual held-out gold."

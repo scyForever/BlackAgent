@@ -628,6 +628,7 @@ class InvestigationConfigMixin:
                 },
                 "high_recall": {
                     "max_elapsed_seconds": 180,
+                    "llm_stage_deadline_ms": 30000,
                     "max_sources": 5,
                     "max_raw_records": 20000,
                     "max_candidate_clues": 200,
@@ -687,6 +688,12 @@ class InvestigationConfigMixin:
     @staticmethod
 
     def _stage_deadline_ms(profile_config: Mapping[str, Any], *, default: int) -> int:
+            explicit_deadline = profile_config.get("llm_stage_deadline_ms") or profile_config.get("stage_deadline_ms")
+            if explicit_deadline not in (None, ""):
+                try:
+                    return max(250, int(explicit_deadline))
+                except (TypeError, ValueError):
+                    return default
             elapsed = int(profile_config.get("max_elapsed_seconds") or 0)
             if elapsed <= 0:
                 return default

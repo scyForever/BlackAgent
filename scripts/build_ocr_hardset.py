@@ -12,6 +12,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any, Iterable
+import re
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -62,6 +63,7 @@ def build_records(*, count: int = 20, image_dir: str | Path = "data/ocr_hardset_
             "image_path": str(image_path),
         }
         ocr = adapter.extract(raw_record)
+        manual_labels = _manual_labels(text=text, caption=caption)
         records.append(
             {
                 **raw_record,
@@ -70,22 +72,12 @@ def build_records(*, count: int = 20, image_dir: str | Path = "data/ocr_hardset_
                 "content_modality": ocr.content_modality,
                 "ocr_status": ocr.status,
                 "ocr_sources": ocr.sources,
+                "ocr_engine_outputs": ocr.engine_outputs,
                 "expected_image_text": text,
                 "expected_risk_categories": [seed["risk"]],
                 "expected_secondary_labels": [seed["secondary"]],
-                "expected_entities": [
-                    {"entity_type": "contact", "normalized_value": text.split(":", 1)[-1]},
-                    {"entity_type": "slang_term", "normalized_value": "Telegram"},
-                ],
-                "manual_labels": {
-                    "contact": text,
-                    "links": [part for part in caption.split() if part.startswith(("http", "hxxp"))],
-                    "slang": ["飞机"] if "飞机" in caption else ["TG"],
-                    "tool_names": [value for value in ("群控脚本", "云控脚本", "TG-WAVE") if value in caption],
-                    "annotator": "local_seed_fixture",
-                    "review_date": "2026-06-03",
-                    "conflict_handling": "seeded_ocr_hardset_for_regression",
-                },
+                "expected_entities": _expected_entities(manual_labels),
+                "manual_labels": manual_labels,
                 "claim_boundary": (
                     "Local authorized OCR hard-set row; PBM pixels are generated for deterministic regression "
                     "and do not claim external production OCR coverage."
@@ -104,7 +96,25 @@ def build_report(records: list[dict[str, Any]], *, output_path: str | Path) -> d
         "content_modality_counts": _counts(record.get("content_modality") for record in records),
         "risk_category_counts": _counts((record.get("expected_risk_categories") or ["unknown"])[0] for record in records),
         "labeled_fields": ["contact", "links", "slang", "tool_names"],
+        "expected_entity_type_counts": _counts(
+            entity.get("entity_type")
+            for record in records
+            for entity in record.get("expected_entities", [])
+            if isinstance(entity, dict)
+        ),
         "ocr_status_counts": _counts(record.get("ocr_status") for record in records),
+        "ocr_engine_comparison": {
+            "configured_engines": sorted(
+                {
+                    str(source).removeprefix("ocr_engine.")
+                    for record in records
+                    for source in record.get("ocr_sources", [])
+                    if str(source).startswith("ocr_engine.")
+                }
+            ),
+            "optional_operator_engines": ["TesseractCliOCREngine", "cloud_ocr_callable"],
+            "comparison_contract": "OCRImageTextAdapter accepts multiple named engines and records per-engine outputs.",
+        },
         "claim_boundary": (
             "This hard set validates the image-text contract and deterministic pixel OCR path; production OCR quality "
             "still depends on the injected external engine and separately authorized screenshots/posters."
@@ -139,6 +149,61 @@ def _counts(values: Iterable[Any]) -> dict[str, int]:
         key = str(value or "unknown")
         counts[key] = counts.get(key, 0) + 1
     return counts
+
+
+def _manual_labels(*, text: str, caption: str) -> dict[str, Any]:
+    links = [_canonical_url(part) for part in re.findall(r"hxxps?://[^\s，。；;]+|https?://[^\s，。；;]+", caption)]
+    code_match = re.search(r"code[:：](\d{3,})", caption, flags=re.IGNORECASE)
+    tool_terms = [
+        term
+        for term in ("群控", "脚本", "接码平台", "接码", "云控", "卡密", "跑分平台")
+        if term in caption
+    ]
+    settlement_terms = [term for term in ("跑分", "代付", "USDT", "支付宝", "银行卡") if term in caption]
+    return {
+        "contact": text,
+        "links": links,
+        "slang": ["飞机"] if "飞机" in caption else ["TG"],
+        "tool_names": tool_terms,
+        "settlement_terms": settlement_terms,
+        "invite_codes": [code_match.group(1)] if code_match else [],
+        "annotator": "local_seed_fixture",
+        "review_date": "2026-06-03",
+        "conflict_handling": "seeded_ocr_hardset_for_regression",
+    }
+
+
+def _expected_entities(labels: dict[str, Any]) -> list[dict[str, str]]:
+    contact = str(labels.get("contact") or "")
+    contact_value = contact.split(":", 1)[-1] if ":" in contact else contact
+    entities: list[dict[str, str]] = []
+    if contact_value:
+        entities.append({"entity_type": "contact", "normalized_value": contact_value})
+    for link in labels.get("links") or []:
+        entities.append({"entity_type": "url", "normalized_value": str(link)})
+    for tool in labels.get("tool_names") or []:
+        entities.append({"entity_type": "tool_name", "normalized_value": str(tool)})
+    for value in labels.get("settlement_terms") or []:
+        entities.append({"entity_type": "settlement", "normalized_value": str(value)})
+    for value in labels.get("invite_codes") or []:
+        entities.append({"entity_type": "invite_code", "normalized_value": str(value)})
+    return _dedupe_entities(entities)
+
+
+def _dedupe_entities(entities: Iterable[dict[str, str]]) -> list[dict[str, str]]:
+    seen: set[tuple[str, str]] = set()
+    output: list[dict[str, str]] = []
+    for entity in entities:
+        key = (str(entity.get("entity_type") or ""), str(entity.get("normalized_value") or ""))
+        if not key[0] or not key[1] or key in seen:
+            continue
+        seen.add(key)
+        output.append({"entity_type": key[0], "normalized_value": key[1]})
+    return output
+
+
+def _canonical_url(value: str) -> str:
+    return str(value).replace("hxxps://", "https://").replace("hxxp://", "http://").strip(" ,，。；;")
 
 
 def _project_path(path: str | Path) -> Path:
