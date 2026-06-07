@@ -79,3 +79,55 @@ def test_telegram_watch_config_contains_curated_seed_usernames():
     assert "paopaopayment" in usernames
     assert "Automationforum" not in usernames
     assert 5 <= len(usernames) <= 30
+
+
+def test_build_collection_options_applies_cli_overrides(tmp_path):
+    cfg = {
+        "api_id": "123",
+        "api_hash": "hash",
+        "phone": "+8613000000000",
+        "session": str(tmp_path / "session" / "tg"),
+        "db": str(tmp_path / "telegram.db"),
+        "source_name_prefix": "telegram_watch",
+        "legal_basis": "AUTHORIZED_PARTNER",
+        "watch": {
+            "keywords": ["接码", "跑分"],
+            "usernames": ["@one", "two", "two", ""],
+            "invite_links": ["https://t.me/+abc"],
+        },
+        "collection": {
+            "search_limit_per_keyword": 20,
+            "history_limit_per_chat": 200,
+            "include_keywords": ["接码"],
+            "exclude_keywords": ["反诈"],
+            "include_themes": ["接码"],
+            "exclude_themes": [],
+            "min_keyword_hits": 2,
+            "save_jsonl_path": str(tmp_path / "raw.jsonl"),
+        },
+    }
+    args = collector.CollectorCliOverrides(
+        db=None,
+        jsonl_path=None,
+        username_limit=1,
+        search_limit=3,
+        history_limit=7,
+    )
+
+    options = collector.build_collection_options(cfg, args)
+
+    assert options.api_id == "123"
+    assert options.usernames == ["one"]
+    assert options.invite_links == ["https://t.me/+abc"]
+    assert options.search_limit == 3
+    assert options.history_limit == 7
+    assert options.min_keyword_hits == 2
+    assert options.jsonl_path.name == "raw.jsonl"
+
+
+def test_build_collection_options_rejects_missing_api_fields(tmp_path):
+    cfg = {"api_id": "123", "api_hash": None, "watch": {}, "collection": {}}
+    args = collector.CollectorCliOverrides(db=None, jsonl_path=None, username_limit=0, search_limit=0, history_limit=0)
+
+    with pytest.raises(SystemExit, match="telegram.api_id and telegram.api_hash are required"):
+        collector.build_collection_options(cfg, args)
