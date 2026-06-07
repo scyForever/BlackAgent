@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import sys
 from pathlib import Path
@@ -34,6 +35,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cycles", type=int, default=1, help="How many bounded tick+worker cycles to run")
     parser.add_argument("--status-only", action="store_true", help="Only print current scheduler status")
     parser.add_argument("--bootstrap-only", action="store_true", help="Sync schedule definitions and exit")
+    parser.add_argument("--telegram-username-limit", type=int, default=0, help="Limit Telegram usernames in scheduled smoke runs")
+    parser.add_argument("--telegram-search-limit", type=int, default=0, help="Override Telegram scheduled search limit")
+    parser.add_argument("--telegram-history-limit", type=int, default=0, help="Override Telegram scheduled history limit")
     return parser.parse_args()
 
 
@@ -61,19 +65,33 @@ def main() -> int:
         clue_batch_limit=settings.scheduler.clue_batch_limit,
     )
 
-    schedules = scheduler.sync_schedules(
-        scheduler.default_schedules(
-            public_catalog=args.public_catalog,
-            x_config=args.x_config,
-            telegram_config=args.telegram_config,
-            fast_interval_seconds=settings.scheduler.fast_interval_seconds,
-            slow_interval_seconds=settings.scheduler.slow_interval_seconds,
-            clue_build_interval_seconds=settings.scheduler.clue_build_interval_seconds,
-            lease_seconds=settings.scheduler.lease_seconds,
-            max_attempts=settings.scheduler.max_attempts,
-            cron_overrides=settings.scheduler.cron_overrides,
-        )
+    default_schedules = scheduler.default_schedules(
+        public_catalog=args.public_catalog,
+        x_config=args.x_config,
+        telegram_config=args.telegram_config,
+        fast_interval_seconds=settings.scheduler.fast_interval_seconds,
+        slow_interval_seconds=settings.scheduler.slow_interval_seconds,
+        clue_build_interval_seconds=settings.scheduler.clue_build_interval_seconds,
+        lease_seconds=settings.scheduler.lease_seconds,
+        max_attempts=settings.scheduler.max_attempts,
+        cron_overrides=settings.scheduler.cron_overrides,
     )
+    telegram_payload: dict[str, int] = {}
+    if args.telegram_username_limit:
+        telegram_payload["username_limit"] = args.telegram_username_limit
+    if args.telegram_search_limit:
+        telegram_payload["search_limit"] = args.telegram_search_limit
+    if args.telegram_history_limit:
+        telegram_payload["history_limit"] = args.telegram_history_limit
+    if telegram_payload:
+        default_schedules = [
+            replace(schedule, task_payload={**schedule.task_payload, **telegram_payload})
+            if schedule.schedule_name == "fast_telegram_collect"
+            else schedule
+            for schedule in default_schedules
+        ]
+
+    schedules = scheduler.sync_schedules(default_schedules)
 
     if args.status_only:
         print(json.dumps({"status": "ok", **scheduler.status().model_dump()}, ensure_ascii=False, indent=2))

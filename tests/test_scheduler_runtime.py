@@ -114,3 +114,54 @@ def test_collection_queue_scheduler_enqueues_followup_clue_build_and_processes_b
     assert any(item["status"] == "SUCCEEDED" for item in worker_result["executed"])
 
     backend.close()
+
+
+def test_default_schedules_include_fast_telegram_collect(tmp_path):
+    backend = connect(sqlite_dsn(tmp_path / "scheduler.db"))
+    backend.create_schema()
+    scheduler = CollectionQueueScheduler(backend)
+
+    schedules = scheduler.default_schedules(
+        telegram_config="config/telegram_watch.example.yaml",
+        fast_interval_seconds=30,
+    )
+
+    telegram = next(item for item in schedules if item.schedule_name == "fast_telegram_collect")
+    assert telegram.task_type == "collect_telegram_watch"
+    assert telegram.task_payload["config"] == "config/telegram_watch.example.yaml"
+    assert telegram.interval_seconds == 30
+    backend.close()
+
+
+def test_scheduler_dispatches_telegram_once_with_optional_limits(tmp_path):
+    backend = connect(sqlite_dsn(tmp_path / "scheduler.db"))
+    backend.create_schema()
+    commands = []
+
+    def fake_runner(command):
+        commands.append(command)
+        return {"status": "completed", "parsed_output": {"persisted_count": 0}}
+
+    scheduler = CollectionQueueScheduler(backend, runner=fake_runner)
+    job = {
+        "job_id": "job-1",
+        "task_type": "collect_telegram_watch",
+        "task_payload": {
+            "config": "config/telegram_watch.example.yaml",
+            "username_limit": 2,
+            "history_limit": 5,
+            "search_limit": 3,
+        },
+    }
+
+    result = scheduler._dispatch_builtin(job)
+
+    command_text = " ".join(commands[0])
+    assert "scripts/telegram_telethon_collector.py" in command_text
+    assert "--once" in commands[0]
+    assert "--username-limit" in commands[0]
+    assert "2" in commands[0]
+    assert "--history-limit" in commands[0]
+    assert "5" in commands[0]
+    assert result["subprocess"]["parsed_output"]["persisted_count"] == 0
+    backend.close()
