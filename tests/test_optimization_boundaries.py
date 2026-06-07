@@ -75,6 +75,68 @@ def test_ocr_adapter_marks_image_text_modality_without_external_engine():
     assert "TG:ocr001" in ocr.text
 
 
+def test_ocr_adapter_preserves_nested_upstream_confidence_metadata():
+    record = {
+        "trace_id": "ocr-confidence",
+        "attachments": [
+            {
+                "ocr_text": "海报OCR：接码注册 TG:ocrconf",
+                "ocr_confidence": 0.83,
+            }
+        ],
+    }
+
+    materialized = MultimodalTextExtractor().materialize(record)
+    ocr = OCRImageTextAdapter().extract(record)
+    materialized_record = OCRImageTextAdapter().materialize_record(record)
+
+    expected_details = [
+        {
+            "source": "attachments.ocr_text",
+            "field": "attachments.ocr_confidence",
+            "confidence": 0.83,
+        }
+    ]
+    assert materialized["content_modality"] == "image_text"
+    assert materialized["ocr_confidence"] == 0.83
+    assert materialized["ocr_confidence_details"] == expected_details
+    assert ocr.model_dump()["ocr_confidence"] == 0.83
+    assert ocr.model_dump()["ocr_confidence_details"]["upstream"] == expected_details
+    assert materialized_record["ocr_confidence"] == 0.83
+    assert materialized_record["ocr_confidence_details"]["upstream"] == expected_details
+
+
+def test_ocr_adapter_materializes_explicit_ocr_text_field():
+    record = {
+        "trace_id": "ocr-text-contract",
+        "attachments": [{"ocr_text": "海报OCR：群控脚本 接码 TG:ocrtext"}],
+    }
+
+    materialized_record = OCRImageTextAdapter().materialize_record(record)
+
+    assert materialized_record["ocr_text"] == materialized_record["content_text"]
+    assert "TG:ocrtext" in materialized_record["ocr_text"]
+
+
+def test_caption_confidence_does_not_become_ocr_confidence():
+    record = {
+        "trace_id": "caption-confidence",
+        "content_text": "正文",
+        "attachments": [
+            {
+                "caption": "图片说明文字，不是 OCR",
+                "confidence": 0.91,
+            }
+        ],
+    }
+
+    materialized = MultimodalTextExtractor().materialize(record)
+
+    assert materialized["content_modality"] == "mixed"
+    assert materialized["ocr_confidence"] is None
+    assert materialized["ocr_confidence_details"] == []
+
+
 def test_bitmap_ocr_engine_reads_demo_image_pixels(tmp_path):
     image_path = render_demo_pbm("TG:OCR001", tmp_path / "ocr_demo.pbm")
 
@@ -84,6 +146,30 @@ def test_bitmap_ocr_engine_reads_demo_image_pixels(tmp_path):
     assert ocr.content_modality == "image_text"
     assert ocr.text == "TG:OCR001"
     assert "ocr_engine.image_path" in ocr.sources
+
+
+def test_ocr_adapter_records_structured_engine_confidence(tmp_path):
+    image_path = tmp_path / "structured_engine.png"
+
+    def structured_engine(path):
+        return {"text": "TG:OCR777 群控脚本", "confidence": "91.5"}
+
+    adapter = OCRImageTextAdapter(engines={"structured_fixture": structured_engine})
+
+    ocr = adapter.extract({"trace_id": "ocr-engine-confidence", "image_path": str(image_path)})
+    materialized = adapter.materialize_record({"trace_id": "ocr-engine-confidence", "image_path": str(image_path)})
+
+    assert ocr.status == "completed"
+    assert ocr.text == "TG:OCR777 群控脚本"
+    assert ocr.model_dump()["ocr_confidence"] == 0.915
+    assert ocr.model_dump()["ocr_engine_confidences"] == {"structured_fixture": 0.915}
+    assert ocr.model_dump()["ocr_confidence_details"]["engines"]["structured_fixture"] == {
+        "source": "ocr_engine.structured_fixture",
+        "field": "confidence",
+        "confidence": 0.915,
+    }
+    assert materialized["ocr_confidence"] == 0.915
+    assert materialized["ocr_engine_confidences"] == {"structured_fixture": 0.915}
 
 
 def test_ocr_adapter_records_named_engine_comparison_outputs(tmp_path):
@@ -279,6 +365,58 @@ def test_heldout_builder_creates_reviewable_local_split():
     assert all((item.get("human_review") or {}).get("status") == "pending_human_confirmation" for item in heldout)
 
 
+def test_heldout_builder_keeps_normal_noise_and_unknown_review_buckets():
+    records = [
+        {
+            "trace_id": "h-noise",
+            "source_name": "Automationforum",
+            "source_type": "TechForum",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "Read Full Guide: Siphon Tube Pressure Gauge Steam Service Guide "
+                "for process engineers at automationforum.co."
+            ),
+        },
+        {
+            "trace_id": "h-unknown",
+            "source_name": "misc-public",
+            "source_type": "Forum",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "火苗蓝盘今晚继续，暗号777。",
+        },
+        {
+            "trace_id": "h-risk",
+            "source_name": "tg",
+            "source_type": "IM",
+            "content_text": "群控脚本接码，联系 TG:h001",
+        },
+    ]
+
+    heldout = build_heldout_records(records, limit=3, per_category=2)
+
+    categories = {item["source_trace_id"]: item["expected_risk_categories"][0] for item in heldout}
+    assert categories["h-noise"] == "正常业务白噪声"
+    assert categories["h-unknown"] == "unknown"
+    assert categories["h-risk"] == "工具交易"
+    assert {item["source_trace_id"] for item in heldout} == {"h-noise", "h-unknown", "h-risk"}
+
+
+def test_heldout_builder_cli_defaults_target_100_to_300_manual_review_rows():
+    from scripts.build_heldout_eval import parse_args as parse_heldout_args
+    from scripts.export_manual_heldout_review import parse_args as parse_review_args
+    from scripts.validate_manual_heldout import parse_args as parse_validate_args
+
+    heldout_args = parse_heldout_args([])
+    review_args = parse_review_args([])
+    validate_args = parse_validate_args([])
+
+    assert 100 <= heldout_args.limit <= 300
+    assert review_args.limit == heldout_args.limit
+    assert review_args.min_target >= 100
+    assert review_args.min_target <= review_args.limit
+    assert validate_args.min_records == review_args.min_target
+
+
 def test_manual_heldout_validator_emits_only_human_confirmed_rows():
     records = [
         {
@@ -348,6 +486,52 @@ def test_manual_heldout_review_export_and_csv_merge_roundtrip():
     assert confirmed[0]["expected_secondary_labels"] == ["接码注册"]
 
 
+def test_manual_heldout_validator_splits_direct_jsonl_semicolon_labels():
+    records = [
+        {
+            "trace_id": "m-direct-split",
+            "content_text": "群控脚本 TG:m1",
+            "human_review": {
+                "status": "confirmed",
+                "annotator": "analyst-a",
+                "review_date": "2026-06-03",
+                "final_risk_categories": "工具交易;账号交易",
+                "final_secondary_labels": "群控脚本;接码注册",
+                "conflict_handling": "multi_label_confirmed",
+                "typical_error": "none",
+            },
+        }
+    ]
+
+    confirmed, report = validate_records(records, min_records=1)
+
+    assert report["status"] == "completed"
+    assert confirmed[0]["expected_risk_categories"] == ["工具交易", "账号交易"]
+    assert confirmed[0]["expected_secondary_labels"] == ["群控脚本", "接码注册"]
+
+
+def test_manual_heldout_validator_requires_typical_error_field():
+    records = [
+        {
+            "trace_id": "m-missing-error",
+            "content_text": "群控脚本 TG:m1",
+            "human_review": {
+                "status": "confirmed",
+                "annotator": "analyst-a",
+                "review_date": "2026-06-03",
+                "final_risk_categories": ["工具交易"],
+                "conflict_handling": "rule_label_confirmed",
+            },
+        }
+    ]
+
+    confirmed, report = validate_records(records, min_records=1)
+
+    assert confirmed == []
+    assert report["status"] == "insufficient_confirmed_records"
+    assert report["issues"][0]["fields"] == ["typical_error"]
+
+
 def test_manual_heldout_validator_keeps_pending_review_package_out_of_gold_claims():
     confirmed, report = validate_records(
         [{"trace_id": "m-pending", "human_review": {"status": "pending_human_confirmation"}}],
@@ -366,7 +550,10 @@ def test_ocr_hardset_builder_creates_labeled_image_text_rows(tmp_path):
 
     assert len(records) == 20
     assert all(record["content_modality"] == "image_text" for record in records)
+    assert all(record["ocr_text"] == record["content_text"] for record in records)
     assert all(record["ocr_status"] == "completed" for record in records)
+    assert all(record["ocr_confidence"] == 1.0 for record in records)
+    assert all(record["ocr_engine_confidences"]["image_path"] == 1.0 for record in records)
     assert all({"contact", "links", "slang", "tool_names"} <= set(record["manual_labels"]) for record in records)
     entity_types = {
         entity["entity_type"]

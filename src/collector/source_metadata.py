@@ -181,6 +181,9 @@ def normalize_source_access_type(
 def source_class_for_record(record: Mapping[str, Any]) -> str:
     """Map a row/source definition to the collection quota class."""
 
+    existing = str(record.get("source_class") or "").strip().lower()
+    if existing in SOURCE_CLASS_ALIASES or existing == "other_authorized":
+        return existing
     source_type = str(record.get("source_type") or record.get("type") or "").strip().lower()
     platform = str(record.get("platform") or "").strip().lower()
     source_name = str(record.get("source_name") or record.get("name") or "").strip().lower()

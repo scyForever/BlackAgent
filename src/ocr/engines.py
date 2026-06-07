@@ -51,6 +51,8 @@ class BitmapGlyphOCREngine:
     pytesseract, or model downloads.
     """
 
+    default_ocr_confidence = 1.0
+
     def __init__(self, *, unknown_char: str = "?") -> None:
         self.unknown_char = unknown_char
         self._reverse_font = {_glyph_key(_trim_glyph(value)): key for key, value in DEMO_FONT.items()}

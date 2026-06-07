@@ -132,8 +132,8 @@ class EntityGraphStore:
             masked_display_value=str(entity.get("masked_value") or entity.get("normalized_value") or entity.get("entity_value") or value),
             aliases=aliases,
             sensitivity_level=str(entity.get("sensitivity_level") or existing.sensitivity_level if existing else entity.get("sensitivity_level") or "normal"),
-            first_seen=min([item for item in [existing.first_seen if existing else None, timestamp] if item]) if existing else timestamp,
-            last_seen=max([item for item in [existing.last_seen if existing else None, timestamp] if item]) if existing else timestamp,
+            first_seen=_earliest_time_string(existing.first_seen if existing else None, timestamp) if existing else timestamp,
+            last_seen=_latest_time_string(existing.last_seen if existing else None, timestamp) if existing else timestamp,
         )
         self._entities[entity_id] = asset
         self._persist_entity(asset)
@@ -234,8 +234,9 @@ class EntityGraphStore:
             ],
         }
 
-    def entities_seen_since(self, days: int = 7) -> list[EntityAsset]:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=max(0, int(days or 0)))
+    def entities_seen_since(self, days: int = 7, *, now: datetime | str | None = None) -> list[EntityAsset]:
+        current_time = _coerce_time(now) or datetime.now(timezone.utc)
+        cutoff = current_time - timedelta(days=max(0, int(days or 0)))
         output: list[EntityAsset] = []
         for asset in self._entities.values():
             seen_at = _parse_time(asset.last_seen or asset.first_seen)
@@ -565,6 +566,12 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _coerce_time(value: datetime | str | None) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return _parse_time(value)
+
+
 def _parse_time(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -573,6 +580,29 @@ def _parse_time(value: str | None) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _earliest_time_string(*values: str | None) -> str | None:
+    return _pick_time_string(values, earliest=True)
+
+
+def _latest_time_string(*values: str | None) -> str | None:
+    return _pick_time_string(values, earliest=False)
+
+
+def _pick_time_string(values: Iterable[str | None], *, earliest: bool) -> str | None:
+    candidates = [value for value in values if value]
+    if not candidates:
+        return None
+
+    def sort_key(value: str) -> tuple[datetime, str]:
+        parsed = _parse_time(value)
+        if parsed is None:
+            fallback = datetime.min.replace(tzinfo=timezone.utc) if earliest else datetime.max.replace(tzinfo=timezone.utc)
+            return fallback, value
+        return parsed.astimezone(timezone.utc), value
+
+    return min(candidates, key=sort_key) if earliest else max(candidates, key=sort_key)
 
 
 __all__ = [

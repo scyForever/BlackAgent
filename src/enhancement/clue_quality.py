@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 from src.collector.base_collector import get_record_field
@@ -20,9 +21,16 @@ class ClueQualityAssessment:
     avg_classification_confidence: float
     critical_entity_count: int
     quality_reasons: list[str]
+    freshness_score: float = 0.5
+    freshness_reasons: list[str] | None = None
+    false_positive_risk_score: float = 0.0
+    false_positive_risk_reasons: list[str] | None = None
 
     def model_dump(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["freshness_reasons"] = payload.get("freshness_reasons") or []
+        payload["false_positive_risk_reasons"] = payload.get("false_positive_risk_reasons") or []
+        return payload
 
 
 class ClueQualityEvaluator:
@@ -41,12 +49,12 @@ class ClueQualityEvaluator:
         require_evidence_chain: bool,
     ) -> list[ClueQualityAssessment]:
         conf_by_trace = {
-            str(get_record_field(item, "source_trace_id") or ""): float(get_record_field(item, "confidence") or 0.0)
+            str(get_record_field(item, "source_trace_id") or get_record_field(item, "trace_id") or ""): float(get_record_field(item, "confidence") or 0.0)
             for item in classifications
         }
         entities_by_trace: dict[str, list[Any]] = {}
         for entity in entities:
-            trace_id = str(get_record_field(entity, "source_trace_id") or "")
+            trace_id = str(get_record_field(entity, "source_trace_id") or get_record_field(entity, "trace_id") or "")
             entities_by_trace.setdefault(trace_id, []).append(entity)
 
         return [
@@ -88,11 +96,22 @@ class ClueQualityEvaluator:
 
         cross_source_count = len(set(source_names))
         evidence_count = len(set(evidence_trace_ids))
+        freshness_score, freshness_reasons = _freshness_score(clue)
+        false_positive_risk_score, false_positive_risk_reasons = _false_positive_risk_score(
+            cross_source_count=cross_source_count,
+            evidence_count=evidence_count,
+            avg_confidence=avg_confidence,
+            critical_entity_count=critical_entity_count,
+            clue_entity_values=[str(item) for item in (get_record_field(clue, "entity_values") or []) if str(item).strip()],
+            freshness_score=freshness_score,
+        )
         score = (
             base_confidence * 0.45
             + min(evidence_count, 4) / 4.0 * 0.2
             + min(cross_source_count, 3) / 3.0 * 0.2
             + avg_confidence * 0.15
+            + freshness_score * 0.08
+            - false_positive_risk_score * 0.12
         )
         reasons: list[str] = []
         if cross_source_count >= 2:
@@ -103,6 +122,11 @@ class ClueQualityEvaluator:
             reasons.append("critical_entities_present")
         if avg_confidence >= 0.75:
             reasons.append("classification_confidence_stable")
+        reasons.extend(freshness_reasons)
+        if false_positive_risk_score < 0.4:
+            reasons.append("false_positive_risk_low")
+        elif false_positive_risk_score >= 0.7:
+            reasons.append("false_positive_risk_high")
 
         if require_cross_source and cross_source_count < 2:
             score -= 0.2
@@ -131,6 +155,10 @@ class ClueQualityEvaluator:
             evidence_count=evidence_count,
             avg_classification_confidence=avg_confidence,
             critical_entity_count=critical_entity_count,
+            freshness_score=freshness_score,
+            freshness_reasons=freshness_reasons,
+            false_positive_risk_score=false_positive_risk_score,
+            false_positive_risk_reasons=false_positive_risk_reasons,
             quality_reasons=reasons,
         )
 
@@ -142,6 +170,76 @@ def _quality_threshold(profile: str) -> float:
     if normalized == "high_recall":
         return 0.52
     return 0.65
+
+
+def _freshness_score(clue: Mapping[str, Any] | Any) -> tuple[float, list[str]]:
+    reference = _parse_time(
+        get_record_field(clue, "quality_reference_time")
+        or get_record_field(clue, "reference_time")
+        or get_record_field(clue, "evaluated_at")
+    ) or datetime.now(timezone.utc)
+    seen_at = _parse_time(
+        get_record_field(clue, "last_seen")
+        or get_record_field(clue, "publish_time")
+        or get_record_field(clue, "created_at")
+    )
+    if seen_at is None:
+        return 0.5, ["freshness_unknown"]
+    age_hours = max(0.0, (reference - seen_at).total_seconds() / 3600.0)
+    if age_hours <= 48:
+        return 1.0, ["fresh_evidence_window"]
+    if age_hours <= 168:
+        return 0.75, ["recent_evidence_window"]
+    if age_hours <= 336:
+        return 0.5, ["aging_evidence_window"]
+    return 0.25, ["stale_evidence_window"]
+
+
+def _false_positive_risk_score(
+    *,
+    cross_source_count: int,
+    evidence_count: int,
+    avg_confidence: float,
+    critical_entity_count: int,
+    clue_entity_values: list[str],
+    freshness_score: float,
+) -> tuple[float, list[str]]:
+    risk = 0.1
+    reasons: list[str] = []
+    if cross_source_count < 2:
+        risk += 0.25
+        reasons.append("single_source_false_positive_risk")
+    if evidence_count < 2:
+        risk += 0.2
+        reasons.append("thin_evidence_false_positive_risk")
+    if critical_entity_count == 0 and not clue_entity_values:
+        risk += 0.25
+        reasons.append("weak_entity_support_false_positive_risk")
+    elif critical_entity_count == 0:
+        risk += 0.1
+        reasons.append("entity_support_implied_not_extracted")
+    if avg_confidence < 0.55:
+        risk += 0.2
+        reasons.append("low_classification_confidence_false_positive_risk")
+    if freshness_score <= 0.25:
+        risk += 0.1
+        reasons.append("stale_context_false_positive_risk")
+    risk = round(max(0.0, min(risk, 0.99)), 4)
+    if not reasons:
+        reasons.append("false_positive_risk_low")
+    return risk, reasons
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 __all__ = ["ClueQualityAssessment", "ClueQualityEvaluator"]

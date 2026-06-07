@@ -24,10 +24,10 @@ from src.enhancement.text_intelligence import AdvancedEntityExtractor, FineGrain
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create BlackAgent's local public/authorized held-out eval split.")
-    parser.add_argument("--input", default="data/cleaning_phase_high_risk_corpus.jsonl", help="Local cleaned JSONL corpus.")
+    parser.add_argument("--input", default="data/cleaning_phase_cleaned_corpus.jsonl", help="Local cleaned JSONL corpus.")
     parser.add_argument("--output", default="tests/evaluation/heldout_classification.jsonl", help="Held-out JSONL to write.")
-    parser.add_argument("--limit", type=int, default=60, help="Maximum records to write.")
-    parser.add_argument("--per-category", type=int, default=12, help="Maximum records per primary category.")
+    parser.add_argument("--limit", type=int, default=200, help="Maximum records to write.")
+    parser.add_argument("--per-category", type=int, default=50, help="Maximum records per primary category.")
     return parser.parse_args(argv)
 
 
@@ -46,8 +46,6 @@ def build_heldout_records(
             continue
         classification = classifier.classify({**raw, "content_text": content}).model_dump()
         category = str(classification.get("risk_category") or "unknown")
-        if category in {"unknown", "正常业务白噪声"}:
-            continue
         entities = [
             item.model_dump()
             for item in extractor.extract({**raw, "content_text": content, "classification": classification})
@@ -115,14 +113,24 @@ def build_heldout_records(
             if len(selected) >= limit:
                 return selected
     # Second pass: fill remaining category quotas deterministically.
-    for category in sorted(buckets):
-        for record in buckets[category]:
-            if record in selected or category_counts[category] >= max(1, per_category):
+    selected_ids = {id(record) for record in selected}
+    while len(selected) < limit:
+        added = False
+        for category in sorted(buckets):
+            if category_counts[category] >= max(1, per_category):
                 continue
-            selected.append(record)
-            category_counts[category] += 1
+            for record in buckets[category]:
+                if id(record) in selected_ids:
+                    continue
+                selected.append(record)
+                selected_ids.add(id(record))
+                category_counts[category] += 1
+                added = True
+                break
             if len(selected) >= limit:
                 return selected
+        if not added:
+            break
     return selected
 
 
@@ -170,9 +178,15 @@ def build_report(records: list[dict[str, Any]], *, output_path: str | Path) -> d
             "finalize_command": (
                 "python scripts/validate_manual_heldout.py "
                 "--input tests/evaluation/heldout_classification.jsonl "
-                "--output tests/evaluation/manual_heldout_classification.jsonl"
+                "--review-csv data/manual_review/heldout_review_task.csv "
+                "--output tests/evaluation/manual_heldout_classification.jsonl "
+                "--min-records 100"
             ),
         },
+        "review_bucket_policy": (
+            "Includes positive risk rows plus normal-noise and unknown/review buckets so analysts can "
+            "measure false positives, residual unknowns, and review-load reductions."
+        ),
         "claim_boundary": (
             "This is an independent local public/authorized held-out split seeded for analyst review; "
             "do not present it as live online generalization without human confirmation and fresh external validation."

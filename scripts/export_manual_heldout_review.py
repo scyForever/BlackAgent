@@ -50,8 +50,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output", default="data/manual_review/heldout_review_task.csv", help="CSV task file for analysts.")
     parser.add_argument("--readme", default="data/manual_review/README.md", help="Review instructions to write.")
     parser.add_argument("--report", default="data/manual_review/heldout_review_task_report.json", help="Task package report JSON.")
-    parser.add_argument("--limit", type=int, default=100, help="Maximum rows to export.")
-    parser.add_argument("--min-target", type=int, default=50, help="Minimum rows expected to be confirmed.")
+    parser.add_argument("--limit", type=int, default=200, help="Maximum rows to export.")
+    parser.add_argument("--min-target", type=int, default=100, help="Minimum rows expected to be confirmed.")
     return parser.parse_args(argv)
 
 

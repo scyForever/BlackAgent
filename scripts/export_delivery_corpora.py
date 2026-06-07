@@ -46,6 +46,11 @@ def parse_args() -> argparse.Namespace:
         default="data/collection_phase_quota_balanced_sample.jsonl",
         help="Quota-balanced raw JSONL sample output path",
     )
+    parser.add_argument(
+        "--defense-quota-jsonl-out",
+        default="data/collection_phase_defense_quota_balanced_sample.jsonl",
+        help="Strict defense quota-balanced raw JSONL sample output path",
+    )
     parser.add_argument("--limit", type=int, default=0, help="Optional max raw rows to export (0 = all)")
     return parser.parse_args()
 
@@ -84,6 +89,10 @@ def _infer_query_term_stage(row: dict[str, Any], lookup: dict[tuple[str, str], s
 
 def _trace_id(row: dict[str, Any]) -> str:
     return str(row.get("trace_id") or row.get("source_trace_id") or row.get("hash_id") or "")
+
+
+def _source_name(row: dict[str, Any]) -> str:
+    return str(row.get("source_name") or "unknown")
 
 
 def _annotate_row(
@@ -148,6 +157,9 @@ def build_quota_sample(
     source_class_targets: dict[str, float] | None = None,
     max_source_share: float = 0.30,
     include_trace_ids: bool = False,
+    strict_balance: bool = False,
+    min_class_count: int = 20,
+    max_class_share: float = 0.45,
 ) -> dict[str, Any]:
     """Build a deterministic quota-balanced sample manifest from raw rows.
 
@@ -166,8 +178,11 @@ def build_quota_sample(
     if total <= 0:
         return {
             "status": "empty",
+            "strict_balance": strict_balance,
             "target_source_class_shares": targets,
             "max_source_share": max_source_share,
+            "min_class_count": min_class_count,
+            "max_class_share": max_class_share,
             "selected_count": 0,
             "selected_trace_id_sample": [],
             "class_counts": [],
@@ -177,7 +192,7 @@ def build_quota_sample(
 
     source_caps: dict[str, int] = {}
     for row in rows:
-        source_name = str(row.get("source_name") or "unknown")
+        source_name = _source_name(row)
         source_caps[source_name] = min(source_caps.get(source_name, total), max(1, int(total * max_source_share)))
 
     buckets: dict[str, list[dict[str, Any]]] = {key: [] for key in targets}
@@ -185,17 +200,47 @@ def build_quota_sample(
     for row in rows:
         buckets.setdefault(source_class_for_record(row), []).append(row)
 
+    strict_class_targets: dict[str, int] = {}
+    strict_eligible_classes: list[dict[str, Any]] = []
+    effective_max_class_share = max_class_share
+    warnings: list[str] = []
+    if strict_balance:
+        available_counts = {source_class: len(available) for source_class, available in buckets.items()}
+        strict_class_targets, effective_max_class_share = _strict_class_targets(
+            available_counts,
+            min_class_count=min_class_count,
+            max_class_share=max_class_share,
+        )
+        strict_eligible_classes = [
+            {
+                "source_class": source_class,
+                "available": available_counts[source_class],
+                "target": requested,
+            }
+            for source_class, requested in strict_class_targets.items()
+        ]
+        for source_class, available_count in available_counts.items():
+            if 0 < available_count < min_class_count:
+                warnings.append(f"{source_class}_strict_min_count_unmet:available={available_count};required={min_class_count}")
+        if not strict_class_targets:
+            warnings.append("strict_no_classes_meet_min_count")
+        if effective_max_class_share != max_class_share:
+            warnings.append(f"strict_max_class_share_relaxed:{max_class_share}->{effective_max_class_share}")
+
+    class_requests = strict_class_targets if strict_balance else {
+        source_class: int(round(total * float(share)))
+        for source_class, share in targets.items()
+    }
+
     selected: list[dict[str, Any]] = []
     used_sources: Counter[str] = Counter()
-    warnings: list[str] = []
-    for source_class, share in targets.items():
+    for source_class, requested in class_requests.items():
         available = buckets.get(source_class, [])
-        requested = int(round(total * float(share)))
         class_selected = 0
         for row in available:
             if class_selected >= requested:
                 break
-            source_name = str(row.get("source_name") or "unknown")
+            source_name = _source_name(row)
             if used_sources[source_name] >= source_caps.get(source_name, total):
                 continue
             selected.append(row)
@@ -205,6 +250,17 @@ def build_quota_sample(
             available_count = len(available)
             warnings.append(f"{source_class}_quota_underfilled:{class_selected}/{requested};available={available_count}")
 
+    if strict_balance and selected:
+        selected, trim_warnings = _trim_strict_class_share(selected, max_class_share=effective_max_class_share)
+        warnings.extend(trim_warnings)
+        selected, source_trim_warnings = _trim_source_share(
+            selected,
+            max_source_share=max_source_share,
+            min_source_count_for_trim=min_class_count,
+        )
+        warnings.extend(source_trim_warnings)
+        used_sources = Counter(_source_name(row) for row in selected)
+
     class_counts = Counter(source_class_for_record(row) for row in selected)
     trace_ids = [
         str(row.get("trace_id") or row.get("source_trace_id") or row.get("hash_id") or "")
@@ -212,8 +268,12 @@ def build_quota_sample(
     ]
     summary = {
         "status": "completed",
+        "strict_balance": strict_balance,
         "target_source_class_shares": targets,
         "max_source_share": max_source_share,
+        "min_class_count": min_class_count,
+        "max_class_share": max_class_share,
+        "effective_max_class_share": effective_max_class_share,
         "raw_record_count": total,
         "selected_count": len(selected),
         "selected_trace_id_sample": trace_ids[:20],
@@ -221,9 +281,186 @@ def build_quota_sample(
         "source_counts": [{"source_name": name, "count": count} for name, count in used_sources.most_common(20)],
         "warnings": warnings,
     }
+    if strict_balance:
+        summary["strict_eligible_classes"] = strict_eligible_classes
+        summary["strict_class_target_counts"] = [
+            {"source_class": source_class, "count": count}
+            for source_class, count in strict_class_targets.items()
+        ]
     if include_trace_ids:
         summary["selected_trace_ids"] = trace_ids
     return summary
+
+
+def _strict_class_targets(
+    available_counts: dict[str, int],
+    *,
+    min_class_count: int,
+    max_class_share: float,
+) -> tuple[dict[str, int], float]:
+    eligible = {
+        source_class: count
+        for source_class, count in available_counts.items()
+        if count >= min_class_count
+    }
+    if not eligible:
+        return {}, max_class_share
+
+    class_count = len(eligible)
+    effective_max_class_share = max(float(max_class_share), 1.0 / class_count)
+    max_total = sum(eligible.values())
+    best_total = 0
+    for candidate_total in range(1, max_total + 1):
+        if _strict_target_feasible(
+            candidate_total,
+            eligible,
+            min_class_count=min_class_count,
+            max_class_share=effective_max_class_share,
+        ):
+            best_total = candidate_total
+
+    if best_total <= 0:
+        return {}, effective_max_class_share
+
+    per_class_cap = max(1, int(best_total * effective_max_class_share))
+    class_targets = {
+        source_class: min(count, per_class_cap)
+        for source_class, count in eligible.items()
+    }
+    excess = sum(class_targets.values()) - best_total
+    while excess > 0:
+        reducible = [
+            source_class
+            for source_class, target in class_targets.items()
+            if target > min_class_count
+        ]
+        if not reducible:
+            break
+        source_class = max(reducible, key=lambda key: (class_targets[key], key))
+        class_targets[source_class] -= 1
+        excess -= 1
+
+    return {
+        source_class: class_targets[source_class]
+        for source_class in available_counts
+        if source_class in class_targets
+    }, effective_max_class_share
+
+
+def _strict_target_feasible(
+    target_total: int,
+    available_counts: dict[str, int],
+    *,
+    min_class_count: int,
+    max_class_share: float,
+) -> bool:
+    if target_total < len(available_counts) * min_class_count:
+        return False
+    per_class_cap = max(1, int(target_total * max_class_share))
+    if any(min(count, per_class_cap) < min_class_count for count in available_counts.values()):
+        return False
+    return sum(min(count, per_class_cap) for count in available_counts.values()) >= target_total
+
+
+def _trim_strict_class_share(
+    selected: list[dict[str, Any]],
+    *,
+    max_class_share: float,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    kept = list(selected)
+    warnings: list[str] = []
+    while kept:
+        class_counts = Counter(source_class_for_record(row) for row in kept)
+        selected_count = len(kept)
+        overfilled = [
+            (source_class, count)
+            for source_class, count in class_counts.items()
+            if count / selected_count > max_class_share
+        ]
+        if not overfilled:
+            return kept, warnings
+
+        source_class, count = max(overfilled, key=lambda item: (item[1], item[0]))
+        remove_at = next(
+            idx
+            for idx in range(len(kept) - 1, -1, -1)
+            if source_class_for_record(kept[idx]) == source_class
+        )
+        kept.pop(remove_at)
+        warnings.append(f"{source_class}_strict_class_share_trimmed:{count}/{selected_count}")
+
+    return kept, warnings
+
+
+def _trim_source_share(
+    selected: list[dict[str, Any]],
+    *,
+    max_source_share: float,
+    min_source_count_for_trim: int = 20,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    kept = list(selected)
+    warnings: list[str] = []
+    if max_source_share <= 0:
+        return kept, warnings
+    initial_count = len(kept)
+    initial_source_counts = Counter(_source_name(row) for row in kept)
+    initial_overfilled = [
+        (source_name, count)
+        for source_name, count in initial_source_counts.items()
+        if initial_count and count / initial_count > max_source_share and count > max(0, min_source_count_for_trim)
+    ]
+    if not initial_overfilled:
+        overfilled = [
+            (source_name, count)
+            for source_name, count in initial_source_counts.items()
+            if initial_count and count / initial_count > max_source_share
+        ]
+        for source_name, count in overfilled:
+            warnings.append(f"{source_name}_source_share_cap_infeasible:{count}/{initial_count}")
+        return kept, warnings
+    max_initial_source_count = max(count for _source_name_value, count in initial_overfilled)
+    capped_sources = {
+        source_name
+        for source_name, count in initial_overfilled
+        if count == max_initial_source_count
+    }
+    if not capped_sources:
+        return kept, warnings
+    trimmed_original_counts = {source_name: initial_source_counts[source_name] for source_name in capped_sources}
+    while kept:
+        source_counts = Counter(_source_name(row) for row in kept)
+        selected_count = len(kept)
+        overfilled = [
+            (source_name, count)
+            for source_name, count in source_counts.items()
+            if source_name in capped_sources
+            and count > max(0, min_source_count_for_trim)
+            and count / selected_count > max_source_share
+        ]
+        if not overfilled:
+            uncapped_overfilled = [
+                (source_name, count)
+                for source_name, count in source_counts.items()
+                if source_name not in capped_sources and count / selected_count > max_source_share
+            ]
+            for source_name in sorted(capped_sources):
+                original_count = trimmed_original_counts[source_name]
+                current_count = source_counts.get(source_name, 0)
+                if current_count < original_count:
+                    warnings.append(f"{source_name}_strict_source_share_trimmed:{original_count}->{current_count}/{selected_count}")
+            for source_name, count in uncapped_overfilled:
+                warnings.append(f"{source_name}_source_share_cap_infeasible:{count}/{selected_count}")
+            return kept, warnings
+
+        source_name, count = max(overfilled, key=lambda item: (item[1], item[0]))
+        remove_at = next(
+            idx
+            for idx in range(len(kept) - 1, -1, -1)
+            if _source_name(kept[idx]) == source_name
+        )
+        kept.pop(remove_at)
+
+    return kept, warnings
 
 
 def main() -> int:
@@ -232,6 +469,11 @@ def main() -> int:
     raw_out = (PROJECT_ROOT / args.raw_jsonl_out).resolve() if not Path(args.raw_jsonl_out).is_absolute() else Path(args.raw_jsonl_out).resolve()
     manifest_out = (PROJECT_ROOT / args.manifest_out).resolve() if not Path(args.manifest_out).is_absolute() else Path(args.manifest_out).resolve()
     quota_out = (PROJECT_ROOT / args.quota_jsonl_out).resolve() if not Path(args.quota_jsonl_out).is_absolute() else Path(args.quota_jsonl_out).resolve()
+    defense_quota_out = (
+        (PROJECT_ROOT / args.defense_quota_jsonl_out).resolve()
+        if not Path(args.defense_quota_jsonl_out).is_absolute()
+        else Path(args.defense_quota_jsonl_out).resolve()
+    )
 
     backend = connect(f"sqlite:///{db_path.as_posix()}")
     backend.create_schema()
@@ -291,6 +533,15 @@ def main() -> int:
     ]
     _write_jsonl(quota_out, quota_rows)
 
+    defense_quota_sample = build_quota_sample(exported_rows, strict_balance=True, include_trace_ids=True)
+    defense_selected_ids = set(defense_quota_sample.pop("selected_trace_ids", []) or [])
+    defense_quota_rows = [
+        row
+        for row in exported_rows
+        if str(row.get("trace_id") or row.get("source_trace_id") or row.get("hash_id") or "") in defense_selected_ids
+    ]
+    _write_jsonl(defense_quota_out, defense_quota_rows)
+
     manifest = {
         "status": "completed",
         "db_path": str(db_path),
@@ -306,12 +557,14 @@ def main() -> int:
         },
         "raw_jsonl": str(raw_out),
         "quota_balanced_jsonl": str(quota_out),
+        "defense_quota_balanced_jsonl": str(defense_quota_out),
         "query_term_stage_counts": [{"stage": name, "count": count} for name, count in stage_counts.most_common()],
         "special_signal_counts": [{"signal": name, "count": count} for name, count in signal_counts.most_common()],
         "source_class_counts": [{"source_class": name, "count": count} for name, count in source_class_counts.most_common()],
         "source_access_type_counts": [{"source_access_type": name, "count": count} for name, count in source_access_counts.most_common()],
         "top_sources": [{"source_name": name, "count": count} for name, count in source_counts.most_common(20)],
         "quota_balanced_sample": quota_sample,
+        "defense_quota_balanced_sample": defense_quota_sample,
         "sample_special_signal_rows": samples,
     }
     manifest_out.parent.mkdir(parents=True, exist_ok=True)

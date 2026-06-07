@@ -50,7 +50,7 @@
 
 | 特殊信号 | 条数 |
 | --- | ---: |
-| `variant_or_homophone_normalized` | 197 |
+| `variant_or_homophone_normalized` | 208 |
 | `emoji_marker` | 186 |
 | `multimodal_text` | 29 |
 
@@ -87,13 +87,34 @@
 | `tech_forum_blackgray_search` | 65 |
 | `tieba_blackgray_search` | 64 |
 
-## 5. 最终交付文件
+## 5. 来源结构与答辩样本
+
+当前全量 raw 底库仍然是 IM / 群组来源占主导，这一点不能描述成天然均衡：
+
+| source_class | 全量 raw 条数 |
+| --- | ---: |
+| `im_or_group` | 3786 |
+| `social_or_forum` | 356 |
+| `vertical_or_technical` | 21 |
+
+为避免答辩、抽检或防御评估被单一 Telegram 公开频道主导，`scripts/export_delivery_corpora.py` 额外导出严格均衡样本：
+
+- `data/collection_phase_defense_quota_balanced_sample.jsonl`
+- manifest 字段：`defense_quota_balanced_sample`
+- 样本总数：`209`
+- class 分布：`im_or_group=94`、`social_or_forum=94`、`vertical_or_technical=21`
+- warnings：`[]`
+
+该严格样本用于答辩、抽检和防御评估；全量 raw 仍保留真实采集分布。
+
+## 6. 最终交付文件
 
 ### 主数据
 
 - `data/collection_phase_delivery.db`
 - `data/collection_phase_raw_dataset.jsonl`
 - `data/collection_phase_delivery_manifest.json`
+- `data/collection_phase_defense_quota_balanced_sample.jsonl`
 
 ### 统计结果
 
@@ -107,7 +128,7 @@
 - `data/collection_phase_delivery_telegram_summary.json`
 - `data/collection_phase_delivery_telegram_media_focus_summary.json`
 
-## 6. 验证结果
+## 7. 验证结果
 
 最终重新导出后的产物级核验结果：
 
@@ -115,11 +136,12 @@
 - manifest `raw_record_count`：`4163`
 - manifest `query_term_stage_counts.variant`：`47`
 - manifest `special_signal_counts.multimodal_text`：`29`
+- manifest `defense_quota_balanced_sample.selected_count`：`209`
 - stats `total_raw_records`：`4163`
 
 上述数字已与当前稳定底库重新对齐，不再使用此前 `4042/4141` 的旧快照。
 
-## 7. 复跑命令
+## 8. 复跑命令
 
 ### 刷新 relevance 统计
 
@@ -130,7 +152,7 @@ python scripts/export_collection_phase_stats.py --db data/collection_phase_deliv
 ### 导出最终原始语料 JSONL + signal manifest
 
 ```powershell
-python scripts/export_delivery_corpora.py --db data/collection_phase_delivery.db --raw-jsonl-out data/collection_phase_raw_dataset.jsonl --manifest-out data/collection_phase_delivery_manifest.json
+python scripts/export_delivery_corpora.py --db data/collection_phase_delivery.db --raw-jsonl-out data/collection_phase_raw_dataset.jsonl --quota-jsonl-out data/collection_phase_quota_balanced_sample.jsonl --defense-quota-jsonl-out data/collection_phase_defense_quota_balanced_sample.jsonl --manifest-out data/collection_phase_delivery_manifest.json
 ```
 
 ### 如需补采当前主链数据
