@@ -204,3 +204,25 @@ def test_resolve_target_entities_continues_after_bad_username():
     assert [entity.username for entity in entities] == ["good"]
     assert stats_by_key["username:bad"].status == "failed"
     assert stats_by_key["username:good"].resolved is True
+
+
+def test_build_run_summary_includes_target_stats(tmp_path):
+    stats = collector.TargetRunStats(chat_id=1, title="Demo", username="demo", source_url="https://t.me/demo")
+    stats.mark_resolved()
+    stats.mark_joined()
+    stats.record_backfilled(saved=True)
+
+    summary = collector.build_run_summary(
+        status="completed",
+        mode="backfill_once",
+        db_path=tmp_path / "telegram.db",
+        tracked_chat_count=1,
+        persisted_count=1,
+        target_stats=[stats],
+    )
+
+    assert summary["status"] == "completed"
+    assert summary["persisted_count"] == 1
+    assert summary["target_count"] == 1
+    assert summary["failed_target_count"] == 0
+    assert summary["targets"][0]["saved_count"] == 1

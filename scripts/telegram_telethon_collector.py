@@ -339,6 +339,29 @@ def append_jsonl(path: Path | None, payload: dict[str, Any]) -> None:
         file_obj.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
+def build_run_summary(
+    *,
+    status: str,
+    mode: str,
+    db_path: Path,
+    tracked_chat_count: int,
+    persisted_count: int,
+    target_stats: Iterable[TargetRunStats],
+) -> dict[str, Any]:
+    targets = [item.model_dump() for item in target_stats]
+    return {
+        "status": status,
+        "mode": mode,
+        "db_path": str(db_path),
+        "tracked_chat_count": tracked_chat_count,
+        "persisted_count": persisted_count,
+        "target_count": len(targets),
+        "failed_target_count": sum(1 for item in targets if item.get("status") == "failed"),
+        "saved_target_count": sum(1 for item in targets if int(item.get("saved_count") or 0) > 0),
+        "targets": targets,
+    }
+
+
 def normalize_text(value: Any) -> str:
     if value is None:
         return ""
@@ -519,10 +542,25 @@ async def run() -> int:
             else:
                 joined_targets.append(entity)
 
+        def stats_for_entity(entity: Any) -> TargetRunStats:
+            key = f"chat:{getattr(entity, 'id', 'unknown')}"
+            existing = target_stats.get(key)
+            if existing is None:
+                existing = TargetRunStats(
+                    getattr(entity, "id", None),
+                    entity_title(entity),
+                    entity_username(entity),
+                    entity_source_url(entity),
+                )
+                existing.mark_resolved()
+                target_stats[key] = existing
+            return existing
+
         tracked_chat_ids: list[int] = []
         for entity in joined_targets:
             chat_id = int(getattr(entity, "id"))
             tracked_chat_ids.append(chat_id)
+            stats_for_entity(entity).mark_joined()
             state.setdefault("targets", {})[str(chat_id)] = {
                 "title": entity_title(entity),
                 "username": entity_username(entity),
@@ -595,14 +633,14 @@ async def run() -> int:
         if args.once:
             print(
                 json.dumps(
-                    {
-                        "status": "completed",
-                        "mode": "backfill_once",
-                        "db_path": str(options.db_path),
-                        "tracked_chat_count": len(tracked_chat_ids),
-                        "persisted_count": persisted_count,
-                        "tracked_chats": list(state.get("targets", {}).values()),
-                    },
+                    build_run_summary(
+                        status="completed",
+                        mode="backfill_once",
+                        db_path=options.db_path,
+                        tracked_chat_count=len(tracked_chat_ids),
+                        persisted_count=persisted_count,
+                        target_stats=target_stats.values(),
+                    ),
                     ensure_ascii=False,
                     indent=2,
                 )
@@ -618,14 +656,14 @@ async def run() -> int:
 
             print(
                 json.dumps(
-                    {
-                        "status": "running",
-                        "mode": "tail",
-                        "db_path": str(options.db_path),
-                        "tracked_chat_count": len(tracked_chat_ids),
-                        "persisted_count": persisted_count,
-                        "tracked_chats": list(state.get("targets", {}).values()),
-                    },
+                    build_run_summary(
+                        status="running",
+                        mode="tail",
+                        db_path=options.db_path,
+                        tracked_chat_count=len(tracked_chat_ids),
+                        persisted_count=persisted_count,
+                        target_stats=target_stats.values(),
+                    ),
                     ensure_ascii=False,
                     indent=2,
                 )
