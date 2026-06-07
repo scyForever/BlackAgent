@@ -77,6 +77,69 @@ class CollectionOptions:
     min_keyword_hits: int
 
 
+@dataclass
+class TargetRunStats:
+    chat_id: int | None
+    title: str
+    username: str | None
+    source_url: str
+    status: str = "pending"
+    resolved: bool = False
+    joined: bool = False
+    backfilled_count: int = 0
+    saved_count: int = 0
+    skipped_irrelevant_count: int = 0
+    skipped_duplicate_count: int = 0
+    skipped_empty_count: int = 0
+    error_stage: str | None = None
+    error: str | None = None
+
+    def mark_resolved(self) -> None:
+        self.resolved = True
+        if self.status == "pending":
+            self.status = "resolved"
+
+    def mark_joined(self) -> None:
+        self.joined = True
+        self.status = "joined"
+
+    def record_backfilled(self, *, saved: bool, skip_reason: str | None = None) -> None:
+        self.backfilled_count += 1
+        if saved:
+            self.saved_count += 1
+            self.status = "collected"
+            return
+        if skip_reason == "duplicate":
+            self.skipped_duplicate_count += 1
+        elif skip_reason == "empty":
+            self.skipped_empty_count += 1
+        else:
+            self.skipped_irrelevant_count += 1
+
+    def record_failure(self, stage: str, error: Any) -> None:
+        self.status = "failed"
+        self.error_stage = stage
+        self.error = str(error)
+
+    def model_dump(self) -> dict[str, Any]:
+        return {
+            "chat_id": self.chat_id,
+            "title": self.title,
+            "username": self.username,
+            "source_url": self.source_url,
+            "status": self.status,
+            "resolved": self.resolved,
+            "joined": self.joined,
+            "backfilled_count": self.backfilled_count,
+            "saved_count": self.saved_count,
+            "skipped_irrelevant_count": self.skipped_irrelevant_count,
+            "skipped_duplicate_count": self.skipped_duplicate_count,
+            "skipped_empty_count": self.skipped_empty_count,
+            "error_stage": self.error_stage,
+            "error": self.error,
+        }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect Telegram messages into BlackAgent raw_records.")
     parser.add_argument(
@@ -255,6 +318,17 @@ def load_state(path: Path) -> dict[str, Any]:
 def save_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def update_last_message_id(state: dict[str, Any], *, chat_id: str, message_id: int) -> bool:
+    if message_id <= 0:
+        return False
+    last_ids = state.setdefault("last_message_ids", {})
+    previous = int(last_ids.get(str(chat_id), 0) or 0)
+    if message_id <= previous:
+        return False
+    last_ids[str(chat_id)] = message_id
+    return True
 
 
 def append_jsonl(path: Path | None, payload: dict[str, Any]) -> None:
@@ -471,8 +545,7 @@ async def run() -> int:
             backend.save_raw(payload)
             append_jsonl(options.jsonl_path, payload)
             persisted_count += 1
-            if message_id:
-                state["last_message_ids"][chat_id] = message_id
+            if update_last_message_id(state, chat_id=chat_id, message_id=message_id):
                 save_state(options.state_path, state)
 
         # Initial backfill

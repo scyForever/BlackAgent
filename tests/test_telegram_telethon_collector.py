@@ -131,3 +131,27 @@ def test_build_collection_options_rejects_missing_api_fields(tmp_path):
 
     with pytest.raises(SystemExit, match="telegram.api_id and telegram.api_hash are required"):
         collector.build_collection_options(cfg, args)
+
+
+def test_update_last_message_id_is_monotonic():
+    state = {"last_message_ids": {"123": 10}}
+
+    assert collector.update_last_message_id(state, chat_id="123", message_id=8) is False
+    assert state["last_message_ids"]["123"] == 10
+    assert collector.update_last_message_id(state, chat_id="123", message_id=11) is True
+    assert state["last_message_ids"]["123"] == 11
+
+
+def test_target_run_stats_records_outcomes():
+    stats = collector.TargetRunStats(chat_id=123, title="demo", username="demo", source_url="https://t.me/demo")
+
+    stats.record_backfilled(saved=True)
+    stats.record_backfilled(saved=False, skip_reason="irrelevant")
+    stats.record_failure("join_failed", "private")
+
+    assert stats.backfilled_count == 2
+    assert stats.saved_count == 1
+    assert stats.skipped_irrelevant_count == 1
+    assert stats.status == "failed"
+    assert stats.error_stage == "join_failed"
+    assert stats.model_dump()["error"] == "private"
