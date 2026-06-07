@@ -144,7 +144,7 @@ class TargetRunStats:
         }
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect Telegram messages into BlackAgent raw_records.")
     parser.add_argument(
         "--config",
@@ -158,7 +158,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--username-limit", type=int, default=0, help="Limit configured usernames for smoke runs")
     parser.add_argument("--search-limit", type=int, default=0, help="Override keyword search limit per keyword")
     parser.add_argument("--history-limit", type=int, default=0, help="Override backfill history limit per chat")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def build_proxy(proxy_cfg: dict[str, Any] | None) -> tuple[Any, str, int, bool, str | None, str | None] | None:
@@ -451,8 +451,8 @@ async def resolve_target_entities(
     return list(found.values())
 
 
-async def run() -> int:
-    args = parse_args()
+async def run(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     cfg = load_yaml_file(resolve_project_path(args.config))
     telegram_cfg = cfg.get("telegram") or {}
     options = build_collection_options(
@@ -690,8 +690,8 @@ async def run() -> int:
     return 0
 
 
-def main() -> int:
-    return asyncio.run(run())
+def main(argv: list[str] | None = None) -> int:
+    return asyncio.run(run(argv))
 
 
 if __name__ == "__main__":

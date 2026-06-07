@@ -28,6 +28,8 @@ from blackagent.interfaces.cli.main import (  # noqa: E402,F401
     print_summary,
     records_from_args,
     run_agent,
+    run_telegram_collection_cli,
+    telegram_collector_argv_from_args,
 )
 
 __all__ = [
@@ -46,6 +48,8 @@ __all__ = [
     "print_summary",
     "records_from_args",
     "run_agent",
+    "run_telegram_collection_cli",
+    "telegram_collector_argv_from_args",
 ]
 
 

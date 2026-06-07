@@ -62,6 +62,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run BlackAgent investigation agent from CLI.")
     parser.add_argument("--config", default=None, help="Optional config YAML path.")
     parser.add_argument("--query", "-q", default="", help="Investigation request. If omitted, CLI prompts for input.")
+    parser.add_argument("--collect-telegram", action="store_true", help="Run Telegram user-state collection and exit.")
+    parser.add_argument("--telegram-config", default="config/telegram_watch.example.yaml", help="Telegram collector config path.")
+    parser.add_argument("--telegram-db", default="", help="Optional Telegram collector DB path override.")
+    parser.add_argument("--telegram-jsonl-path", default="", help="Optional Telegram collector JSONL output path override.")
+    parser.add_argument("--telegram-once", action="store_true", help="Backfill once and exit.")
+    parser.add_argument("--telegram-fresh-state", action="store_true", help="Delete Telegram collector state before running.")
+    parser.add_argument("--telegram-username-limit", type=int, default=0, help="Limit configured Telegram usernames for smoke runs.")
+    parser.add_argument("--telegram-search-limit", type=int, default=0, help="Override Telegram search limit per keyword.")
+    parser.add_argument("--telegram-history-limit", type=int, default=0, help="Override Telegram history limit per chat.")
     parser.add_argument("--fixture-path", help="JSON or JSONL records to pass as fixture_items.")
     parser.add_argument(
         "--local-corpus-path",
@@ -640,9 +649,36 @@ def print_summary(payload: dict[str, Any], *, show_clues: bool) -> None:
                 print(f"summary: {summary}")
 
 
+def telegram_collector_argv_from_args(args: argparse.Namespace) -> list[str]:
+    argv = ["--config", args.telegram_config]
+    if args.telegram_once or args.collect_telegram:
+        argv.append("--once")
+    if args.telegram_db:
+        argv.extend(["--db", args.telegram_db])
+    if args.telegram_jsonl_path:
+        argv.extend(["--jsonl-path", args.telegram_jsonl_path])
+    if args.telegram_fresh_state:
+        argv.append("--fresh-state")
+    if args.telegram_username_limit:
+        argv.extend(["--username-limit", str(args.telegram_username_limit)])
+    if args.telegram_search_limit:
+        argv.extend(["--search-limit", str(args.telegram_search_limit)])
+    if args.telegram_history_limit:
+        argv.extend(["--history-limit", str(args.telegram_history_limit)])
+    return argv
+
+
+def run_telegram_collection_cli(argv: list[str]) -> int:
+    from scripts.telegram_telethon_collector import main as telegram_main
+
+    return telegram_main(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     load_project_env_file()
+    if args.collect_telegram:
+        return run_telegram_collection_cli(telegram_collector_argv_from_args(args))
     settings = load_settings(args.config)
     apply_runtime_overrides(settings, args)
 
