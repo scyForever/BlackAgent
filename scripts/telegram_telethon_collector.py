@@ -29,6 +29,10 @@ from storage.sql_backend import connect
 
 
 T_ME_INVITE_RE = re.compile(r"(?:https?://)?t\.me/(?:joinchat/|\+)([A-Za-z0-9_-]+)")
+MESSAGE_OUTCOME_SAVED = "saved"
+MESSAGE_OUTCOME_EMPTY = "empty"
+MESSAGE_OUTCOME_IRRELEVANT = "irrelevant"
+MESSAGE_OUTCOME_DUPLICATE = "duplicate"
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -568,11 +572,11 @@ async def run() -> int:
             }
         save_state(options.state_path, state)
 
-        async def persist_message(entity: Any, message: Any) -> None:
+        async def persist_message(entity: Any, message: Any) -> str:
             nonlocal persisted_count
             text = message_text(message)
             if not text:
-                return
+                return MESSAGE_OUTCOME_EMPTY
             decision = decide_text_relevance(
                 text,
                 include_keywords=options.include_keywords,
@@ -582,12 +586,12 @@ async def run() -> int:
                 min_keyword_hits=options.min_keyword_hits,
             )
             if not decision.relevant:
-                return
+                return MESSAGE_OUTCOME_IRRELEVANT
             chat_id = str(getattr(entity, "id"))
             last_id = int(state.setdefault("last_message_ids", {}).get(chat_id, 0) or 0)
             message_id = int(getattr(message, "id", 0) or 0)
             if message_id and message_id <= last_id:
-                return
+                return MESSAGE_OUTCOME_DUPLICATE
             sender = await message.get_sender() if hasattr(message, "get_sender") else None
             payload = build_raw_record(
                 message_text=text,
@@ -617,11 +621,16 @@ async def run() -> int:
             persisted_count += 1
             if update_last_message_id(state, chat_id=chat_id, message_id=message_id):
                 save_state(options.state_path, state)
+            return MESSAGE_OUTCOME_SAVED
 
         # Initial backfill
         for entity in joined_targets:
             async for msg in client.iter_messages(entity, limit=options.history_limit, reverse=True):
-                await persist_message(entity, msg)
+                outcome = await persist_message(entity, msg)
+                stats_for_entity(entity).record_backfilled(
+                    saved=outcome == MESSAGE_OUTCOME_SAVED,
+                    skip_reason=None if outcome == MESSAGE_OUTCOME_SAVED else outcome,
+                )
                 if options.download_media and getattr(msg, "media", None):
                     media_dir = options.db_path.parent / "telegram_media" / str(getattr(entity, "id"))
                     media_dir.mkdir(parents=True, exist_ok=True)
@@ -650,7 +659,11 @@ async def run() -> int:
             async def on_new_message(event: Any) -> None:
                 try:
                     chat = await event.get_chat()
-                    await persist_message(chat, event.message)
+                    outcome = await persist_message(chat, event.message)
+                    stats_for_entity(chat).record_backfilled(
+                        saved=outcome == MESSAGE_OUTCOME_SAVED,
+                        skip_reason=None if outcome == MESSAGE_OUTCOME_SAVED else outcome,
+                    )
                 except FloodWaitError as exc:
                     await asyncio.sleep(int(getattr(exc, "seconds", 5) or 5))
 

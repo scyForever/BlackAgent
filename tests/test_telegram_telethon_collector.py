@@ -226,3 +226,10 @@ def test_build_run_summary_includes_target_stats(tmp_path):
     assert summary["target_count"] == 1
     assert summary["failed_target_count"] == 0
     assert summary["targets"][0]["saved_count"] == 1
+
+
+def test_message_outcome_values_are_stable():
+    assert collector.MESSAGE_OUTCOME_SAVED == "saved"
+    assert collector.MESSAGE_OUTCOME_EMPTY == "empty"
+    assert collector.MESSAGE_OUTCOME_IRRELEVANT == "irrelevant"
+    assert collector.MESSAGE_OUTCOME_DUPLICATE == "duplicate"
