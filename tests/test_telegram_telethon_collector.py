@@ -238,6 +238,28 @@ def test_build_run_summary_includes_target_stats(tmp_path):
     assert summary["targets"][0]["saved_count"] == 1
 
 
+def test_build_run_summary_deduplicates_target_stats_by_chat_id(tmp_path):
+    resolved = collector.TargetRunStats(chat_id=1, title="Demo", username="demo", source_url="https://t.me/demo")
+    resolved.mark_resolved()
+    collected = collector.TargetRunStats(chat_id=1, title="Demo", username="demo", source_url="https://t.me/demo")
+    collected.mark_resolved()
+    collected.mark_joined()
+    collected.record_backfilled(saved=True)
+
+    summary = collector.build_run_summary(
+        status="completed",
+        mode="backfill_once",
+        db_path=tmp_path / "telegram.db",
+        tracked_chat_count=1,
+        persisted_count=1,
+        target_stats=[resolved, collected],
+    )
+
+    assert summary["target_count"] == 1
+    assert summary["targets"][0]["joined"] is True
+    assert summary["targets"][0]["saved_count"] == 1
+
+
 def test_message_outcome_values_are_stable():
     assert collector.MESSAGE_OUTCOME_SAVED == "saved"
     assert collector.MESSAGE_OUTCOME_EMPTY == "empty"

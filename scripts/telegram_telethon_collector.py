@@ -358,7 +358,13 @@ def build_run_summary(
     persisted_count: int,
     target_stats: Iterable[TargetRunStats],
 ) -> dict[str, Any]:
-    targets = [item.model_dump() for item in target_stats]
+    deduped: dict[str, TargetRunStats] = {}
+    for item in target_stats:
+        key = f"chat:{item.chat_id}" if item.chat_id is not None else f"{item.source_url}:{item.title}"
+        existing = deduped.get(key)
+        if existing is None or _target_stats_rank(item) >= _target_stats_rank(existing):
+            deduped[key] = item
+    targets = [item.model_dump() for item in deduped.values()]
     return {
         "status": status,
         "mode": mode,
@@ -370,6 +376,17 @@ def build_run_summary(
         "saved_target_count": sum(1 for item in targets if int(item.get("saved_count") or 0) > 0),
         "targets": targets,
     }
+
+
+def _target_stats_rank(stats: TargetRunStats) -> tuple[int, int, int]:
+    status_rank = {
+        "failed": 5,
+        "collected": 4,
+        "joined": 3,
+        "resolved": 2,
+        "pending": 1,
+    }.get(stats.status, 0)
+    return (status_rank, int(stats.joined), stats.saved_count)
 
 
 def normalize_text(value: Any) -> str:
