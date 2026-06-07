@@ -273,10 +273,16 @@ def build_collection_options(telegram_cfg: dict[str, Any], overrides: CollectorC
 
 
 async def start_telegram_client(client: Any, phone: str | None) -> Any:
-    if phone:
-        await client.start(phone=str(phone))
-    else:
-        await client.start()
+    try:
+        if phone:
+            await client.start(phone=str(phone))
+        else:
+            await client.start()
+    except EOFError as exc:
+        raise SystemExit(
+            "Telegram login requires an interactive login code. "
+            "Run this collector once in an interactive terminal to create the Telethon session, then rerun automation."
+        ) from exc
     return client
 
 

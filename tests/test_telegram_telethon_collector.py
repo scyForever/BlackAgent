@@ -68,6 +68,16 @@ def test_start_telegram_client_passes_configured_phone():
     assert client.start_kwargs == {"phone": "+8613000000000"}
 
 
+class _FakeEofClient:
+    async def start(self, **kwargs):
+        raise EOFError("EOF when reading a line")
+
+
+def test_start_telegram_client_reports_noninteractive_login_code_prompt():
+    with pytest.raises(SystemExit, match="requires an interactive login code"):
+        asyncio.run(collector.start_telegram_client(_FakeEofClient(), "+8613000000000"))
+
+
 def test_telegram_watch_config_contains_curated_seed_usernames():
     from src.config_loader import load_yaml_file, resolve_project_path
 
