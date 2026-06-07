@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from src.classifier.nlp_rule_matcher import review_bucket_for_classification
 from src.domain import ClassificationResolution
 
 
@@ -74,6 +75,13 @@ def resolve_classification(
     final.setdefault("secondary_label", rule.get("secondary_label") or "待研判")
     final.setdefault("confidence", rule_confidence)
     final["review_required"] = bool(review_required or final.get("review_required"))
+    final["review_bucket"] = review_bucket_for_classification(
+        risk_category=str(final.get("risk_category") or rule_category),
+        review_required=bool(final.get("review_required")),
+        confidence=_float(final.get("confidence"), rule_confidence),
+        secondary_label=str(final.get("secondary_label") or ""),
+        conflict_status=str(final.get("conflict_status") or ""),
+    )
 
     return ClassificationResolution(
         trace_id=str(trace_id or rule.get("source_trace_id") or rule.get("trace_id") or "unknown"),

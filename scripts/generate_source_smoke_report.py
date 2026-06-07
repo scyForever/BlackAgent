@@ -26,7 +26,7 @@ from src.enhancement.source_intake import AuthorizedSourcePolicy, ComplianceSour
 from src.cleaner.text_filter import normalize_text
 from src.collector import HTTPFeedCollector, HTTPFeedConfig
 from src.collector.base_collector import model_dump
-from src.collector.source_metadata import classify_collection_failure, normalize_source_access_type
+from src.collector.source_metadata import classify_collection_failure, normalize_source_access_type, source_class_for_record
 from src.enhancement.text_intelligence import FineGrainedIntentClassifier
 
 
@@ -193,23 +193,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _source_class(source: Mapping[str, Any]) -> str:
-    source_type = str(source.get("source_type") or source.get("type") or "")
-    platform = str(source.get("platform") or "")
-    if platform.lower() in {"x", "twitter"} or source_type.lower() in {"x", "twitter"}:
-        return "social_or_forum"
-    if platform.lower() in {"telegram", "tg"}:
-        return "im_or_group"
-    haystack = {source_type, platform, source_type.title(), platform.title()}
-    for source_class, markers in SOURCE_CLASSES.items():
-        if haystack & markers:
-            return source_class
-    if source_type.lower() in {"im", "telegram", "x"}:
-        return "im_or_group"
-    if source_type.lower() in {"social", "forum", "news", "blog"}:
-        return "social_or_forum"
-    if source_type.lower() in {"vertical", "threat_intel", "technical"}:
-        return "vertical_or_technical"
-    return "unknown"
+    source_class = source_class_for_record(source)
+    return source_class if source_class in SOURCE_CLASSES else "unknown"
 
 
 def _pick_one_per_class(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -271,6 +256,7 @@ def _collect_live_metrics(
                 source_url=str(source.get("source_url") or source.get("url") or ""),
                 source_name=source_name,
                 source_type=str(source.get("source_type") or source.get("type") or "unknown"),
+                platform=str(source.get("platform") or ""),
                 legal_basis=str(source.get("legal_basis") or ""),
                 feed_format=str(source.get("feed_format") or "auto"),
                 max_records=max(1, int(max_records)),

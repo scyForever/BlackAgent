@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
-from src.enhancement.clue_quality import ClueQualityEvaluator
+from src.enhancement.clue_quality import ClueQualityEvaluator, build_evidence_reviewability
 from src.enhancement.engine import PhaseTwoThreeEngine
 from src.enhancement.strategy import RiskClue
 from src.domain import RunPolicyContext
@@ -165,6 +165,12 @@ class OfflineClueBuilder:
             if publish_times:
                 enriched["first_seen"] = min(publish_times)
                 enriched["last_seen"] = max(publish_times)
+            enriched["evidence_reviewability"] = build_evidence_reviewability(
+                enriched,
+                assessment=assessment,
+                entities=payload.get("entities", []),
+                records=materialized_records,
+            )
             self.clue_repo.save(enriched)
             saved.append(enriched)
             if assessment is not None and assessment.pass_threshold:

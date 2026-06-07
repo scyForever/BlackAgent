@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterable, Mapping
 
 from src.config_loader import InvestigationConfig, InvestigationPolicyOverride
+from src.collector.source_metadata import source_class_for_record
 from src.domain import RunPolicyContext
 from src.scheduling.layered_collection import (
     group_sources_by_collection_layer,
@@ -52,16 +53,7 @@ def _normalize_source_pref(value: Any) -> str:
 
 
 def _source_diversity_class(source: Mapping[str, Any]) -> str:
-    source_type = _normalize_source_pref(source.get("source_type"))
-    platform = _normalize_source_pref(source.get("platform"))
-    text = {source_type, platform}
-    if text.intersection({"telegram", "im", "group"}):
-        return "im_or_group"
-    if text.intersection({"forum", "social", "x", "twitter", "news", "blog"}):
-        return "social_or_forum"
-    if text.intersection({"vertical", "technical", "techforum", "threat_intel"}):
-        return "vertical_or_technical"
-    return "other_authorized"
+    return source_class_for_record(source)
 
 
 def _source_identity(source: Mapping[str, Any]) -> str:

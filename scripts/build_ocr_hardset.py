@@ -40,6 +40,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output", default="tests/evaluation/ocr_image_text_hardset.jsonl")
     parser.add_argument("--image-dir", default="data/ocr_hardset_images")
     parser.add_argument("--report", default="data/ocr_hardset_report.json")
+    parser.add_argument(
+        "--manifest",
+        default=None,
+        help="Optional JSONL manifest of authorized real screenshot/poster rows to materialize through OCRImageTextAdapter.",
+    )
     parser.add_argument("--count", type=int, default=20, help="Number of hard-set rows to generate.")
     return parser.parse_args(argv)
 
@@ -91,11 +96,42 @@ def build_records(*, count: int = 20, image_dir: str | Path = "data/ocr_hardset_
     return records
 
 
-def build_report(records: list[dict[str, Any]], *, output_path: str | Path) -> dict[str, Any]:
+def build_records_from_manifest(path: str | Path) -> list[dict[str, Any]]:
+    adapter = OCRImageTextAdapter(engine=BitmapGlyphOCREngine())
+    records: list[dict[str, Any]] = []
+    for row in _load_jsonl(path):
+        materialized = adapter.materialize_record(row)
+        expected_entities = row.get("expected_entities") if isinstance(row.get("expected_entities"), list) else []
+        manual_labels = {
+            "annotator": row.get("annotator") or row.get("reviewer") or "unknown",
+            "review_date": row.get("review_date"),
+            "conflict_handling": row.get("conflict_handling") or "authorized_manifest_label",
+            "source_manifest": str(_project_path(path)),
+        }
+        records.append(
+            {
+                **materialized,
+                "source_trace_id": materialized.get("source_trace_id") or materialized.get("trace_id"),
+                "expected_risk_categories": list(row.get("expected_risk_categories") or []),
+                "expected_secondary_labels": list(row.get("expected_secondary_labels") or row.get("expected_secondary_risks") or []),
+                "expected_entities": expected_entities,
+                "manual_labels": manual_labels,
+                "claim_boundary": (
+                    "Authorized screenshot/poster manifest row materialized through OCR adapter; quality claims are limited "
+                    "to the provided manifest and configured OCR engines."
+                ),
+            }
+        )
+    return records
+
+
+def build_report(records: list[dict[str, Any]], *, output_path: str | Path, manifest_path: str | Path | None = None) -> dict[str, Any]:
+    run_type = "build_ocr_manifest_hardset" if manifest_path else "build_ocr_image_text_hardset"
     return {
-        "status": "completed" if len(records) >= 20 else "insufficient_records",
-        "run_type": "build_ocr_image_text_hardset",
-        "output": str(_project_path(output_path).relative_to(PROJECT_ROOT)),
+        "status": "completed" if records and (manifest_path or len(records) >= 20) else "insufficient_records",
+        "run_type": run_type,
+        "output": _display_path(_project_path(output_path)),
+        "manifest": str(_project_path(manifest_path)) if manifest_path else None,
         "record_count": len(records),
         "content_modality_counts": _counts(record.get("content_modality") for record in records),
         "risk_category_counts": _counts((record.get("expected_risk_categories") or ["unknown"])[0] for record in records),
@@ -122,6 +158,8 @@ def build_report(records: list[dict[str, Any]], *, output_path: str | Path) -> d
         "claim_boundary": (
             "This hard set validates the image-text contract and deterministic pixel OCR path; production OCR quality "
             "still depends on the injected external engine and separately authorized screenshots/posters."
+            if not manifest_path
+            else "This manifest report covers only the listed authorized screenshots/posters and the configured OCR engines."
         ),
     }
 
@@ -137,9 +175,9 @@ def write_jsonl(records: Iterable[dict[str, Any]], path: str | Path) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    records = build_records(count=args.count, image_dir=args.image_dir)
+    records = build_records_from_manifest(args.manifest) if args.manifest else build_records(count=args.count, image_dir=args.image_dir)
     output = write_jsonl(records, args.output)
-    report = build_report(records, output_path=output)
+    report = build_report(records, output_path=output, manifest_path=args.manifest)
     report_path = _project_path(args.report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -208,6 +246,23 @@ def _dedupe_entities(entities: Iterable[dict[str, str]]) -> list[dict[str, str]]
 
 def _canonical_url(value: str) -> str:
     return str(value).replace("hxxps://", "https://").replace("hxxp://", "http://").strip(" ,，。；;")
+
+
+def _load_jsonl(path: str | Path) -> list[dict[str, Any]]:
+    target = _project_path(path)
+    rows: list[dict[str, Any]] = []
+    with target.open("r", encoding="utf-8") as file_obj:
+        for line in file_obj:
+            if line.strip():
+                rows.append(json.loads(line))
+    return rows
+
+
+def _display_path(path: str | Path) -> str:
+    target = _project_path(path)
+    if target.is_relative_to(PROJECT_ROOT):
+        return str(target.relative_to(PROJECT_ROOT))
+    return str(target)
 
 
 def _project_path(path: str | Path) -> Path:

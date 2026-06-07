@@ -14,9 +14,12 @@ from src.classifier.nlp_rule_matcher import (
     CROWD_SERVICE,
     FRAUD_TRAFFIC,
     NORMAL_NOISE,
+    REVIEW_BUCKET_HUMAN_REVIEW_REQUIRED,
+    REVIEW_BUCKET_LOW_RELEVANCE,
     TOOL_TRADING,
     UNKNOWN,
     RuleFastTrackClassifier,
+    review_bucket_for_classification,
 )
 from src.collector.base_collector import get_record_field
 from src.extractor.entity_extractor import ACCOUNT, CONTACT, TOOL_NAME, URL, BasicEntityExtractor
@@ -119,6 +122,7 @@ class FineClassificationResult:
     secondary_label: str
     confidence: float
     review_required: bool
+    review_bucket: str = REVIEW_BUCKET_HUMAN_REVIEW_REQUIRED
     final_secondary_label: str | None = None
     candidate_secondary_labels: list[dict[str, Any]] = field(default_factory=list)
     conflict_status: str = "RESOLVED"
@@ -683,6 +687,7 @@ class FineGrainedIntentClassifier:
                 secondary_label="低相关",
                 confidence=0.76,
                 review_required=False,
+                review_bucket=REVIEW_BUCKET_LOW_RELEVANCE,
                 final_secondary_label="低相关",
                 candidate_secondary_labels=[],
                 conflict_status="RESOLVED",
@@ -706,6 +711,7 @@ class FineGrainedIntentClassifier:
                     secondary_label="低相关",
                     confidence=0.72,
                     review_required=False,
+                    review_bucket=REVIEW_BUCKET_LOW_RELEVANCE,
                     final_secondary_label="低相关",
                     candidate_secondary_labels=[],
                     conflict_status="RESOLVED",
@@ -719,6 +725,7 @@ class FineGrainedIntentClassifier:
                 secondary_label="待研判",
                 confidence=0.35,
                 review_required=True,
+                review_bucket=REVIEW_BUCKET_HUMAN_REVIEW_REQUIRED,
                 final_secondary_label=None,
                 candidate_secondary_labels=[],
                 conflict_status="UNKNOWN",
@@ -735,6 +742,7 @@ class FineGrainedIntentClassifier:
                 secondary_label="研究讨论" if polarity.actor_intent == "research" else "防御语境",
                 confidence=max(0.8, polarity.confidence),
                 review_required=False,
+                review_bucket=REVIEW_BUCKET_LOW_RELEVANCE,
                 final_secondary_label=None,
                 candidate_secondary_labels=[],
                 conflict_status="NEGATIVE_RISK_ASSERTION",
@@ -808,6 +816,13 @@ class FineGrainedIntentClassifier:
             candidate_secondary_labels=secondary_candidates,
             confidence=round(confidence, 4),
             review_required=review_required,
+            review_bucket=review_bucket_for_classification(
+                risk_category=top_category,
+                review_required=review_required,
+                confidence=confidence,
+                secondary_label=secondary_label,
+                conflict_status=conflict_status,
+            ),
             conflict_status=conflict_status,
             conflict_categories=conflicts,
             evidence=supporting_evidence,

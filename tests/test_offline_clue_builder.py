@@ -41,6 +41,12 @@ def test_offline_clue_builder_persists_candidate_clues_to_repo():
     assert repo.list()[0]["clue_id"].startswith("clue_")
     assert result.execution_summary["pipeline_backend"] == "intelligence_pipeline"
     assert result.execution_summary["fallback_backend"] is None
+    reviewability = repo.list()[0]["evidence_reviewability"]
+    assert reviewability["source_count"] >= 2
+    assert reviewability["entity_support_count"] >= 1
+    assert reviewability["original_snippets"]
+    assert reviewability["time_range"]["start"] == "2026-05-23T01:00:00+00:00"
+    assert reviewability["time_range"]["end"] == "2026-05-23T03:00:00+00:00"
 
 
 def test_offline_clue_builder_does_not_fallback_to_phase_engine_when_pipeline_has_no_clues():

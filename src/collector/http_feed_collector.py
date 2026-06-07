@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .base_collector import build_raw_intelligence, model_dump
 from .relevance import decide_text_relevance
-from .source_metadata import classify_collection_failure, normalize_source_access_type
+from .source_metadata import classify_collection_failure, is_article_source_record, normalize_source_access_type
 
 
 _HOST_NEXT_ALLOWED_AT: dict[str, float] = {}
@@ -47,6 +47,7 @@ class HTTPFeedConfig:
     source_url: str
     source_name: str
     source_type: str = "THREAT_INTEL"
+    platform: str = ""
     legal_basis: str = "PUBLIC_COMPLIANT_DATA"
     feed_format: str = "auto"
     max_records: int = 100
@@ -350,23 +351,29 @@ class HTTPFeedCollector:
             data = {"indicator": str(row)}
             content_text = str(row)
 
+        row_source_url = self._row_source_url(data)
+        platform = str(data.get("platform") or self.config.platform).strip()
         payload = {
             **data,
             "source_type": str(data.get("source_type") or self.config.source_type),
             "source_name": str(data.get("source_name") or self.config.source_name),
-            "source_url": str(data.get("source_url") or self.config.source_url),
+            "source_url": str(row_source_url),
             "legal_basis": str(data.get("legal_basis") or self.config.legal_basis),
             "source_access_type": normalize_source_access_type(
                 data.get("source_access_type") or self.config.source_access_type,
                 legal_basis=data.get("legal_basis") or self.config.legal_basis,
                 source_name=str(data.get("source_name") or self.config.source_name),
-                source_url=str(data.get("source_url") or self.config.source_url),
+                source_url=str(row_source_url),
             ),
             "collector_version": "http_feed_collector_v1",
             "raw_payload_uri": self.config.source_url,
             "content_text": content_text,
             "feed_row_index": index,
         }
+        if platform:
+            payload["platform"] = platform
+        if "publish_time" not in payload and data.get("published_at"):
+            payload["publish_time"] = str(data.get("published_at"))
         if self.config.search_query:
             payload["search_query"] = self.config.search_query
         if self.config.query_theme:
@@ -378,6 +385,18 @@ class HTTPFeedCollector:
         if self.config.query_variant_index is not None:
             payload["query_variant_index"] = self.config.query_variant_index
         return payload
+
+    def _row_source_url(self, data: Mapping[str, Any]) -> str:
+        if data.get("source_url"):
+            return str(data.get("source_url"))
+        if is_article_source_record(
+            {
+                "source_type": data.get("source_type") or self.config.source_type,
+                "platform": data.get("platform") or self.config.platform,
+            }
+        ) and data.get("url"):
+            return str(data.get("url"))
+        return self.config.source_url
 
     def _content_text_from_mapping(self, data: Mapping[str, Any]) -> str:
         for field_name in self.config.text_fields:

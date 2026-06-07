@@ -499,6 +499,59 @@ def test_source_collect_runtime_fetches_and_persists_real_feed_shape(monkeypatch
     backend.close()
 
 
+def test_source_collect_runtime_preserves_public_account_article_metadata(monkeypatch, tmp_path):
+    body = json.dumps(
+        {
+            "items": [
+                {
+                    "title": "公众号文章：Telegram 群控风险观察",
+                    "url": "https://mp.weixin.qq.com/s/article-demo",
+                    "published_at": "2026-06-01T08:00:00+08:00",
+                    "content_text": "公开文章提到 TG:core01 和群控脚本风险样例",
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    def _open(request, timeout):
+        assert request.full_url == "https://article.example/feed.json"
+        return FakeHTTPResponse(body)
+
+    monkeypatch.setattr("src.collector.http_feed_collector.urllib_request.urlopen", _open)
+    settings = Settings(
+        network={"enabled": True, "allowed_domains": ["article.example"], "max_records_per_fetch": 5},
+        storage={"backend": "sql", "dsn": f"sqlite:///{(tmp_path / 'articles.db').as_posix()}", "auto_create_schema": True},
+    )
+    runtime = LocalAgentRuntime(settings)
+    try:
+        payload = runtime.collect_source(
+            {
+                "source_name": "wechat_public_telegram_risk_articles",
+                "source_type": "Public_Account",
+                "platform": "wechat_public",
+                "source_url": "https://article.example/feed.json",
+                "feed_format": "json",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "text_fields": ["content_text", "title"],
+            },
+            persist_raw=True,
+        )
+    finally:
+        runtime.close()
+
+    row = payload["raw_records"][0]
+    assert row["source_name"] == "wechat_public_telegram_risk_articles"
+    assert row["source_type"] == "Public_Account"
+    assert row["platform"] == "wechat_public"
+    assert row["source_url"] == "https://mp.weixin.qq.com/s/article-demo"
+    assert row["raw_payload_uri"] == "https://article.example/feed.json"
+    assert row["title"] == "公众号文章：Telegram 群控风险观察"
+    assert row["published_at"] == "2026-06-01T08:00:00+08:00"
+    assert row["publish_time"] == "2026-06-01T08:00:00+08:00"
+    assert row["source_class"] == "social_or_forum"
+
+
 def test_load_source_catalog_normalizes_allowed_domains_and_text_fields(tmp_path):
     catalog_path = tmp_path / "source_catalog.yaml"
     catalog_path.write_text(

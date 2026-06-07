@@ -98,6 +98,7 @@ def collect_source_records(settings: Settings, source: Mapping[str, Any]) -> lis
             source_url=str(request["source_url"]),
             source_name=str(request["source_name"]),
             source_type=str(request.get("source_type") or "THREAT_INTEL"),
+            platform=str(request.get("platform") or ""),
             legal_basis=str(request.get("legal_basis") or "PUBLIC_COMPLIANT_DATA"),
             feed_format=str(request.get("feed_format") or "auto"),
             max_records=max_records,

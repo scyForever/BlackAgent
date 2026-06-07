@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.collector.source_metadata import source_class_for_record
 from src.config_loader import resolve_project_path
+from src.enhancement.clue_quality import build_evidence_reviewability
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -123,6 +124,7 @@ def summarize_clue(clue: dict[str, Any]) -> dict[str, Any]:
     refinement = clue.get("refinement") if isinstance(clue.get("refinement"), dict) else {}
     quality = clue.get("quality") if isinstance(clue.get("quality"), dict) else {}
     evidence_ids = [str(item) for item in clue.get("evidence_trace_ids") or []]
+    reviewability = clue.get("evidence_reviewability") if isinstance(clue.get("evidence_reviewability"), dict) else build_evidence_reviewability(clue)
     return {
         "clue_id": clue.get("clue_id"),
         "clue_type": clue.get("clue_type"),
@@ -143,6 +145,8 @@ def summarize_clue(clue: dict[str, Any]) -> dict[str, Any]:
         "llm_confidence_delta": refinement.get("confidence_delta"),
         "llm_refinement_reasons": refinement.get("refinement_reasons") or [],
         "quality_reasons": quality.get("quality_reasons") or [],
+        "evidence_reviewability": reviewability,
+        "suggested_review_action": reviewability.get("suggested_review_action"),
     }
 
 
@@ -200,6 +204,9 @@ def render_markdown(evidence: dict[str, Any]) -> str:
         )
     lines += ["", "## 5. 高质量候选线索"]
     for clue in evidence.get("agent_final_output") or []:
+        reviewability = clue.get("evidence_reviewability") if isinstance(clue.get("evidence_reviewability"), dict) else {}
+        risk = reviewability.get("false_positive_risk") if isinstance(reviewability.get("false_positive_risk"), dict) else {}
+        time_range = reviewability.get("time_range") if isinstance(reviewability.get("time_range"), dict) else {}
         lines += [
             f"### {clue.get('clue_id')}",
             f"- 类型/风险：`{clue.get('clue_type')}` / `{clue.get('risk_category')}`",
@@ -211,6 +218,7 @@ def render_markdown(evidence: dict[str, Any]) -> str:
             f"- threshold_reason：`{clue.get('threshold_reason')}`",
             f"- LLM 精炼摘要：{clue.get('llm_refined_summary')}",
             f"- LLM review_required：{clue.get('llm_review_required')}",
+            f"- 证据复核：source_count={reviewability.get('source_count')}；entity_support_count={reviewability.get('entity_support_count')}；time_range={time_range.get('start')}..{time_range.get('end')}；false_positive_risk={risk.get('level')}({risk.get('score')})；suggested_review_action=`{reviewability.get('suggested_review_action')}`",
         ]
         for reason in clue.get("llm_refinement_reasons") or []:
             lines.append(f"  - {reason}")

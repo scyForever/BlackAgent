@@ -6,6 +6,7 @@ import json
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
+from src.classifier.nlp_rule_matcher import review_bucket_for_classification
 from src.backend import LLMGateway
 from src.domain import ClassificationResolution, ExtractedEntity, IntelRecord, PipelineItem, RiskClassification
 from src.pipeline.classification_resolution import resolve_classification
@@ -235,6 +236,7 @@ class LLMEnrichStage:
                     conflict_status=_optional_str(final.get("conflict_status")),
                     evidence=[str(value) for value in (final.get("evidence") or [])],
                     review_required=bool(final.get("review_required")),
+                    review_bucket=str(final.get("review_bucket") or "human_review_required"),
                     classifier_version=str(final.get("classifier_version") or "unknown"),
                 ),
                 "classification_resolution": typed_resolution,
@@ -310,7 +312,7 @@ def _record_card(item: Mapping[str, Any] | PipelineItem) -> dict[str, Any]:
         "quality_score": payload.get("quality_score"),
         "classification": {
             key: final_classification.get(key)
-            for key in ("risk_category", "secondary_label", "confidence", "review_required", "conflict_status", "evidence")
+            for key in ("risk_category", "secondary_label", "confidence", "review_required", "review_bucket", "conflict_status", "evidence")
             if final_classification.get(key) not in (None, "")
         },
         "entities": entities[:12],
@@ -325,6 +327,17 @@ def _normalized_classification(payload: Mapping[str, Any], *, fallback: Mapping[
         "secondary_label": str(payload.get("secondary_label") or fallback.get("secondary_label") or "待研判"),
         "confidence": round(max(0.0, min(confidence, 0.99)), 4),
         "review_required": _bool(payload.get("review_required"), default=bool(fallback.get("review_required", True))),
+        "review_bucket": str(
+            payload.get("review_bucket")
+            or fallback.get("review_bucket")
+            or review_bucket_for_classification(
+                risk_category=str(payload.get("risk_category") or fallback.get("risk_category") or "unknown"),
+                review_required=_bool(payload.get("review_required"), default=bool(fallback.get("review_required", True))),
+                confidence=confidence,
+                secondary_label=str(payload.get("secondary_label") or fallback.get("secondary_label") or ""),
+                conflict_status=str(payload.get("conflict_status") or fallback.get("conflict_status") or ""),
+            )
+        ),
         "evidence": [str(item) for item in payload.get("evidence", []) if str(item).strip()] if isinstance(payload.get("evidence"), list) else list(fallback.get("evidence") or []),
         "classifier_version": "llm_enrich_v1",
     }
@@ -406,6 +419,7 @@ def _coerce_pipeline_item(item: Mapping[str, Any] | PipelineItem) -> PipelineIte
             conflict_status=_optional_str(final.get("conflict_status")),
             evidence=[str(value) for value in (final.get("evidence") or [])],
             review_required=bool(final.get("review_required")),
+            review_bucket=str(final.get("review_bucket") or "human_review_required"),
             classifier_version=str(final.get("classifier_version") or "unknown"),
         )
     return _sync_item_payload(

@@ -11,6 +11,18 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+
+def configure_stdout_utf8() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
+
+configure_stdout_utf8()
+
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -19,6 +31,7 @@ from src.pipeline import IntelligencePipeline
 from src.domain import RunPolicyContext
 from src.agent.budget_controller import BudgetController, RuntimeBudget
 from src.backend import LLMGateway, LLMGatewayConfig
+from src.classifier.nlp_rule_matcher import review_bucket_for_classification
 from src.evaluation.llm_ablation import LLMValueGate, write_latest_llm_value_report
 
 
@@ -600,10 +613,26 @@ def _classification_review_load(actual_items: list[dict[str, Any]], *, record_co
         "record_count": record_count,
         "review_rate": round(len(review_items) / max(record_count, 1), 4),
         "review_load_per_100_records": round(len(review_items) / max(record_count, 1) * 100.0, 4),
+        "by_review_bucket": _counter_payload(Counter(_review_bucket(item) for item in review_items)),
+        "final_review_buckets": _counter_payload(Counter(_review_bucket(item) for item in actual_items)),
         "by_risk_category": _counter_payload(Counter(str(item.get("risk_category") or "unknown") for item in review_items)),
         "by_secondary_label": _counter_payload(Counter(str(item.get("secondary_label") or "待研判") for item in review_items)),
         "by_conflict_status": _counter_payload(Counter(str(item.get("conflict_status") or "RESOLVED") for item in review_items)),
     }
+
+
+def _review_bucket(item: Mapping[str, Any]) -> str:
+    explicit = str(item.get("review_bucket") or "").strip()
+    conflict_status = str(item.get("conflict_status") or "").strip()
+    review_required = bool(item.get("review_required"))
+    if explicit and not review_required and conflict_status != "CONFLICT_REVIEW":
+        return explicit
+    return review_bucket_for_classification(
+        risk_category=str(item.get("risk_category") or "").strip(),
+        review_required=review_required,
+        secondary_label=str(item.get("secondary_label") or "").strip(),
+        conflict_status=conflict_status,
+    )
 
 
 def _classification_error_examples(

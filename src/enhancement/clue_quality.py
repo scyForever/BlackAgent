@@ -163,6 +163,67 @@ class ClueQualityEvaluator:
         )
 
 
+def build_evidence_reviewability(
+    clue: Mapping[str, Any] | Any,
+    *,
+    assessment: ClueQualityAssessment | Mapping[str, Any] | None = None,
+    entities: Iterable[Mapping[str, Any] | Any] = (),
+    records: Iterable[Mapping[str, Any] | Any] = (),
+) -> dict[str, Any]:
+    """Build analyst-review metadata from existing clue/evidence fields."""
+
+    evidence_trace_ids = _ordered_strings(get_record_field(clue, "evidence_trace_ids") or [])
+    source_names = _ordered_strings(get_record_field(clue, "source_names") or [])
+    source_count = max(len(set(source_names)), _optional_int(get_record_field(clue, "source_count")) or 0)
+    evidence_count = len(set(evidence_trace_ids))
+    entity_support = _entity_support(clue, evidence_trace_ids=evidence_trace_ids, entities=entities)
+    snippets = _evidence_snippets(clue, evidence_trace_ids=evidence_trace_ids, records=records)
+    time_range = _evidence_time_range(clue, evidence_trace_ids=evidence_trace_ids, records=records)
+    risk_score, risk_reasons = _reviewability_false_positive_risk(
+        clue,
+        assessment=assessment,
+        source_count=source_count,
+        evidence_count=evidence_count,
+        entity_support_count=len(entity_support),
+    )
+    risk_level = "high" if risk_score >= 0.7 else ("medium" if risk_score >= 0.4 else "low")
+    review_action_reasons: list[str] = []
+    if source_count < 2:
+        review_action_reasons.append("verify_single_source_support")
+    if evidence_count < 2:
+        review_action_reasons.append("verify_evidence_chain_depth")
+    if not entity_support:
+        review_action_reasons.append("verify_entity_support_missing")
+    if not snippets:
+        review_action_reasons.append("verify_original_snippets_missing")
+    if time_range["start"] is None and time_range["end"] is None:
+        review_action_reasons.append("verify_observed_time_missing")
+
+    if risk_level == "high" or source_count < 2 or evidence_count < 2 or not entity_support:
+        suggested_action = "human_verify_single_source_or_weak_entity_support"
+    elif not snippets or time_range["start"] is None or time_range["end"] is None:
+        suggested_action = "verify_missing_snippets_or_observed_time"
+    else:
+        suggested_action = "review_original_snippets_and_confirm_entity_linkage"
+
+    return {
+        "source_count": source_count,
+        "evidence_count": evidence_count,
+        "entity_support_count": len(entity_support),
+        "entity_support": entity_support,
+        "original_snippets": snippets,
+        "time_range": time_range,
+        "observed_time": time_range["end"] or time_range["start"],
+        "false_positive_risk": {
+            "score": risk_score,
+            "level": risk_level,
+            "reasons": risk_reasons,
+        },
+        "suggested_review_action": suggested_action,
+        "review_action_reasons": review_action_reasons,
+    }
+
+
 def _quality_threshold(profile: str) -> float:
     normalized = str(profile or "").strip().lower()
     if normalized == "high_precision":
@@ -242,4 +303,204 @@ def _parse_time(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-__all__ = ["ClueQualityAssessment", "ClueQualityEvaluator"]
+def _ordered_strings(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)):
+        values = [str(value)]
+    else:
+        try:
+            values = [str(item) for item in value]
+        except TypeError:
+            values = [str(value)]
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        text = item.strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        output.append(text)
+    return output
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _entity_support(
+    clue: Mapping[str, Any] | Any,
+    *,
+    evidence_trace_ids: list[str],
+    entities: Iterable[Mapping[str, Any] | Any],
+) -> list[dict[str, Any]]:
+    trace_set = set(evidence_trace_ids)
+    support: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for entity in entities:
+        trace_id = str(get_record_field(entity, "source_trace_id") or get_record_field(entity, "trace_id") or "").strip()
+        if trace_set and trace_id and trace_id not in trace_set:
+            continue
+        entity_type = str(get_record_field(entity, "entity_type") or "").strip().lower()
+        value = str(
+            get_record_field(entity, "normalized_value")
+            or get_record_field(entity, "entity_value")
+            or get_record_field(entity, "raw_value")
+            or ""
+        ).strip()
+        if not value:
+            continue
+        key = (entity_type, value, trace_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        support.append({"entity_type": entity_type or "unknown", "value": value, "source_trace_id": trace_id or None})
+    for value in _ordered_strings(get_record_field(clue, "entity_values") or []):
+        key = ("clue_entity_value", value, "")
+        if key in seen:
+            continue
+        seen.add(key)
+        support.append({"entity_type": "clue_entity_value", "value": value, "source_trace_id": None})
+    return support
+
+
+def _evidence_snippets(
+    clue: Mapping[str, Any] | Any,
+    *,
+    evidence_trace_ids: list[str],
+    records: Iterable[Mapping[str, Any] | Any],
+) -> list[str]:
+    for field in ("original_snippets", "evidence_snippets", "snippets", "text_snippets"):
+        snippets = _ordered_strings(get_record_field(clue, field) or [])
+        if snippets:
+            return [_snippet(item) for item in snippets[:5]]
+
+    trace_set = set(evidence_trace_ids)
+    output: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        trace_id = str(get_record_field(record, "source_trace_id") or get_record_field(record, "trace_id") or "").strip()
+        if trace_set and trace_id not in trace_set:
+            continue
+        text = str(
+            get_record_field(record, "content_text")
+            or get_record_field(record, "clean_text")
+            or get_record_field(record, "raw_text")
+            or get_record_field(record, "text")
+            or ""
+        ).strip()
+        if not text:
+            continue
+        item = _snippet(text)
+        if item in seen:
+            continue
+        seen.add(item)
+        output.append(item)
+        if len(output) >= 5:
+            break
+    return output
+
+
+def _snippet(text: str, *, limit: int = 240) -> str:
+    collapsed = " ".join(str(text or "").split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 3].rstrip() + "..."
+
+
+def _evidence_time_range(
+    clue: Mapping[str, Any] | Any,
+    *,
+    evidence_trace_ids: list[str],
+    records: Iterable[Mapping[str, Any] | Any],
+) -> dict[str, str | None]:
+    direct_start = _first_text_field(clue, ("first_seen", "time_range_start", "start_time"))
+    direct_end = _first_text_field(clue, ("last_seen", "observed_time", "time_range_end", "end_time", "publish_time", "created_at"))
+    if direct_start or direct_end:
+        return {"start": direct_start or direct_end, "end": direct_end or direct_start}
+
+    trace_set = set(evidence_trace_ids)
+    observed: list[str] = []
+    for record in records:
+        trace_id = str(get_record_field(record, "source_trace_id") or get_record_field(record, "trace_id") or "").strip()
+        if trace_set and trace_id not in trace_set:
+            continue
+        value = _first_text_field(record, ("publish_time", "created_at", "crawl_time", "updated_at"))
+        if value:
+            observed.append(value)
+    if not observed:
+        return {"start": None, "end": None}
+    return {"start": _pick_time_string(observed, earliest=True), "end": _pick_time_string(observed, earliest=False)}
+
+
+def _first_text_field(item: Mapping[str, Any] | Any, fields: Iterable[str]) -> str | None:
+    for field in fields:
+        value = get_record_field(item, field)
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _pick_time_string(values: Iterable[str], *, earliest: bool) -> str | None:
+    candidates = [str(value) for value in values if str(value).strip()]
+    if not candidates:
+        return None
+
+    def key(value: str) -> tuple[datetime, str]:
+        parsed = _parse_time(value)
+        if parsed is None:
+            fallback = datetime.max.replace(tzinfo=timezone.utc) if earliest else datetime.min.replace(tzinfo=timezone.utc)
+            return fallback, value
+        return parsed.astimezone(timezone.utc), value
+
+    return min(candidates, key=key) if earliest else max(candidates, key=key)
+
+
+def _reviewability_false_positive_risk(
+    clue: Mapping[str, Any] | Any,
+    *,
+    assessment: ClueQualityAssessment | Mapping[str, Any] | None,
+    source_count: int,
+    evidence_count: int,
+    entity_support_count: int,
+) -> tuple[float, list[str]]:
+    if assessment is not None:
+        score = get_record_field(assessment, "false_positive_risk_score")
+        reasons = _ordered_strings(get_record_field(assessment, "false_positive_risk_reasons") or [])
+        if score is not None:
+            return round(max(0.0, min(float(score), 0.99)), 4), reasons or ["false_positive_risk_assessed"]
+    quality = get_record_field(clue, "quality") if isinstance(get_record_field(clue, "quality"), Mapping) else {}
+    if isinstance(quality, Mapping) and quality.get("false_positive_risk_score") is not None:
+        return (
+            round(max(0.0, min(float(quality.get("false_positive_risk_score") or 0.0), 0.99)), 4),
+            _ordered_strings(quality.get("false_positive_risk_reasons") or []) or ["false_positive_risk_assessed"],
+        )
+    risk = 0.1
+    reasons: list[str] = []
+    if source_count < 2:
+        risk += 0.25
+        reasons.append("single_source_false_positive_risk")
+    if evidence_count < 2:
+        risk += 0.2
+        reasons.append("thin_evidence_false_positive_risk")
+    if entity_support_count == 0:
+        risk += 0.25
+        reasons.append("weak_entity_support_false_positive_risk")
+    try:
+        confidence = float(get_record_field(clue, "confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < 0.55:
+        risk += 0.2
+        reasons.append("low_confidence_false_positive_risk")
+    if not reasons:
+        reasons.append("false_positive_risk_low")
+    return round(max(0.0, min(risk, 0.99)), 4), reasons
+
+
+__all__ = ["ClueQualityAssessment", "ClueQualityEvaluator", "build_evidence_reviewability"]

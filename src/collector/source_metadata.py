@@ -29,8 +29,34 @@ SOURCE_ACCESS_TYPES = {
 
 SOURCE_CLASS_ALIASES: dict[str, set[str]] = {
     "im_or_group": {"im", "group", "telegram", "tg"},
-    "social_or_forum": {"social", "forum", "news", "blog", "tieba", "short_video", "x", "twitter"},
+    "social_or_forum": {
+        "social",
+        "forum",
+        "news",
+        "blog",
+        "tieba",
+        "short_video",
+        "x",
+        "twitter",
+        "article",
+        "public_account",
+        "wechat_public",
+        "wechat_public_account",
+        "wechat",
+        "rss",
+        "html_article",
+    },
     "vertical_or_technical": {"vertical", "threat_intel", "technical", "techforum", "technical_community"},
+}
+
+ARTICLE_SOURCE_MARKERS = {
+    "article",
+    "public_account",
+    "wechat_public",
+    "wechat_public_account",
+    "wechat",
+    "rss",
+    "html_article",
 }
 
 TOOL_MARKERS = {
@@ -189,6 +215,8 @@ def source_class_for_record(record: Mapping[str, Any]) -> str:
     source_name = str(record.get("source_name") or record.get("name") or "").strip().lower()
     if platform in {"x", "twitter"} or source_name.startswith("x_") or "x_blackgray" in source_name:
         return "social_or_forum"
+    if is_article_source_record(record):
+        return "social_or_forum"
     if platform in {"telegram", "tg"}:
         return "im_or_group"
     markers = {source_type, platform}
@@ -204,6 +232,14 @@ def source_class_for_record(record: Mapping[str, Any]) -> str:
     if any(marker in source_name for marker in ("tech", "vertical", "market", "threat")):
         return "vertical_or_technical"
     return "other_authorized"
+
+
+def is_article_source_record(record: Mapping[str, Any]) -> bool:
+    """Return True for stable public article/public-account intake sources."""
+
+    source_type = str(record.get("source_type") or record.get("type") or "").strip().lower()
+    platform = str(record.get("platform") or "").strip().lower()
+    return bool({source_type, platform} & ARTICLE_SOURCE_MARKERS)
 
 
 def classify_collection_failure(exc_or_text: Any) -> str:
@@ -238,10 +274,12 @@ def _duplicate_probability(record: Mapping[str, Any]) -> float:
 
 
 __all__ = [
+    "ARTICLE_SOURCE_MARKERS",
     "SOURCE_ACCESS_TYPES",
     "build_collection_metadata",
     "build_collection_quality_profile",
     "classify_collection_failure",
+    "is_article_source_record",
     "normalize_source_access_type",
     "source_class_for_record",
 ]

@@ -36,6 +36,24 @@ sources:
     terms_allow_security_research: true
     rate_limit_per_minute: 3
 
+  - source_name: wechat_public_account_article_search
+    source_type: Article
+    platform: wechat_public
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Amp.weixin.qq.com%2Fs%20%E6%8E%A5%E7%A0%81
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:mp.weixin.qq.com/s"]
+    query_global_terms: [接码, 账号交易, 群控脚本]
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [接码, 账号交易, 群控, 脚本, TG, Telegram, 引流, 拉群]
+    include_themes: [接码, 账号交易, 工具交易, 诈骗引流]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 辟谣, 普法, 教程, 指南]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+    rate_limit_per_minute: 3
+
   - source_name: crowdsourcing_market_watch
     source_type: Vertical
     platform: crowdsourcing

@@ -1,7 +1,24 @@
 from argparse import Namespace
 
+from scripts import evaluate_pipeline
 from scripts.evaluate_pipeline import evaluate, evaluate_ablation, load_jsonl, quality_gate_failures
 from src.evaluation.llm_ablation import LLMValueGate
+
+
+def test_evaluate_pipeline_configures_stdout_utf8(monkeypatch):
+    class FakeStdout:
+        def __init__(self):
+            self.reconfigure_kwargs = None
+
+        def reconfigure(self, **kwargs):
+            self.reconfigure_kwargs = kwargs
+
+    fake_stdout = FakeStdout()
+    monkeypatch.setattr(evaluate_pipeline.sys, "stdout", fake_stdout)
+
+    evaluate_pipeline.configure_stdout_utf8()
+
+    assert fake_stdout.reconfigure_kwargs == {"encoding": "utf-8"}
 
 
 def test_evaluate_pipeline_reports_classification_entity_and_clue_metrics():
@@ -234,6 +251,73 @@ def test_hierarchical_classification_requires_and_scores_secondary_gold():
     assert metrics["secondary"]["tp"] == 1
     assert metrics["secondary"]["fp"] == 1
     assert metrics["secondary"]["fn"] == 1
+
+
+def test_classification_review_load_reports_review_buckets():
+    from scripts.evaluate_pipeline import evaluate_classification
+
+    records = [
+        {"trace_id": "risk", "expected_risk_categories": ["工具交易"]},
+        {"trace_id": "noise"},
+        {"trace_id": "weak", "expected_risk_categories": ["账号交易"]},
+    ]
+    actual = [
+        {
+            "source_trace_id": "risk",
+            "risk_category": "工具交易",
+            "secondary_label": "群控脚本",
+            "review_required": False,
+            "review_bucket": "explicit_risk",
+        },
+        {
+            "source_trace_id": "noise",
+            "risk_category": "正常业务白噪声",
+            "secondary_label": "低相关",
+            "review_required": False,
+            "review_bucket": "low_relevance",
+        },
+        {
+            "source_trace_id": "weak",
+            "risk_category": "账号交易",
+            "secondary_label": "待研判",
+            "review_required": True,
+            "review_bucket": "human_review_required",
+        },
+    ]
+
+    metrics = evaluate_classification(records, actual)
+    buckets = {item["value"]: item["count"] for item in metrics["review_load"]["by_review_bucket"]}
+    final_buckets = {item["value"]: item["count"] for item in metrics["review_load"]["final_review_buckets"]}
+
+    assert buckets["human_review_required"] == 1
+    assert final_buckets == {
+        "explicit_risk": 1,
+        "low_relevance": 1,
+        "human_review_required": 1,
+    }
+
+
+def test_classification_review_load_recomputes_stale_review_bucket_for_manual_review_noise():
+    from scripts.evaluate_pipeline import evaluate_classification
+
+    records = [{"trace_id": "noise-review"}]
+    actual = [
+        {
+            "source_trace_id": "noise-review",
+            "risk_category": "正常业务白噪声",
+            "secondary_label": "低相关",
+            "review_required": True,
+            "review_bucket": "low_relevance",
+            "conflict_status": "CONFLICT_REVIEW",
+        },
+    ]
+
+    metrics = evaluate_classification(records, actual)
+    buckets = {item["value"]: item["count"] for item in metrics["review_load"]["by_review_bucket"]}
+    final_buckets = {item["value"]: item["count"] for item in metrics["review_load"]["final_review_buckets"]}
+
+    assert buckets == {"human_review_required": 1}
+    assert final_buckets == {"human_review_required": 1}
 
 
 def test_difficult_evaluation_sets_exist_and_can_be_loaded():

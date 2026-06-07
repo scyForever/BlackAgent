@@ -3,7 +3,16 @@ from src.enhancement.engine import PhaseTwoThreeEngine
 from src.enhancement.lifecycle import DynamicSlangLifecycleManager, PromptEvaluator
 from src.enhancement.source_intake import ComplianceSourceDiscovery, MultimodalTextExtractor
 from src.enhancement.text_intelligence import AdaptiveEntropyFilter, AdvancedEntityExtractor, FineGrainedIntentClassifier, SlangVariantNormalizer
-from src.classifier.nlp_rule_matcher import ACCOUNT_TRADING, CLICK_FARMING, CROWD_SERVICE, FRAUD_TRAFFIC, NORMAL_NOISE, TOOL_TRADING
+from src.classifier.nlp_rule_matcher import (
+    ACCOUNT_TRADING,
+    CLICK_FARMING,
+    CROWD_SERVICE,
+    FRAUD_TRAFFIC,
+    NORMAL_NOISE,
+    TOOL_TRADING,
+    RuleFastTrackClassifier,
+    review_bucket_for_classification,
+)
 from src.local_runtime import LocalAgentRuntime
 from storage import GraphRepo, VectorRepo
 
@@ -61,6 +70,28 @@ def test_fine_classifier_routes_public_steam_guides_to_normal_noise():
     assert classification.secondary_label == "低相关"
     assert classification.review_required is False
     assert classification.review_decision_reason == "ordinary_public_information_no_risk_signal"
+    assert classification.review_bucket == "low_relevance"
+
+
+def test_fine_classifier_marks_defensive_public_false_positive_as_low_relevance_bucket():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "defensive-low-relevance-risk-keywords",
+            "source_name": "security_blog",
+            "source_type": "TechForum",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "安全研究复盘：群控脚本和接码平台常被用于账号滥用，"
+                "本文只做防御检测说明，不提供工具、不交易账号，用户应举报相关广告。"
+            ),
+            "matched_keywords": ["群控", "接码"],
+            "matched_themes": ["工具交易", "接码"],
+        }
+    )
+
+    assert classification.risk_category == NORMAL_NOISE
+    assert classification.review_required is False
+    assert classification.review_bucket == "low_relevance"
 
 
 def test_fine_classifier_routes_public_steam_verification_discussion_to_normal_noise():
@@ -360,6 +391,59 @@ def test_fine_classifier_keeps_weak_direct_contact_signal_in_review_bucket():
     assert classification.risk_category != NORMAL_NOISE
     assert classification.review_required is True
     assert classification.review_decision_reason != "ordinary_public_information_no_risk_signal"
+    assert classification.review_bucket == "human_review_required"
+
+
+def test_fine_classifier_marks_weak_trade_contact_as_human_review_bucket():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "weak-trade-contact-review-bucket",
+            "source_name": "misc-public-channel",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "今晚低价资源可谈，联系 TG:weakreview，老板私聊。",
+        }
+    )
+
+    assert classification.review_required is True
+    assert classification.review_bucket == "human_review_required"
+    assert classification.risk_category != NORMAL_NOISE
+
+
+def test_review_bucket_prioritizes_manual_review_over_low_relevance_category():
+    assert (
+        review_bucket_for_classification(
+            risk_category=NORMAL_NOISE,
+            review_required=True,
+            confidence=0.82,
+        )
+        == "human_review_required"
+    )
+    assert (
+        review_bucket_for_classification(
+            risk_category=NORMAL_NOISE,
+            review_required=False,
+            confidence=0.82,
+            conflict_status="CONFLICT_REVIEW",
+        )
+        == "human_review_required"
+    )
+
+
+def test_fast_classifier_keeps_defensive_weak_trade_contact_in_review_bucket():
+    classification = RuleFastTrackClassifier().classify(
+        {
+            "trace_id": "defensive-weak-trade-contact-review",
+            "source_name": "misc-public-channel",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "安全研究复盘：今晚低价资源可谈，联系 TG:weakreview，老板私聊。",
+        }
+    )
+
+    assert classification.review_required is True
+    assert classification.review_bucket == "human_review_required"
+    assert classification.risk_category != NORMAL_NOISE
 
 
 def test_fine_classifier_promotes_low_price_telegram_slang_to_review_bucket():

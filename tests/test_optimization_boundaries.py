@@ -574,6 +574,80 @@ def test_collection_source_class_prefers_structured_vertical_type_over_name_text
     assert source_class_for_record(source) == "vertical_or_technical"
 
 
+def test_public_account_article_markers_are_non_im_even_with_telegram_text():
+    sources = [
+        {
+            "source_name": "wechat_public_telegram_risk_articles",
+            "source_type": "Public_Account",
+            "platform": "wechat_public",
+            "source_url": "https://article.example/search?q=telegram",
+        },
+        {
+            "source_name": "rss_telegram_security_articles",
+            "source_type": "rss",
+            "platform": "article",
+            "source_url": "https://rss.example/telegram.xml",
+        },
+        {
+            "source_name": "html_article_telegram_watch",
+            "source_type": "html_article",
+            "platform": "public_account",
+            "source_url": "https://article.example/telegram-watch",
+        },
+    ]
+
+    assert {source_class_for_record(source) for source in sources} == {"social_or_forum"}
+
+
+def test_runtime_source_diversity_uses_public_account_article_taxonomy():
+    from src.agent.runtime_collection_services import _source_diversity_class
+
+    source = {
+        "source_name": "wechat_public_telegram_risk_articles",
+        "source_type": "Article",
+        "platform": "wechat_public",
+        "source_url": "https://article.example/search?q=telegram",
+    }
+
+    assert source_class_for_record(source) == "social_or_forum"
+    assert _source_diversity_class(source) == "social_or_forum"
+
+
+def test_public_catalog_contains_public_account_article_import_example():
+    sources = [
+        source
+        for source in load_source_catalog("config/intel_sources.public.yaml")
+        if source["source_name"] == "wechat_public_account_article_search"
+    ]
+
+    assert sources
+    assert {source_class_for_record(source) for source in sources} == {"social_or_forum"}
+    assert all(source["source_type"] == "Article" for source in sources)
+    assert all(source["platform"] == "wechat_public" for source in sources)
+    assert all(source["feed_format"] == "html" for source in sources)
+    assert all(source["allowed_domains"] == ["r.jina.ai"] for source in sources)
+
+
+def test_source_smoke_report_keeps_public_account_article_in_social_class():
+    report = build_report(
+        [
+            {
+                "source_name": "wechat_public_telegram_risk_articles",
+                "source_type": "Article",
+                "platform": "wechat_public",
+                "source_url": "https://article.example/search?q=telegram",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "robots_allowed": True,
+                "terms_allow_security_research": True,
+            }
+        ],
+        network_enabled=False,
+    )
+
+    assert report["candidate_source_count"] == 1
+    assert report["sources"][0]["source_class"] == "social_or_forum"
+
+
 def test_collect_public_sources_balanced_slice_keeps_non_im_source_groups():
     sources = [
         {"source_name": "forum_a", "source_type": "Forum", "source_url": "https://example.test/a1"},
@@ -626,6 +700,14 @@ def test_acceptance_evidence_export_tracks_high_quality_target_and_source_classe
                 "source_types": ["Forum"],
                 "quality_score": 0.8,
                 "confidence": 0.85,
+                "evidence_reviewability": {
+                    "source_count": 1,
+                    "entity_support_count": 1,
+                    "original_snippets": ["forum snippet"],
+                    "time_range": {"start": "2026-06-07T08:00:00+00:00", "end": "2026-06-07T08:00:00+00:00"},
+                    "false_positive_risk": {"score": 0.45, "level": "medium", "reasons": ["single_source_false_positive_risk"]},
+                    "suggested_review_action": "human_verify_single_source_or_weak_entity_support",
+                },
             },
             {
                 "clue_id": "c2",
@@ -646,6 +728,10 @@ def test_acceptance_evidence_export_tracks_high_quality_target_and_source_classe
     assert evidence["counts"]["high_quality_count"] == 2
     assert {"social_or_forum", "vertical_or_technical"} <= set(evidence["selected_source_classes"])
     assert [item["evidence_trace_count"] for item in evidence["agent_final_output"]] == [3, 3]
+    assert evidence["agent_final_output"][0]["evidence_reviewability"]["source_count"] == 1
+    assert evidence["agent_final_output"][0]["suggested_review_action"] == "human_verify_single_source_or_weak_entity_support"
+    assert evidence["agent_final_output"][1]["evidence_reviewability"]["source_count"] == 1
+    assert evidence["agent_final_output"][1]["evidence_reviewability"]["suggested_review_action"]
 
 
 def test_cross_source_graph_demo_outputs_multi_source_clue():

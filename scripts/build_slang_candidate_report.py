@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 import sys
@@ -113,6 +114,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Classification JSONL with source_trace_id.",
     )
     parser.add_argument("--output", default="data/slang_candidate_report.json", help="JSON report output path.")
+    parser.add_argument(
+        "--review-csv-out",
+        default="data/manual_review/slang_candidate_review_template.csv",
+        help="CSV template for analyst slang candidate review.",
+    )
+    parser.add_argument(
+        "--lifecycle-out",
+        default="data/manual_review/slang_lifecycle_records.json",
+        help="Lifecycle JSON generated from --review-csv-out when analyst decisions are present.",
+    )
     parser.add_argument("--min-count", type=int, default=3, help="Minimum candidate frequency.")
     parser.add_argument("--max-candidates", type=int, default=80, help="Maximum candidates to emit.")
     return parser.parse_args(argv)
@@ -198,6 +209,105 @@ def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
     return rows
 
 
+REVIEW_CSV_FIELDS = [
+    "term",
+    "normalized_term",
+    "review_status",
+    "target_risk_category",
+    "reviewer",
+    "review_date",
+    "notes",
+    "source_trace_ids",
+    "context_examples",
+    "context_markers",
+]
+
+
+def write_review_csv(report: Mapping[str, Any], path: str | Path) -> Path:
+    target = _project_path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", encoding="utf-8-sig", newline="") as file_obj:
+        writer = csv.DictWriter(file_obj, fieldnames=REVIEW_CSV_FIELDS)
+        writer.writeheader()
+        for candidate in report.get("candidates") or []:
+            if not isinstance(candidate, Mapping):
+                continue
+            writer.writerow(
+                {
+                    "term": candidate.get("term") or "",
+                    "normalized_term": candidate.get("normalized_term") or candidate.get("term") or "",
+                    "review_status": "pending",
+                    "target_risk_category": "",
+                    "reviewer": "",
+                    "review_date": "",
+                    "notes": "",
+                    "source_trace_ids": "|".join(str(item) for item in (candidate.get("source_trace_ids_sample") or [])),
+                    "context_examples": " || ".join(str(item) for item in (candidate.get("context_examples") or [])),
+                    "context_markers": "|".join(str(item) for item in (candidate.get("context_markers") or [])),
+                }
+            )
+    return target
+
+
+def lifecycle_records_from_review_csv(path: str | Path) -> dict[str, Any]:
+    target = _project_path(path)
+    if not target.exists():
+        return {
+            "status": "missing_review_csv",
+            "records": [],
+            "approved_count": 0,
+            "rejected_count": 0,
+            "pending_count": 0,
+        }
+    manager = DynamicSlangLifecycleManager()
+    approved_count = 0
+    rejected_count = 0
+    pending_count = 0
+    with target.open("r", encoding="utf-8-sig", newline="") as file_obj:
+        reader = csv.DictReader(file_obj)
+        for row in reader:
+            term = str(row.get("term") or "").strip()
+            if not term:
+                continue
+            status = str(row.get("review_status") or "").strip().lower()
+            evidence_ids = [
+                item.strip()
+                for item in str(row.get("source_trace_ids") or "").split("|")
+                if item.strip()
+            ]
+            normalized = str(row.get("normalized_term") or term).strip() or term
+            record = manager.nominate(term, normalized, evidence_ids)
+            reviewer = str(row.get("reviewer") or "human_review").strip() or "human_review"
+            notes = str(row.get("notes") or "").strip() or None
+            if status in {"approved", "approve", "reviewed", "accepted"}:
+                record = manager.review(term, approved=True, reviewer=reviewer, notes=notes)
+                approved_count += 1
+            elif status in {"rejected", "reject", "denied"}:
+                record = manager.review(term, approved=False, reviewer=reviewer, notes=notes)
+                rejected_count += 1
+            else:
+                pending_count += 1
+            _ = record
+    records = [record.model_dump() for record in manager.list_records()]
+    return {
+        "status": "completed",
+        "run_type": "slang_lifecycle_from_human_review_csv",
+        "review_csv": str(target),
+        "record_count": len(records),
+        "approved_count": approved_count,
+        "rejected_count": rejected_count,
+        "pending_count": pending_count,
+        "records": records,
+        "runtime_ready_records": [
+            record.model_dump()
+            for record in manager.runtime_records(include_candidates=False)
+        ],
+        "claim_boundary": (
+            "Only approved/reviewed records are runtime-ready; pending candidates remain excluded from active slang rules."
+        ),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     report = build_report(
@@ -208,6 +318,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     output = _project_path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    review_csv = write_review_csv(report, args.review_csv_out)
+    lifecycle = lifecycle_records_from_review_csv(review_csv)
+    lifecycle_out = _project_path(args.lifecycle_out)
+    lifecycle_out.parent.mkdir(parents=True, exist_ok=True)
+    lifecycle_out.write_text(json.dumps(lifecycle, ensure_ascii=False, indent=2), encoding="utf-8")
+    report["manual_review"]["review_csv"] = str(review_csv)
+    report["manual_review"]["lifecycle_records"] = str(lifecycle_out)
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=True, indent=2))
     return 0

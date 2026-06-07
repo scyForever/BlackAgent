@@ -399,6 +399,8 @@ def test_intelligence_pipeline_default_stages_run_real_components():
     assert all(isinstance(item, PipelineItem) for item in result.items)
     assert result.to_legacy_dict()["classified"] == result.classified
     assert "classified" not in result.model_dump()
+    assert result.clues[0]["evidence_reviewability"]["source_count"] >= 1
+    assert result.model_dump()["actionable_clues"][0]["evidence_reviewability"]["source_count"] >= 1
     assert result.candidate_clues
     assert result.actionable_clues
     assert result.items[0].cleaned is not None
@@ -560,6 +562,31 @@ def test_classification_resolution_rejects_evidence_free_llm_override():
     assert resolution.strategy == "prefer_rule"
     assert resolution.reason == "llm_missing_evidence"
     assert resolution.final["risk_category"] == "工具交易"
+
+
+def test_classification_resolution_recomputes_bucket_when_conflict_forces_review():
+    resolution = resolve_classification(
+        {
+            "risk_category": "工具交易",
+            "secondary_label": "群控脚本",
+            "confidence": 0.93,
+            "evidence": ["群控", "TG"],
+            "review_required": False,
+            "review_bucket": "explicit_risk",
+        },
+        {
+            "risk_category": "账号交易",
+            "secondary_label": "接码注册",
+            "confidence": 0.91,
+            "evidence": ["接码"],
+            "review_required": False,
+            "review_bucket": "explicit_risk",
+        },
+        trace_id="resolve-bucket-conflict",
+    )
+
+    assert resolution.review_required is True
+    assert resolution.final["review_bucket"] == "human_review_required"
 
 
 def test_clue_promotion_archives_weak_duplicates_and_caps_actionable_load():

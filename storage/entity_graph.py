@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
+from src.enhancement.clue_quality import build_evidence_reviewability
+
 
 @dataclass(frozen=True)
 class EntityAsset:
@@ -310,31 +312,41 @@ class EntityGraphStore:
             related_types = {self._entities[item].entity_type for item in related_ids if item in self._entities}
             risk_category = _dominant_risk_category(profile.risk_categories)
             clue_type = _graph_clue_type(asset.entity_type, related_types, risk_category)
-            clues.append(
-                {
-                    "clue_id": f"graph_clue_{uuid4().hex[:12]}",
-                    "clue_type": clue_type,
-                    "key": asset.entity_id,
-                    "risk_category": risk_category,
-                    "risk_score": profile.risk_score,
-                    "key_entity_id": asset.entity_id,
-                    "related_entity_ids": related_ids,
-                    "evidence_trace_ids": traces,
-                    "evidence_observation_ids": [item.observation_id for item in observations],
-                    "source_names": sources,
-                    "entity_values": [asset.masked_display_value],
-                    "confidence": round(min(0.96, 0.58 + 0.07 * len(traces) + 0.04 * len(sources)), 4),
-                    "threshold_reason": "entity_graph_cross_source_observations_with_risk_profile",
-                    "reason": _graph_reason(asset.entity_type, related_types, risk_category),
-                    "entity_asset_id": asset.entity_id,
-                    "entity_observation_refs": [item.observation_id for item in observations],
-                    "entity_graph_backend": "entity_graph_store",
-                    "first_seen": profile.first_seen,
-                    "last_seen": profile.last_seen,
-                    "source_count": profile.source_count,
-                    "risk_profile": profile.model_dump(),
-                }
+            clue = {
+                "clue_id": f"graph_clue_{uuid4().hex[:12]}",
+                "clue_type": clue_type,
+                "key": asset.entity_id,
+                "risk_category": risk_category,
+                "risk_score": profile.risk_score,
+                "key_entity_id": asset.entity_id,
+                "related_entity_ids": related_ids,
+                "evidence_trace_ids": traces,
+                "evidence_observation_ids": [item.observation_id for item in observations],
+                "source_names": sources,
+                "entity_values": [asset.masked_display_value],
+                "confidence": round(min(0.96, 0.58 + 0.07 * len(traces) + 0.04 * len(sources)), 4),
+                "threshold_reason": "entity_graph_cross_source_observations_with_risk_profile",
+                "reason": _graph_reason(asset.entity_type, related_types, risk_category),
+                "entity_asset_id": asset.entity_id,
+                "entity_observation_refs": [item.observation_id for item in observations],
+                "entity_graph_backend": "entity_graph_store",
+                "first_seen": profile.first_seen,
+                "last_seen": profile.last_seen,
+                "source_count": profile.source_count,
+                "risk_profile": profile.model_dump(),
+            }
+            clue["evidence_reviewability"] = build_evidence_reviewability(
+                clue,
+                entities=[
+                    {
+                        "source_trace_id": observation.trace_id,
+                        "entity_type": asset.entity_type,
+                        "normalized_value": asset.masked_display_value,
+                    }
+                    for observation in observations
+                ],
             )
+            clues.append(clue)
         return clues
 
     def _init_db(self) -> None:

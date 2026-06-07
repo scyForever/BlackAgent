@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from src.enhancement.clue_quality import build_evidence_reviewability
+
 
 @dataclass(frozen=True)
 class RankedClue:
@@ -49,6 +51,7 @@ class ClueRanker:
             reasons.append("reviewable")
         item["refine_priority_score"] = round(max(score, 0.0), 4)
         item["refine_priority_reasons"] = reasons
+        item.setdefault("evidence_reviewability", build_evidence_reviewability(item))
         return RankedClue(clue=item, score=item["refine_priority_score"], reasons=reasons)
 
 

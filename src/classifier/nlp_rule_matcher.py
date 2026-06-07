@@ -18,6 +18,9 @@ CLICK_FARMING = "刷单作弊"
 CROWD_SERVICE = "众包服务"
 NORMAL_NOISE = "正常业务白噪声"
 UNKNOWN = "unknown"
+REVIEW_BUCKET_EXPLICIT_RISK = "explicit_risk"
+REVIEW_BUCKET_LOW_RELEVANCE = "low_relevance"
+REVIEW_BUCKET_HUMAN_REVIEW_REQUIRED = "human_review_required"
 
 
 @dataclass(frozen=True)
@@ -26,6 +29,7 @@ class FallbackClassificationResult:
     confidence: float
     review_required: bool
     classification_version: str
+    review_bucket: str = REVIEW_BUCKET_HUMAN_REVIEW_REQUIRED
     source_trace_id: str | None = None
 
     def model_dump(self) -> dict[str, Any]:
@@ -57,12 +61,19 @@ def build_classification_result(
     review_required: bool,
     classification_version: str,
     source_trace_id: str | None = None,
+    review_bucket: str | None = None,
 ) -> Any:
+    review_bucket = review_bucket or review_bucket_for_classification(
+        risk_category=risk_category,
+        review_required=review_required,
+        confidence=confidence,
+    )
     payload = {
         "source_trace_id": source_trace_id,
         "risk_category": risk_category,
         "confidence": round(confidence, 4),
         "review_required": review_required,
+        "review_bucket": review_bucket,
         "classification_version": classification_version,
         "decision_version": classification_version,
     }
@@ -82,6 +93,7 @@ def build_classification_result(
             "risk_category": payload["risk_category"],
             "confidence": payload["confidence"],
             "review_required": payload["review_required"],
+            "review_bucket": payload["review_bucket"],
             version_field: classification_version,
         }
         payload_for_schema = {key: value for key, value in payload_for_schema.items() if key in fields}
@@ -94,9 +106,30 @@ def build_classification_result(
             risk_category=risk_category,
             confidence=round(confidence, 4),
             review_required=review_required,
+            review_bucket=review_bucket,
             classification_version=classification_version,
             source_trace_id=source_trace_id,
         )
+
+
+def review_bucket_for_classification(
+    *,
+    risk_category: str,
+    review_required: bool,
+    confidence: float | None = None,
+    secondary_label: str | None = None,
+    conflict_status: str | None = None,
+) -> str:
+    category = str(risk_category or "").strip()
+    secondary = str(secondary_label or "").strip()
+    conflict = str(conflict_status or "").strip()
+    if review_required or conflict == "CONFLICT_REVIEW":
+        return REVIEW_BUCKET_HUMAN_REVIEW_REQUIRED
+    if category == NORMAL_NOISE:
+        return REVIEW_BUCKET_LOW_RELEVANCE
+    if category in {"", UNKNOWN, "待研判", "未细分"} or secondary in {"待研判", "未细分", UNKNOWN}:
+        return REVIEW_BUCKET_HUMAN_REVIEW_REQUIRED
+    return REVIEW_BUCKET_EXPLICIT_RISK
 
 
 class RuleFastTrackClassifier:
@@ -147,7 +180,7 @@ class RuleFastTrackClassifier:
                 source_trace_id=source_trace_id,
             )
 
-        if any(keyword in text for keyword in self.defensive_context):
+        if any(keyword in text for keyword in self.defensive_context) and not self._has_reviewable_intent_signal(text):
             return build_classification_result(
                 risk_category=NORMAL_NOISE,
                 confidence=0.82,
@@ -187,6 +220,32 @@ class RuleFastTrackClassifier:
             source_trace_id=source_trace_id,
         )
 
+    def _has_reviewable_intent_signal(self, text: str) -> bool:
+        lowered = text.lower()
+        contact_markers = ("tg:", "telegram:", "t.me/", "@", "加v", "微信", "wechat", "wx:", "qq:")
+        intent_markers = (
+            "出售",
+            "出号",
+            "卖号",
+            "收号",
+            "上车",
+            "招募",
+            "接单",
+            "联系",
+            "客服",
+            "咨询",
+            "私聊",
+            "低价",
+            "价格",
+            "报价",
+            "可谈",
+            "老板",
+            "包量",
+        )
+        has_contact = any(marker in lowered for marker in contact_markers)
+        has_intent = any(marker in text or marker.lower() in lowered for marker in intent_markers)
+        return has_contact and has_intent
+
     def classify_batch(self, items: Iterable[Any]) -> list[Any]:
         return [self.classify(item) for item in items]
 
@@ -197,9 +256,13 @@ __all__ = [
     "CROWD_SERVICE",
     "FRAUD_TRAFFIC",
     "NORMAL_NOISE",
+    "REVIEW_BUCKET_EXPLICIT_RISK",
+    "REVIEW_BUCKET_HUMAN_REVIEW_REQUIRED",
+    "REVIEW_BUCKET_LOW_RELEVANCE",
     "TOOL_TRADING",
     "UNKNOWN",
     "FallbackClassificationResult",
     "RuleFastTrackClassifier",
     "build_classification_result",
+    "review_bucket_for_classification",
 ]
