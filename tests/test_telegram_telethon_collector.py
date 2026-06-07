@@ -155,3 +155,52 @@ def test_target_run_stats_records_outcomes():
     assert stats.status == "failed"
     assert stats.error_stage == "join_failed"
     assert stats.model_dump()["error"] == "private"
+
+
+class _FakeEntity:
+    def __init__(self, entity_id=1, title="Demo", username="demo"):
+        self.id = entity_id
+        self.title = title
+        self.username = username
+        self.megagroup = False
+        self.broadcast = True
+
+
+class _FakeSearchResult:
+    def __init__(self, chats):
+        self.chats = chats
+
+
+class _FakeResolveClient:
+    def __init__(self):
+        self.calls = []
+
+    async def get_entity(self, username):
+        self.calls.append(username)
+        if username == "bad":
+            raise ValueError("not found")
+        return _FakeEntity(entity_id=10, title="Good", username=username)
+
+    async def __call__(self, request):
+        return _FakeSearchResult([])
+
+
+def test_resolve_target_entities_continues_after_bad_username():
+    client = _FakeResolveClient()
+    stats_by_key = {}
+
+    entities = asyncio.run(
+        collector.resolve_target_entities(
+            client,
+            usernames=["bad", "good"],
+            keywords=[],
+            invite_links=[],
+            search_limit=0,
+            stats_by_key=stats_by_key,
+            functions=object(),
+        )
+    )
+
+    assert [entity.username for entity in entities] == ["good"]
+    assert stats_by_key["username:bad"].status == "failed"
+    assert stats_by_key["username:good"].resolved is True

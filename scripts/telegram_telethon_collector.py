@@ -375,6 +375,55 @@ def message_text(message: Any) -> str:
     )
 
 
+async def resolve_target_entities(
+    client: Any,
+    *,
+    usernames: list[str],
+    keywords: list[str],
+    invite_links: list[str],
+    search_limit: int,
+    stats_by_key: dict[str, TargetRunStats],
+    functions: Any,
+) -> list[Any]:
+    found: dict[int, Any] = {}
+
+    for username in usernames:
+        key = f"username:{username}"
+        try:
+            entity = await client.get_entity(username)
+        except Exception as exc:
+            stats_by_key[key] = TargetRunStats(None, username, username, f"https://t.me/{username}")
+            stats_by_key[key].record_failure("resolve_username", exc)
+            continue
+        found[getattr(entity, "id")] = entity
+        stats = TargetRunStats(getattr(entity, "id", None), entity_title(entity), entity_username(entity), entity_source_url(entity))
+        stats.mark_resolved()
+        stats_by_key[key] = stats
+
+    for keyword in keywords:
+        try:
+            result = await client(functions.contacts.SearchRequest(q=keyword, limit=search_limit))
+        except Exception as exc:
+            stats = TargetRunStats(None, f"search:{keyword}", None, f"telegram://search?q={keyword}")
+            stats.record_failure("search_keyword", exc)
+            stats_by_key[f"search:{keyword}"] = stats
+            continue
+        for chat in getattr(result, "chats", []):
+            chat_id = getattr(chat, "id", None)
+            if chat_id is None:
+                continue
+            if getattr(chat, "deactivated", False):
+                continue
+            if not (getattr(chat, "megagroup", False) or getattr(chat, "broadcast", False) or getattr(chat, "username", None)):
+                continue
+            found[chat_id] = chat
+
+    for invite in invite_links:
+        stats_by_key.setdefault(f"invite:{invite}", TargetRunStats(None, invite, None, invite))
+
+    return list(found.values())
+
+
 async def run() -> int:
     args = parse_args()
     cfg = load_yaml_file(resolve_project_path(args.config))
@@ -416,36 +465,7 @@ async def run() -> int:
     client = TelegramClient(str(options.session_path), int(options.api_id), options.api_hash, proxy=options.proxy)
     try:
         await start_telegram_client(client, options.phone)
-
-        async def resolve_target_entities() -> list[Any]:
-            found: dict[int, Any] = {}
-
-            for username in options.usernames:
-                entity = await client.get_entity(username)
-                found[getattr(entity, "id")] = entity
-
-            for keyword in options.keywords:
-                try:
-                    result = await client(functions.contacts.SearchRequest(q=keyword, limit=options.search_limit))
-                except Exception:
-                    continue
-                for chat in getattr(result, "chats", []):
-                    chat_id = getattr(chat, "id", None)
-                    if chat_id is None:
-                        continue
-                    # Prefer public supergroups / channels discoverable by username/title.
-                    if getattr(chat, "deactivated", False):
-                        continue
-                    if not (getattr(chat, "megagroup", False) or getattr(chat, "broadcast", False) or getattr(chat, "username", None)):
-                        continue
-                    found[chat_id] = chat
-
-            for invite in options.invite_links:
-                entity = await join_invite(invite)
-                if entity is not None:
-                    found[getattr(entity, "id")] = entity
-
-            return list(found.values())
+        target_stats: dict[str, TargetRunStats] = {}
 
         async def join_invite(invite: str) -> Any | None:
             match = T_ME_INVITE_RE.search(invite)
@@ -479,7 +499,19 @@ async def run() -> int:
                 return entity
             return entity
 
-        targets = await resolve_target_entities()
+        targets = await resolve_target_entities(
+            client,
+            usernames=options.usernames,
+            keywords=options.keywords,
+            invite_links=options.invite_links,
+            search_limit=options.search_limit,
+            stats_by_key=target_stats,
+            functions=functions,
+        )
+        for invite in options.invite_links:
+            entity = await join_invite(invite)
+            if entity is not None:
+                targets.append(entity)
         joined_targets: list[Any] = []
         for entity in targets:
             if isinstance(entity, (Channel, Chat)):
