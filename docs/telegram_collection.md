@@ -51,6 +51,8 @@ $env:BLACKAGENT_TG_PHONE='+8613xxxxxxxxx'
 python scripts/telegram_telethon_collector.py --config config/telegram_watch.example.yaml --once --username-limit 2 --history-limit 10 --search-limit 2
 ```
 
+如果这是该账号第一次创建 Telethon session，需要在可交互终端运行一次并输入 Telegram 发来的登录验证码。登录成功后，`data/telethon/blackagent_telegram.session` 会被复用，后续 CLI 和调度器自动化运行不再需要输入验证码。
+
 CLI 入口等价命令：
 
 ```powershell
