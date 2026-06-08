@@ -28,6 +28,13 @@ def test_slang_candidate_report_exports_review_csv_and_lifecycle_records(tmp_pat
                 "context_examples": ["普通技术文章"],
                 "context_markers": [],
             },
+            {
+                "term": "影子词",
+                "normalized_term": "影子词",
+                "source_trace_ids_sample": ["trace-4"],
+                "context_examples": ["影子词联系详聊"],
+                "context_markers": ["contact_or_call_to_action"],
+            },
         ]
     }
 
@@ -37,12 +44,16 @@ def test_slang_candidate_report_exports_review_csv_and_lifecycle_records(tmp_pat
     rows[0]["reviewer"] = "analyst-a"
     rows[0]["target_risk_category"] = "诈骗引流"
     rows[0]["normalized_term"] = "WhatsApp"
+    rows[0]["target_stage"] = "ACTIVE"
     rows[0]["notes"] = "confirmed from reviewed traces"
     rows[0]["baseline_eval_report"] = json.dumps({"rule_version": "rules-before", "primary_classification_f1": 0.62})
     rows[0]["post_eval_report"] = json.dumps({"rule_version": "rules-after", "primary_classification_f1": 0.67})
     rows[1]["review_status"] = "rejected"
     rows[1]["reviewer"] = "analyst-a"
     rows[1]["notes"] = "generic phrase"
+    rows[2]["review_status"] = "pending"
+    rows[2]["reviewer"] = "analyst-a"
+    rows[2]["notes"] = "needs more evidence"
     with review_csv.open("w", encoding="utf-8-sig", newline="") as file_obj:
         writer = csv.DictWriter(file_obj, fieldnames=rows[0].keys())
         writer.writeheader()
@@ -52,6 +63,14 @@ def test_slang_candidate_report_exports_review_csv_and_lifecycle_records(tmp_pat
     assert lifecycle["status"] == "completed"
     assert lifecycle["approved_count"] == 1
     assert lifecycle["rejected_count"] == 1
+    assert lifecycle["pending_count"] == 1
+    assert [stage["stage"] for stage in lifecycle["lifecycle_flow"]["stages"]] == [
+        "candidate",
+        "human_review_csv",
+        "gray_rollout",
+        "activate",
+        "evaluation_gain",
+    ]
     assert lifecycle["records"][0]["term"] == "火苗"
     assert lifecycle["records"][0]["stage"] == "ACTIVE"
     assert lifecycle["records"][0]["reviewer"] == "analyst-a"
@@ -59,6 +78,8 @@ def test_slang_candidate_report_exports_review_csv_and_lifecycle_records(tmp_pat
     assert lifecycle["records"][0]["batch_id"]
     assert lifecycle["records"][0]["target_risk_category"] == "诈骗引流"
     assert lifecycle["records"][0]["evaluation_gain"]["primary_classification_f1_delta"] == 0.05
+    assert {record["term"] for record in lifecycle["runtime_ready_records"]} == {"火苗"}
+    assert "影子词" not in {record["term"] for record in lifecycle["runtime_ready_records"]}
 
     output.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(
@@ -84,6 +105,51 @@ def test_slang_candidate_report_exports_review_csv_and_lifecycle_records(tmp_pat
     lifecycle_payload = json.loads(lifecycle_json.read_text(encoding="utf-8"))
     assert lifecycle_payload["approved_count"] == 1
     assert lifecycle_payload["records"][0]["stage"] == "ACTIVE"
+    assert {record["term"] for record in lifecycle_payload["runtime_ready_records"]} == {"火苗"}
+
+
+def test_slang_lifecycle_respects_gray_rollout_target_stage(tmp_path):
+    review_csv = tmp_path / "slang_review.csv"
+    review_csv.write_text(
+        "\n".join(
+            [
+                ",".join(build_slang_candidate_report.REVIEW_CSV_FIELDS),
+                "火苗,WhatsApp,approved,诈骗引流,GRAY_ROLLOUT,,,,,analyst-a,,gray gate,trace-1,,",
+            ]
+        )
+        + "\n",
+        encoding="utf-8-sig",
+    )
+
+    lifecycle = build_slang_candidate_report.lifecycle_records_from_review_csv(review_csv)
+
+    assert lifecycle["approved_count"] == 1
+    assert lifecycle["records"][0]["stage"] == "GRAY_ROLLOUT"
+    assert lifecycle["records"][0]["target_risk_category"] == "诈骗引流"
+    assert lifecycle["activation_blocked_count"] == 0
+    assert {record["term"] for record in lifecycle["runtime_ready_records"]} == {"火苗"}
+
+
+def test_slang_lifecycle_blocks_active_target_without_post_eval_evidence(tmp_path):
+    review_csv = tmp_path / "slang_review.csv"
+    review_csv.write_text(
+        "\n".join(
+            [
+                ",".join(build_slang_candidate_report.REVIEW_CSV_FIELDS),
+                "火苗,WhatsApp,approved,诈骗引流,ACTIVE,,,,,analyst-a,,needs eval,trace-1,,",
+            ]
+        )
+        + "\n",
+        encoding="utf-8-sig",
+    )
+
+    lifecycle = build_slang_candidate_report.lifecycle_records_from_review_csv(review_csv)
+
+    assert lifecycle["approved_count"] == 1
+    assert lifecycle["activation_blocked_count"] == 1
+    assert lifecycle["records"][0]["stage"] == "GRAY_ROLLOUT"
+    assert lifecycle["activation_warnings"] == ["火苗:activation_requires_post_eval_report"]
+    assert {record["term"] for record in lifecycle["runtime_ready_records"]} == {"火苗"}
 
 
 def test_slang_lifecycle_eval_gain_compares_baseline_and_post_reports():

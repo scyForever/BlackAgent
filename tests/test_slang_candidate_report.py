@@ -33,6 +33,14 @@ def test_slang_candidate_report_mines_repeated_unknown_pending_terms_without_kno
 
     terms = {candidate["term"]: candidate for candidate in report["candidates"]}
     assert report["status"] == "completed"
+    assert [stage["stage"] for stage in report["lifecycle_flow"]["stages"]] == [
+        "candidate",
+        "human_review_csv",
+        "gray_rollout",
+        "activate",
+        "evaluation_gain",
+    ]
+    assert report["lifecycle_flow"]["runtime_ready_policy"]["pending_candidates_runtime_ready"] is False
     assert terms["火苗"]["lifecycle_stage"] == DynamicSlangLifecycleManager.NEW_CANDIDATE
     assert terms["火苗"]["review_status"] == "pending_human_confirmation"
     assert terms["火苗"]["count"] >= 3

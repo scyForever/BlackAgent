@@ -149,11 +149,35 @@ def test_manual_heldout_clue_gold_fixture_exists_with_evidence_chain_requirement
         for record in records
         for clue in record.get("expected_clues", [])
     ]
+    required_fields = {
+        "expected_evidence_trace_ids",
+        "expected_entity_values",
+        "min_evidence_count",
+        "min_source_count",
+        "requires_original_snippets",
+        "requires_time_range",
+    }
 
-    assert len(records) >= 8
-    assert len(expected) >= 8
-    assert all(clue.get("expected_evidence_trace_ids") for clue in expected)
-    assert all(clue.get("min_source_count") for clue in expected)
+    assert 20 <= len(records) <= 50
+    assert 20 <= len(expected) <= 50
+    for clue in expected:
+        assert required_fields <= set(clue)
+        assert clue["expected_evidence_trace_ids"]
+        assert clue["expected_entity_values"]
+        assert clue["min_evidence_count"] >= 2
+        assert clue["min_source_count"] >= 2
+        assert clue["requires_original_snippets"] is True
+        assert clue["requires_time_range"] is True
+
+    metrics = evaluate_clues(records, [])
+    object_eval = metrics["object_clue_eval"]
+    assert object_eval["expected_clue_count"] == len(expected)
+    assert "precision" in object_eval["overall"]
+    assert "recall" in object_eval["overall"]
+    assert "duplicate_clue_rate" in object_eval
+    assert "evidence_chain_precision" in object_eval
+    assert "evidence_chain_recall" in object_eval
+    assert "evidence_reviewability_rate" in object_eval
 
 
 def test_evaluate_pipeline_quality_gate_failures_are_explicit():
@@ -345,6 +369,66 @@ def test_hierarchical_classification_requires_and_scores_secondary_gold():
     assert metrics["secondary"]["tp"] == 1
     assert metrics["secondary"]["fp"] == 1
     assert metrics["secondary"]["fn"] == 1
+
+
+def test_classification_metrics_count_conflict_categories_as_review_predictions():
+    from scripts.evaluate_pipeline import evaluate_classification
+
+    records = [
+        {
+            "trace_id": "overlap",
+            "expected_risk_categories": ["账号交易", "工具交易"],
+        }
+    ]
+    actual = [
+        {
+            "source_trace_id": "overlap",
+            "risk_category": "工具交易",
+            "conflict_categories": ["账号交易"],
+        }
+    ]
+
+    metrics = evaluate_classification(records, actual, granularity="primary_only")
+
+    assert metrics["prediction_semantics"]["metric_scope"] == "review_augmented_predictions"
+    assert metrics["prediction_semantics"]["conflict_categories_counted_as_predictions"] is True
+    assert metrics["primary"]["tp"] == 2
+    assert metrics["primary"]["fp"] == 0
+    assert metrics["primary"]["fn"] == 0
+    assert metrics["primary"]["f1"] == 1.0
+
+
+def test_classification_metrics_count_conflict_secondary_candidates_for_overlap_review():
+    from scripts.evaluate_pipeline import evaluate_classification
+
+    records = [
+        {
+            "trace_id": "overlap-secondary",
+            "expected_risk_categories": ["账号交易", "工具交易"],
+            "expected_secondary_labels": ["接码注册", "卡密交易"],
+        }
+    ]
+    actual = [
+        {
+            "source_trace_id": "overlap-secondary",
+            "risk_category": "工具交易",
+            "secondary_label": "卡密交易",
+            "conflict_categories": ["账号交易"],
+            "candidate_secondary_labels": [
+                {"label": "卡密交易", "evidence": ["卡密"], "reason": "secondary_gate_ready"},
+                {"label": "接码注册", "evidence": ["接码"], "reason": "sms_platform_context"},
+            ],
+        }
+    ]
+
+    metrics = evaluate_classification(records, actual, granularity="hierarchical")
+
+    assert metrics["secondary"]["tp"] == 2
+    assert metrics["secondary"]["fp"] == 0
+    assert metrics["secondary"]["fn"] == 0
+    assert metrics["hierarchical"]["tp"] == 4
+    assert metrics["hierarchical"]["fp"] == 0
+    assert metrics["hierarchical"]["fn"] == 0
 
 
 def test_classification_review_load_reports_review_buckets():

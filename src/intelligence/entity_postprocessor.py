@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import hashlib
+import re
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
@@ -38,6 +39,45 @@ IMAGE_OR_TEMPLATE_URL_MARKERS = (
     "cdn.",
 )
 
+SOCIAL_FOOTER_URL_MARKERS = (
+    "t.me/",
+    "telegram.me/",
+    "linkedin.com/",
+    "twitter.com/",
+    "x.com/",
+    "facebook.com/",
+    "instagram.com/",
+    "youtube.com/",
+)
+
+URL_TEMPLATE_MARKERS = (
+    "{query}",
+    "{keyword}",
+    "{search}",
+    "%s",
+)
+
+TRADE_CONTEXT_MARKERS = (
+    "出售",
+    "接单",
+    "上车",
+    "低价",
+    "联系",
+    "客服",
+    "咨询",
+    "价格",
+    "引流",
+    "群控",
+    "脚本",
+    "邀请码",
+    "结算",
+    "账号",
+    "账户",
+    "for sale",
+    "low price",
+    "wholesale",
+)
+
 
 def filter_and_order_entities(entities: Iterable[Any], record: Mapping[str, Any] | Any) -> list[Any]:
     """Drop page-template entities and sort high-value entities first."""
@@ -58,13 +98,36 @@ def _contextual_entity(entity: Any, text: str) -> Any:
     normalized = _normalized_value(entity)
     raw = _entity_value(entity)
     local_prefix = text[max(0, _offset(entity) - 16) : _offset(entity)].lower()
+    if entity_type == "contact" and (normalized.lower() in PSEUDO_VALUES or raw.lower() in PSEUDO_VALUES):
+        return entity
     if entity_type == "contact" and normalized and ":" not in normalized:
-        if any(marker in local_prefix for marker in ("telegram", "飞机", "纸飞机", "@")) or _high_value_contact_context(text, entity):
+        bare = normalized.lstrip("@")
+        if _prefix_ends_with_any(local_prefix, ("qq", "企鹅", "🐧")) and bare.isdigit():
             return _replace_entity(
                 entity,
                 entity_type="contact",
-                normalized_value=f"Telegram:{normalized.lstrip('@')}",
-                masked_value=_mask_sensitive(f"Telegram:{normalized.lstrip('@')}"),
+                normalized_value=f"QQ:{bare}",
+                masked_value=_mask_sensitive(f"QQ:{bare}"),
+                sensitivity_level="sensitive",
+            )
+        if _prefix_ends_with_any(local_prefix, ("微信", "wechat", "vx", "v信", "加v", "wx")):
+            return _replace_entity(
+                entity,
+                entity_type="contact",
+                normalized_value=f"WeChat:{bare}",
+                masked_value=_mask_sensitive(f"WeChat:{bare}"),
+                sensitivity_level="sensitive",
+            )
+        if (
+            _prefix_ends_with_any(local_prefix, ("telegram", "tg", "飞机", "纸飞机"))
+            or raw.startswith("@")
+            or (_high_value_contact_context(text, entity) and _looks_like_telegram_handle(bare))
+        ):
+            return _replace_entity(
+                entity,
+                entity_type="contact",
+                normalized_value=f"Telegram:{bare}",
+                masked_value=_mask_sensitive(f"Telegram:{bare}"),
                 sensitivity_level="sensitive",
             )
     if entity_type == "invite_code" and any(marker in local_prefix for marker in ("uid", "用户id", "账号", "账户")):
@@ -89,17 +152,23 @@ def _contextual_entity(entity: Any, text: str) -> Any:
 def _is_pseudo_entity(entity: Any, text: str, source_urls: set[str]) -> bool:
     value = _normalized_value(entity).strip()
     lowered = value.lower().strip()
-    if not lowered or lowered in PSEUDO_VALUES:
+    raw_lowered = _entity_value(entity).lower().strip()
+    if not lowered or lowered in PSEUDO_VALUES or raw_lowered in PSEUDO_VALUES:
         return True
     entity_type = _entity_type(entity)
     if entity_type == "slang_term" and lowered in PSEUDO_VALUES:
         return True
     if entity_type == "url":
+        if any(marker in lowered for marker in URL_TEMPLATE_MARKERS):
+            return True
         normalized_url = _normalize_url_for_compare(value)
         if normalized_url in source_urls:
             return True
         if any(marker in lowered for marker in IMAGE_OR_TEMPLATE_URL_MARKERS):
             if _looks_like_page_boilerplate_context(text, _offset(entity)):
+                return True
+        if any(marker in lowered for marker in SOCIAL_FOOTER_URL_MARKERS):
+            if _looks_like_social_footer_context(text, _offset(entity)):
                 return True
     if entity_type == "contact" and lowered.startswith("telegram:"):
         if _looks_like_neutral_channel_context(text, _offset(entity)):
@@ -132,9 +201,32 @@ def _looks_like_page_boilerplate_context(text: str, start: int) -> bool:
     return any(marker in window for marker in ("image", "logo", "follow us", "linkedin", "twitter", "home", "channel"))
 
 
+def _looks_like_social_footer_context(text: str, start: int) -> bool:
+    left = normalize_text(text[max(0, start - 72) : start]).lower()
+    window = normalize_text(text[max(0, start - 72) : start + 72]).lower()
+    if any(marker in left for marker in TRADE_CONTEXT_MARKERS):
+        return False
+    return any(
+        marker in window
+        for marker in (
+            "follow us",
+            "follow",
+            "telegram channel",
+            "channel",
+            "linkedin",
+            "twitter",
+            "facebook",
+            "instagram",
+            "youtube",
+            "footer",
+            "share",
+        )
+    )
+
+
 def _looks_like_neutral_channel_context(text: str, start: int) -> bool:
     window = normalize_text(text[max(0, start - 32) : start + 32]).lower()
-    if any(marker in window for marker in ("出售", "接单", "上车", "低价", "联系", "客服", "咨询", "价格")):
+    if any(marker in window for marker in TRADE_CONTEXT_MARKERS):
         return False
     return "channel" in window or "follow us" in window
 
@@ -169,6 +261,10 @@ def _replace_entity(entity: Any, **updates: Any) -> Any:
     normalized = str(updates.get("normalized_value") or _normalized_value(entity)).strip()
     if normalized:
         updates.setdefault("canonical_hash", _canonical_hash(entity_type, normalized))
+    if isinstance(entity, Mapping):
+        data = dict(entity)
+        data.update(updates)
+        return data
     try:
         return replace(entity, **updates)
     except TypeError:
@@ -188,7 +284,16 @@ def _mask_sensitive(value: str) -> str:
 
 def _high_value_contact_context(text: str, entity: Any) -> bool:
     window = normalize_text(text[max(0, _offset(entity) - 48) : _offset(entity) + 64]).lower()
-    return any(marker in window for marker in ("出售", "接单", "上车", "低价", "联系", "客服", "咨询", "价格", "引流", "群控"))
+    return any(marker in window for marker in TRADE_CONTEXT_MARKERS)
+
+
+def _looks_like_telegram_handle(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{2,31}", value or ""))
+
+
+def _prefix_ends_with_any(prefix: str, markers: Iterable[str]) -> bool:
+    compact = re.sub(r"[\s:：@]+$", "", prefix.lower())
+    return any(compact.endswith(marker.lower()) for marker in markers)
 
 
 def _canonical_hash(entity_type: str, normalized_value: str) -> str:

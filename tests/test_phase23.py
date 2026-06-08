@@ -3,6 +3,7 @@ from src.enhancement.engine import PhaseTwoThreeEngine
 from src.enhancement.lifecycle import DynamicSlangLifecycleManager, PromptEvaluator
 from src.enhancement.source_intake import ComplianceSourceDiscovery, MultimodalTextExtractor
 from src.enhancement.text_intelligence import AdaptiveEntropyFilter, AdvancedEntityExtractor, FineGrainedIntentClassifier, SlangVariantNormalizer
+from src.intelligence.entity_postprocessor import filter_and_order_entities
 from src.classifier.nlp_rule_matcher import (
     ACCOUNT_TRADING,
     CLICK_FARMING,
@@ -561,8 +562,8 @@ def test_advanced_components_cover_conflict_entropy_compliance_and_lifecycle():
             "matched_keywords": ["私域", "导流"],
         }
     )
-    assert crowd_ops.risk_category == CROWD_SERVICE
-    assert crowd_ops.secondary_label == "代运营"
+    assert crowd_ops.risk_category == FRAUD_TRAFFIC
+    assert crowd_ops.secondary_label == "私域导流"
 
     crowd_ads = FineGrainedIntentClassifier().classify(
         {
@@ -712,7 +713,9 @@ def test_advanced_components_cover_conflict_entropy_compliance_and_lifecycle():
     lifecycle = DynamicSlangLifecycleManager()
     lifecycle.nominate("音符", "抖音", ["trace-1"])
     lifecycle.review("音符", approved=True, reviewer="analyst")
+    assert lifecycle.runtime_terms_mapping() == {}
     lifecycle.gray_rollout("音符", reviewer="analyst")
+    assert lifecycle.runtime_terms_mapping() == {"音符": "抖音"}
     assert lifecycle.activate("音符", reviewer="analyst").stage == lifecycle.ACTIVE
     lifecycle.ingest_review_decision(
         {
@@ -762,10 +765,17 @@ def test_advanced_entity_extractor_filters_source_aware_boilerplate_and_prioriti
             "source_name": "automationforum",
             "source_type": "Article",
             "source_class": "social_or_forum",
+            "source_url": "https://www.easy-automation.com/automationtechnology",
+            "query_url_template": "https://search.example.com/?q={query}",
             "content_text": (
-                "Home Channel Image https://static.example.com/logo.png Follow Us On LinkedIn "
-                "真正风险：群控脚本出售，联系 TG:riskcore01，微信 wxrisk01，"
-                "邀请码 code:ABCD88，USDT 结算，落地 risk-pay.example/path，账号 UID:acct8899"
+                "Home Channel Image https http https://static.example.com/logo.png "
+                "Source https://www.easy-automation.com/automationtechnology "
+                "Search https://search.example.com/?q=telegram "
+                "Follow Us Telegram Channel https://t.me/Automationforum On LinkedIn "
+                "https://linkedin.com/company/automationforum Twitter https://twitter.com/automationforum "
+                "真正风险：群控脚本出售，联系 TG:riskcore01，微信 wxrisk01，QQ:1234567，"
+                "邀请码 code:ABCD88，USDT 结算，落地 risk-pay.example/path，账号 UID:acct8899，"
+                "低价接单客服 https://t.me/riskdeal01"
             ),
         }
     )
@@ -775,20 +785,96 @@ def test_advanced_entity_extractor_filters_source_aware_boilerplate_and_prioriti
 
     assert "Image" not in values
     assert "Channel" not in values
+    assert "https" not in values
+    assert "http" not in values
     assert "https://static.example.com/logo.png" not in values
-    assert values[:7] == [
+    assert "https://www.easy-automation.com/automationtechnology" not in values
+    assert "https://search.example.com/?q=telegram" not in values
+    assert "https://t.me/Automationforum" not in values
+    assert "https://linkedin.com/company/automationforum" not in values
+    assert "https://twitter.com/automationforum" not in values
+    assert "https://t.me/riskdeal01" in values
+    assert values[:9] == [
         "Telegram:riskcore01",
         "WeChat:wxrisk01",
+        "QQ:1234567",
         "https://risk-pay.example/path",
+        "https://t.me/riskdeal01",
         "acct8899",
         "ABCD88",
         "USDT",
         "群控",
     ]
-    assert types[:7] == ["contact", "contact", "url", "account", "invite_code", "settlement", "tool_name"]
+    assert types[:9] == ["contact", "contact", "contact", "url", "url", "account", "invite_code", "settlement", "tool_name"]
     import hashlib
 
     assert entities[0].canonical_hash == hashlib.sha256("contact:telegram:riskcore01".encode("utf-8")).hexdigest()
+
+
+def test_entity_postprocessor_drops_footer_template_pseudo_entities_and_keeps_trade_links():
+    text = (
+        "Footer Home Image https://cdn.example.com/logo.png "
+        "Source https://source.example/post?utm=nav "
+        "Search https://source.example/search?q=telegram "
+        "Follow us Telegram Channel https://t.me/SecurityDigest on LinkedIn "
+        "https://linkedin.com/company/securitydigest and Twitter https://twitter.com/securitydigest. "
+        "真正风险：联系 TG:riskcore01 微信 wxrisk01 QQ:1234567，"
+        "落地域名 risk-pay.example，低价接单客服 https://t.me/riskdeal01，"
+        "账号 UID:acct8899，邀请码 code:ABCD88，USDT 结算，群控脚本出售。"
+    )
+
+    def entity(entity_type, value, normalized=None):
+        return {
+            "entity_type": entity_type,
+            "entity_value": value,
+            "normalized_value": normalized or value,
+            "start_offset": text.find(value),
+        }
+
+    ordered = filter_and_order_entities(
+        [
+            entity("slang_term", "Image"),
+            entity("contact", "Channel"),
+            entity("url", "https"),
+            entity("url", "http"),
+            entity("url", "https://cdn.example.com/logo.png"),
+            entity("url", "https://source.example/post?utm=nav"),
+            entity("url", "https://source.example/search?q=telegram"),
+            entity("url", "https://t.me/SecurityDigest"),
+            entity("url", "https://linkedin.com/company/securitydigest"),
+            entity("url", "https://twitter.com/securitydigest"),
+            entity("contact", "TG:riskcore01", "Telegram:riskcore01"),
+            entity("contact", "wxrisk01", "WeChat:wxrisk01"),
+            entity("contact", "QQ:1234567", "QQ:1234567"),
+            entity("domain", "risk-pay.example"),
+            entity("url", "https://t.me/riskdeal01"),
+            entity("account", "acct8899"),
+            entity("invite_code", "ABCD88"),
+            entity("settlement", "USDT"),
+            entity("tool_name", "群控"),
+        ],
+        {
+            "content_text": text,
+            "source_url": "https://source.example/post?utm=nav",
+            "query_url_template": "https://source.example/search?q={query}",
+        },
+    )
+
+    values = [item["normalized_value"] for item in ordered]
+    types = [item["entity_type"] for item in ordered]
+
+    assert values == [
+        "Telegram:riskcore01",
+        "WeChat:wxrisk01",
+        "QQ:1234567",
+        "risk-pay.example",
+        "https://t.me/riskdeal01",
+        "acct8899",
+        "ABCD88",
+        "USDT",
+        "群控",
+    ]
+    assert types == ["contact", "contact", "contact", "domain", "url", "account", "invite_code", "settlement", "tool_name"]
 
 
 def test_vector_and_graph_repositories_are_adapter_shaped():

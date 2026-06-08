@@ -116,13 +116,46 @@ def test_build_report_aggregates_acceptance_sections_and_test_results(tmp_path):
         json.dumps(
             {
                 "status": "completed",
-                "counts": {"high_quality_count": 1, "risk_clue_count": 2},
+                "query": "取当天诈骗引流相关线索",
+                "selected_source_classes": ["im_or_group", "social_or_forum"],
+                "selected_source_names": ["public-tg", "forum-search"],
+                "collection_runs": [
+                    {
+                        "source_name": "public-tg",
+                        "source_class": "im_or_group",
+                        "collection_layer": "theme_core",
+                        "fetched_count": 6,
+                        "status": "completed",
+                    },
+                    {
+                        "source_name": "forum-search",
+                        "source_class": "social_or_forum",
+                        "collection_layer": "global_core",
+                        "fetched_count": 4,
+                        "status": "completed",
+                    },
+                ],
+                "counts": {"input_count": 12, "fetched_count": 10, "accepted_count": 8, "high_quality_count": 1, "risk_clue_count": 2},
+                "execution_summary": {
+                    "elapsed_seconds": 1.25,
+                    "budget": {"max_sources": 4, "max_elapsed_seconds": 20},
+                    "llm_cost": {"total_usd": 0.02, "prompt_tokens": 120, "completion_tokens": 40},
+                },
                 "agent_final_output": [
                     {
                         "clue_id": "clue-1",
-                        "risk_category": "工具交易",
+                        "clue_type": "traffic_diversion",
+                        "risk_category": "诈骗引流",
                         "evidence_trace_count": 3,
+                        "evidence_trace_ids": ["risk", "review"],
                         "source_names": ["forum"],
+                        "evidence_chain": [
+                            {
+                                "source_trace_id": "risk",
+                                "source_name": "forum",
+                                "classification_label": "诈骗引流",
+                            }
+                        ],
                     }
                 ],
             },
@@ -136,6 +169,25 @@ def test_build_report_aggregates_acceptance_sections_and_test_results(tmp_path):
                 "primary_classification_f1": 0.82,
                 "false_positive_rate": 0.12,
                 "classification_review_rate": 0.3,
+                "classification": {
+                    "prediction_semantics": {
+                        "metric_scope": "review_augmented_predictions",
+                        "conflict_categories_counted_as_predictions": True,
+                    }
+                },
+                "clue_f1": 0.42,
+                "clue_precision": 0.7,
+                "clue_recall": 0.3,
+                "clue": {
+                    "expected_clue_count": 24,
+                    "actual_clue_count": 6,
+                    "object_clue_eval": {
+                        "overall": {"f1": 0.25},
+                        "evidence_chain_precision": 0.5,
+                        "evidence_chain_recall": 0.4,
+                        "evidence_reviewability_rate": 0.6,
+                    },
+                },
             },
             ensure_ascii=False,
         ),
@@ -173,4 +225,27 @@ def test_build_report_aggregates_acceptance_sections_and_test_results(tmp_path):
     assert saved["entity_stats"]["entity_type_counts"]["contact"] == 2
     assert saved["clue_samples"][0]["clue_id"] == "clue-1"
     assert saved["evaluation_metrics"]["primary_classification_f1"] == 0.82
+    assert saved["evaluation_metrics"]["clue_f1"] == 0.42
+    assert saved["evaluation_metrics"]["object_clue_f1"] == 0.25
+    assert saved["evaluation_metrics"]["evidence_reviewability_rate"] == 0.6
+    assert saved["evaluation_metrics"]["classification_prediction_semantics"]["metric_scope"] == "review_augmented_predictions"
     assert saved["test_results"][0]["returncode"] == 0
+    demo = saved["end_to_end_demo"]
+    assert demo["query"] == "取当天诈骗引流相关线索"
+    assert demo["source_selection"]["selected_source_names"] == ["public-tg", "forum-search"]
+    assert demo["source_selection"]["selected_source_classes"] == ["im_or_group", "social_or_forum"]
+    assert demo["collection"]["fetched_count"] == 10
+    assert demo["cleaning"]["cleaned_count"] == 10
+    assert demo["classification"]["record_review_buckets"] == {
+        "explicit_risk": 1,
+        "low_relevance": 1,
+        "human_review_required": 1,
+    }
+    assert demo["entities"]["entity_type_counts"]["contact"] == 2
+    assert demo["clues"]["evidence_chain"][0]["clue_id"] == "clue-1"
+    assert demo["clues"]["evidence_chain"][0]["evidence_trace_ids"] == ["risk", "review"]
+    assert demo["cost_latency"]["elapsed_seconds"] == 1.25
+    assert demo["cost_latency"]["llm_cost"]["total_usd"] == 0.02
+    assert demo["verification"]["test_results"][0]["status"] == "passed"
+    assert demo["evidence_scope"]["mode"] == "single_e2e_artifact_with_supporting_aggregates"
+    assert "end_to_end_demo" in saved["acceptance_keys"]

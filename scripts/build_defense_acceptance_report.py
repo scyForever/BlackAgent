@@ -90,24 +90,44 @@ def build_report(
     entity_rows = list(entities or [])
     e2e_evidence = dict(e2e_evidence or {})
     eval_report = dict(eval_report or {})
+    collection_coverage = _collection_coverage(collection_stats)
+    cleaning_stats = _cleaning_stats(cleaning_summary)
+    classification_stats = _classification_stats(classification_summary, classification_rows)
+    entity_stats = _entity_stats(entity_rows, classification_summary)
+    clue_stats = _clue_stats(e2e_evidence)
+    clue_samples = _clue_samples(e2e_evidence)
+    evaluation_metrics = _evaluation_metrics(eval_report)
+    test_results = _run_test_commands(test_commands or [], run_tests=run_tests)
 
     report = {
         "status": "completed",
         "run_type": "defense_acceptance_summary",
-        "collection_coverage": _collection_coverage(collection_stats),
-        "cleaning_stats": _cleaning_stats(cleaning_summary),
-        "classification_stats": _classification_stats(classification_summary, classification_rows),
-        "entity_stats": _entity_stats(entity_rows, classification_summary),
-        "clue_stats": _clue_stats(e2e_evidence),
-        "clue_samples": _clue_samples(e2e_evidence),
-        "evaluation_metrics": _evaluation_metrics(eval_report),
-        "test_results": _run_test_commands(test_commands or [], run_tests=run_tests),
+        "collection_coverage": collection_coverage,
+        "cleaning_stats": cleaning_stats,
+        "classification_stats": classification_stats,
+        "entity_stats": entity_stats,
+        "clue_stats": clue_stats,
+        "clue_samples": clue_samples,
+        "evaluation_metrics": evaluation_metrics,
+        "test_results": test_results,
+        "end_to_end_demo": _end_to_end_demo(
+            e2e_evidence=e2e_evidence,
+            collection_coverage=collection_coverage,
+            cleaning_stats=cleaning_stats,
+            classification_stats=classification_stats,
+            entity_stats=entity_stats,
+            clue_stats=clue_stats,
+            clue_samples=clue_samples,
+            evaluation_metrics=evaluation_metrics,
+            test_results=test_results,
+        ),
         "acceptance_keys": [
             "collection_coverage.source_class_counts",
             "cleaning_stats.cleaned_count",
             "classification_stats.category_counts",
             "entity_stats.entity_type_counts",
             "clue_samples",
+            "end_to_end_demo",
             "evaluation_metrics.primary_classification_f1",
             "test_results",
         ],
@@ -224,14 +244,204 @@ def _clue_samples(evidence: dict[str, Any], *, limit: int = 5) -> list[dict[str,
     return samples
 
 
+def _end_to_end_demo(
+    *,
+    e2e_evidence: dict[str, Any],
+    collection_coverage: dict[str, Any],
+    cleaning_stats: dict[str, Any],
+    classification_stats: dict[str, Any],
+    entity_stats: dict[str, Any],
+    clue_stats: dict[str, Any],
+    clue_samples: list[dict[str, Any]],
+    evaluation_metrics: dict[str, Any],
+    test_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    counts = e2e_evidence.get("counts") if isinstance(e2e_evidence.get("counts"), dict) else {}
+    execution_summary = (
+        e2e_evidence.get("execution_summary")
+        if isinstance(e2e_evidence.get("execution_summary"), dict)
+        else {}
+    )
+    collection_runs = [item for item in e2e_evidence.get("collection_runs") or [] if isinstance(item, dict)]
+    return {
+        "query": str(e2e_evidence.get("query") or "取当天诈骗引流相关线索"),
+        "evidence_scope": _demo_evidence_scope(e2e_evidence, collection_runs),
+        "source_selection": _demo_source_selection(e2e_evidence, collection_runs, collection_coverage),
+        "collection": {
+            "input_count": int(counts.get("input_count") or e2e_evidence.get("input_count") or 0),
+            "fetched_count": int(
+                counts.get("fetched_count")
+                or e2e_evidence.get("fetched_count")
+                or sum(int(item.get("fetched_count") or 0) for item in collection_runs)
+            ),
+            "selected_source_count": int(
+                counts.get("selected_source_count")
+                or e2e_evidence.get("selected_source_count")
+                or len(_unique_values(item.get("source_name") for item in collection_runs))
+            ),
+            "collection_runs": _demo_collection_runs(collection_runs),
+            "coverage": collection_coverage,
+        },
+        "cleaning": {
+            **cleaning_stats,
+            "accepted_count": int(counts.get("accepted_count") or cleaning_stats.get("cleaned_count") or 0),
+        },
+        "classification": classification_stats,
+        "entities": {
+            **entity_stats,
+            "e2e_entity_count": int(counts.get("entity_count") or entity_stats.get("entity_count") or 0),
+        },
+        "clues": {
+            **clue_stats,
+            "samples": clue_samples,
+            "evidence_chain": _demo_evidence_chain(e2e_evidence),
+        },
+        "cost_latency": _demo_cost_latency(e2e_evidence, execution_summary),
+        "verification": {
+            "evaluation_metrics": evaluation_metrics,
+            "test_results": test_results,
+        },
+        "claim_boundary": (
+            "End-to-end demo evidence is assembled from local artifacts and explicit test commands; "
+            "live collection is claimed only when the evidence artifact itself records a live run."
+        ),
+    }
+
+
+def _demo_source_selection(
+    evidence: dict[str, Any],
+    collection_runs: list[dict[str, Any]],
+    collection_coverage: dict[str, Any],
+) -> dict[str, Any]:
+    plan = evidence.get("investigation_plan") if isinstance(evidence.get("investigation_plan"), dict) else {}
+    strategy = evidence.get("source_selection_strategy")
+    if not isinstance(strategy, dict):
+        strategy = plan.get("source_selection_strategy") if isinstance(plan.get("source_selection_strategy"), dict) else {}
+    selected_names = _string_list(evidence.get("selected_source_names")) or _string_list(plan.get("selected_source_names"))
+    if not selected_names:
+        selected_names = _unique_values(item.get("source_name") for item in collection_runs)
+    selected_classes = (
+        _string_list(evidence.get("selected_source_classes"))
+        or _string_list(evidence.get("collection_source_classes_executed"))
+        or _unique_values(item.get("source_class") for item in collection_runs)
+        or list((collection_coverage.get("source_class_counts") or {}).keys())
+    )
+    return {
+        "selected_source_names": selected_names,
+        "selected_source_classes": selected_classes,
+        "strategy": strategy,
+        "source_catalog": evidence.get("source_catalog"),
+        "command": evidence.get("command"),
+    }
+
+
+def _demo_evidence_scope(evidence: dict[str, Any], collection_runs: list[dict[str, Any]]) -> dict[str, Any]:
+    status = str(evidence.get("status") or "").strip()
+    has_single_e2e_artifact = bool(status or collection_runs or evidence.get("agent_final_output"))
+    mode = (
+        "single_e2e_artifact_with_supporting_aggregates"
+        if has_single_e2e_artifact
+        else "supporting_aggregates_only"
+    )
+    return {
+        "mode": mode,
+        "e2e_status": status or None,
+        "uses_supporting_aggregates": True,
+        "supporting_aggregate_sections": [
+            "collection_coverage",
+            "cleaning_stats",
+            "classification_stats",
+            "entity_stats",
+            "evaluation_metrics",
+            "test_results",
+        ],
+        "claim_boundary": (
+            "Demo steps come from one explicit e2e evidence artifact when present; "
+            "coverage, evaluation, and verification fields are supporting aggregate artifacts."
+        ),
+    }
+
+
+def _demo_collection_runs(collection_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in collection_runs:
+        rows.append(
+            {
+                "source_name": item.get("source_name"),
+                "source_class": item.get("source_class"),
+                "collection_layer": item.get("collection_layer"),
+                "fetched_count": int(item.get("fetched_count") or 0),
+                "status": item.get("status"),
+            }
+        )
+    return rows
+
+
+def _demo_evidence_chain(evidence: dict[str, Any], *, limit: int = 5) -> list[dict[str, Any]]:
+    clues = [item for item in evidence.get("agent_final_output") or [] if isinstance(item, dict)]
+    rows: list[dict[str, Any]] = []
+    for clue in clues[:limit]:
+        raw_chain = clue.get("evidence_chain") if isinstance(clue.get("evidence_chain"), list) else []
+        evidence_trace_ids = _string_list(clue.get("evidence_trace_ids")) or _unique_values(
+            item.get("source_trace_id") for item in raw_chain if isinstance(item, dict)
+        )
+        rows.append(
+            {
+                "clue_id": clue.get("clue_id"),
+                "clue_type": clue.get("clue_type"),
+                "risk_category": clue.get("risk_category"),
+                "evidence_trace_ids": evidence_trace_ids,
+                "source_names": _string_list(clue.get("source_names")),
+                "evidence_trace_count": int(clue.get("evidence_trace_count") or len(evidence_trace_ids)),
+                "evidence_chain": [dict(item) for item in raw_chain if isinstance(item, dict)],
+            }
+        )
+    return rows
+
+
+def _demo_cost_latency(evidence: dict[str, Any], execution_summary: dict[str, Any]) -> dict[str, Any]:
+    budget = execution_summary.get("budget") if isinstance(execution_summary.get("budget"), dict) else {}
+    llm_cost = (
+        execution_summary.get("llm_cost")
+        if isinstance(execution_summary.get("llm_cost"), dict)
+        else evidence.get("llm_cost")
+        if isinstance(evidence.get("llm_cost"), dict)
+        else {}
+    )
+    return {
+        "elapsed_seconds": _optional_float(execution_summary.get("elapsed_seconds") or evidence.get("elapsed_seconds")),
+        "elapsed_ms": _optional_float(execution_summary.get("elapsed_ms") or evidence.get("elapsed_ms")),
+        "budget": budget,
+        "llm_cost": llm_cost,
+        "elapsed_budget_exhausted": bool(
+            execution_summary.get("elapsed_budget_exhausted") or evidence.get("elapsed_budget_exhausted")
+        ),
+    }
+
+
 def _evaluation_metrics(report: dict[str, Any]) -> dict[str, Any]:
+    clue = report.get("clue") if isinstance(report.get("clue"), dict) else {}
+    classification = report.get("classification") if isinstance(report.get("classification"), dict) else {}
+    object_eval = clue.get("object_clue_eval") if isinstance(clue.get("object_clue_eval"), dict) else {}
+    object_overall = object_eval.get("overall") if isinstance(object_eval.get("overall"), dict) else {}
     return {
         "primary_classification_f1": report.get("primary_classification_f1"),
         "secondary_classification_f1": report.get("secondary_classification_f1"),
         "hierarchical_classification_f1": report.get("hierarchical_classification_f1"),
+        "classification_prediction_semantics": classification.get("prediction_semantics") or {},
         "false_positive_rate": report.get("false_positive_rate"),
         "classification_review_rate": report.get("classification_review_rate"),
         "entity_f1": report.get("entity_f1"),
+        "clue_precision": report.get("clue_precision"),
+        "clue_recall": report.get("clue_recall"),
+        "clue_f1": report.get("clue_f1"),
+        "expected_clue_count": clue.get("expected_clue_count"),
+        "actual_clue_count": clue.get("actual_clue_count"),
+        "duplicate_clue_rate": clue.get("duplicate_clue_rate"),
+        "object_clue_f1": object_overall.get("f1"),
+        "evidence_chain_precision": object_eval.get("evidence_chain_precision"),
+        "evidence_chain_recall": object_eval.get("evidence_chain_recall"),
+        "evidence_reviewability_rate": object_eval.get("evidence_reviewability_rate"),
         "dataset": report.get("dataset") or {},
     }
 
@@ -283,6 +493,33 @@ def _run_test_commands(commands: Iterable[str], *, run_tests: bool) -> list[dict
             }
         )
     return results
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item or "").strip()]
+
+
+def _unique_values(values: Iterable[Any]) -> list[str]:
+    rows: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        rows.append(normalized)
+    return rows
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _rows_to_count_map(rows: Any, name_key: str) -> dict[str, int]:

@@ -26,10 +26,13 @@ if hasattr(sys.stdout, "reconfigure"):
 
 DEFAULT_SOURCE_MIN_QUOTAS: dict[str, int] = {
     "vertical_or_technical": 1,
+    "social_or_forum": 1,
     "public_account_or_article": 1,
     "secondhand_market": 1,
     "crowdsourcing_platform": 1,
 }
+
+DEFAULT_SOURCE_NAME_MAX_QUOTA = 2
 
 
 def parse_args() -> argparse.Namespace:
@@ -164,15 +167,6 @@ def selected_sources_from_args(args: argparse.Namespace, catalog_path: Path) -> 
 
     requested_classes = {str(item) for item in (args.source_class or []) if str(item).strip()}
     max_sources = max(0, int(args.max_sources or 0))
-    if not requested_classes and max_sources <= 0:
-        return None, {
-            "selection_mode": "catalog_all",
-            "source_class_filter": [],
-            "max_sources": 0,
-            "expanded_source_count": None,
-            "selected_source_count": None,
-        }
-
     expanded = load_source_catalog(catalog_path)
     filtered = [
         dict(source)
@@ -184,6 +178,7 @@ def selected_sources_from_args(args: argparse.Namespace, catalog_path: Path) -> 
         filtered,
         max_sources=max_sources,
         minimum_quotas=minimum_quotas,
+        source_name_max_quota=DEFAULT_SOURCE_NAME_MAX_QUOTA,
     )
     selected = quota_selection.selected
     selected_class_counts = Counter(source_class_for_record(source) for source in selected)
@@ -199,6 +194,7 @@ def selected_sources_from_args(args: argparse.Namespace, catalog_path: Path) -> 
         "source_class_filter": sorted(requested_classes),
         "max_sources": max_sources,
         "source_minimum_quotas": minimum_quotas,
+        "source_name_max_quota": DEFAULT_SOURCE_NAME_MAX_QUOTA,
         "expanded_source_count": len(expanded),
         "filtered_source_count": len(filtered),
         "selected_source_count": len(selected),
@@ -207,6 +203,8 @@ def selected_sources_from_args(args: argparse.Namespace, catalog_path: Path) -> 
         "selected_source_group_counts": dict(sorted(selected_group_counts.items())),
         "selected_source_quota_counts": dict(sorted(selected_quota_counts.items())),
         "source_quota_warnings": quota_selection.warnings,
+        "selected_source_name_counts": quota_selection.source_name_counts,
+        "source_name_quota_warnings": quota_selection.source_name_warnings,
         "selected_source_names": [str(source.get("source_name") or "") for source in selected],
     }
 

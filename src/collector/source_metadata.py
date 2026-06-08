@@ -291,6 +291,8 @@ def source_quota_groups_for_record(record: Mapping[str, Any]) -> tuple[str, ...]
     has_granular_non_vertical = any(marker in text for marker in SECONDHAND_SOURCE_MARKERS | CROWDSOURCING_SOURCE_MARKERS)
     if source_class_for_record(record) == "vertical_or_technical" and not has_granular_non_vertical:
         groups.append("vertical_or_technical")
+    if source_class_for_record(record) == "social_or_forum":
+        groups.append("social_or_forum")
     if is_article_source_record(record):
         groups.append("public_account_or_article")
         groups.append("public_account_article")

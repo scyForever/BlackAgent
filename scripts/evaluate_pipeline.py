@@ -444,6 +444,17 @@ def evaluate_classification(
         "review_load": _classification_review_load(actual_item_list, record_count=len(records)),
         "granularity": resolved_granularity,
         "evaluation_mode": evaluation_mode,
+        "prediction_semantics": {
+            "metric_scope": "review_augmented_predictions",
+            "primary_predictions": "risk_category_plus_conflict_categories",
+            "secondary_predictions": "secondary_label_plus_evidence_backed_conflict_candidate_secondary_labels",
+            "conflict_categories_counted_as_predictions": True,
+            "candidate_secondary_requires_evidence": True,
+            "note": (
+                "Classification precision/recall counts conflict alternatives as review predictions "
+                "so overlap cases measure whether the candidate set preserves gold labels."
+            ),
+        },
         "positive_record_count": positive_record_count,
         "negative_record_count": negative_record_count,
         "secondary_gold": {
@@ -836,6 +847,9 @@ def predicted_categories(classification: Mapping[str, Any]) -> set[str]:
     expected = classification.get("expected_risk_categories")
     categories = {_normalize_label(item) for item in expected} if isinstance(expected, list) else set()
     categories.update({_normalize_label(item) for item in classification.get("expected_primary_risks", [])} if isinstance(classification.get("expected_primary_risks"), list) else set())
+    conflicts = classification.get("conflict_categories")
+    if isinstance(conflicts, list):
+        categories.update(_normalize_label(item) for item in conflicts)
     if risk:
         categories.add(risk)
     return {item for item in categories if item not in {"unknown", "normal_noise", "正常业务白噪声", "待研判", "无风险", "none"}}
@@ -846,6 +860,18 @@ def actual_secondary_labels(classification: Mapping[str, Any]) -> set[str]:
     secondary = _normalize_label(classification.get("secondary_label"))
     if secondary:
         labels.add(secondary)
+    conflicts = classification.get("conflict_categories")
+    candidates = classification.get("candidate_secondary_labels")
+    if isinstance(conflicts, list) and conflicts and isinstance(candidates, list):
+        for item in candidates:
+            if not isinstance(item, Mapping):
+                continue
+            label = _normalize_label(item.get("label"))
+            reason = str(item.get("reason") or "").strip()
+            evidence = item.get("evidence")
+            has_evidence = isinstance(evidence, list) and any(str(value).strip() for value in evidence)
+            if label and has_evidence and reason not in {"single_secondary_marker_only"}:
+                labels.add(label)
     return {item for item in labels if item not in {"待研判", "未细分", "unknown", "none", "null"}}
 
 

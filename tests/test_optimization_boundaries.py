@@ -1,6 +1,14 @@
 from scripts.build_heldout_eval import build_heldout_records
 from scripts.build_ocr_hardset import build_records as build_ocr_hardset_records
-from scripts.collect_public_sources import balanced_source_slice
+from argparse import Namespace
+from collections import Counter
+
+from scripts.collect_public_sources import (
+    DEFAULT_SOURCE_MIN_QUOTAS,
+    balanced_source_slice,
+    selected_sources_from_args,
+    source_minimum_quotas_from_args,
+)
 from scripts.export_acceptance_e2e_evidence import build_evidence
 from scripts.export_manual_heldout_review import export_rows as export_manual_heldout_rows
 from scripts.generate_ops_dashboard import build_dashboard
@@ -12,7 +20,8 @@ from scripts.validate_manual_heldout import merge_review_csv, validate_records
 from scripts.serve_demo_api import run_demo_request
 from src.agent.user_request_parser import _fallback_intent
 from src.collector.source_config import load_source_catalog
-from src.collector.source_metadata import source_class_for_record
+from src.collector.source_config import quota_balanced_source_slice
+from src.collector.source_metadata import source_class_for_record, source_quota_groups_for_record
 from src.conversation import ConversationMemoryStore, ConversationResolver, FollowupParser
 from src.enhancement.source_intake import MultimodalTextExtractor
 from src.enhancement.strategy import EvidenceChainRenderer, RiskClue
@@ -304,6 +313,427 @@ def test_manual_heldout_typical_errors_handle_tutorial_rebate_and_account_tool_c
     assert account_tool_hybrid.review_required is True
     assert account_tool_hybrid.conflict_status == "CONFLICT_REVIEW"
     assert set(account_tool_hybrid.conflict_categories) >= {"账号交易", "工具交易"} - {account_tool_hybrid.risk_category}
+    assert {"卡密交易", "接码注册"} <= {item["label"] for item in account_tool_hybrid.candidate_secondary_labels}
+
+
+def test_manual_heldout_health_private_domain_public_ad_is_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-health-private-domain-ad",
+            "source_name": "health_saas_public_article",
+            "source_type": "Vertical",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "健康管理机构私域运营白皮书广告：慢病随访、会员复购、"
+                "企微客户管理和公开投放案例介绍，面向诊所和营养师的普通SaaS资料。"
+            ),
+            "matched_keywords": ["私域", "运营"],
+            "matched_themes": ["诈骗引流", "众包任务"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_manual_heldout_health_private_domain_variant_is_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-health-private-domain-variant",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "大健康项目招前段详情详谈【私域流量社群运营吧】。我们有全牌照权威资质、"
+                "顶尖科研技术平台、完整服务产品体系和专业医疗交付能力。"
+            ),
+            "matched_keywords": ["私域", "运营"],
+            "matched_themes": ["诈骗引流", "众包任务"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_manual_heldout_public_addv_discussion_is_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-public-addv-discussion",
+            "source_name": "x_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "网友讨论：现在很多帖子动不动就写加v，大家只是在吐槽公共社交礼仪，"
+                "没有给出微信号、群链接、开户链接或任何接单交易信息。"
+            ),
+            "matched_keywords": ["加v"],
+            "matched_themes": ["诈骗引流"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_manual_heldout_private_domain_monetization_prefers_fraud_traffic_over_crowd_ops():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-private-domain-monetization",
+            "source_name": "x_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "收益拆解：我代运营的真实逻辑。私域转化是精准用户导流，"
+                "后端卖课程、工具、服务，代运营分成是帮别人跑矩阵。"
+            ),
+            "matched_keywords": ["私域", "导流", "代运营", "矩阵"],
+            "matched_themes": ["诈骗引流", "众包任务"],
+        }
+    )
+
+    assert classification.risk_category == "诈骗引流"
+    assert classification.secondary_label == "私域导流"
+    assert "众包服务" not in classification.conflict_categories
+
+
+def test_manual_heldout_public_private_domain_book_discussion_is_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-private-domain-book-discussion",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "马化腾的私域赚钱思维书籍读后讨论，普通人能学会吗？"
+                "吧友分享阅读方法和收获，没有微信号、开户链接或接单交易。"
+            ),
+            "matched_keywords": ["私域"],
+            "matched_themes": ["诈骗引流"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_manual_heldout_exchange_rebate_without_task_terms_routes_to_rebate_traffic():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-exchange-rebate-row",
+            "source_name": "x_blackgray_search",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "散户在币圈想快速赚钱，最简单的方法就是找一家返佣高的交易所合作，"
+                "然后疯狂拉人头吃返佣。普通人一天拉几个人，遇到交易量大的大户每天返上千U。"
+            ),
+            "matched_keywords": ["返佣", "拉人"],
+            "matched_themes": ["刷单作弊", "众包任务"],
+        }
+    )
+
+    assert classification.risk_category == "诈骗引流"
+    assert classification.secondary_label == "返利引流"
+    assert "刷单作弊" not in classification.conflict_categories
+
+
+def test_manual_heldout_sms_platform_api_article_keeps_account_sms_secondary():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-sms-platform-api-article",
+            "source_name": "seeding_note_blackgray_search",
+            "source_type": "Social",
+            "source_url": "https://post.smzdm.com/p/aomp49wn/",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "在线接收国外验证码的虚拟号码服务平台，支持API二次开发。"
+                "HeroSMS作为SMS-Active的升级替代平台，不仅能接收国外手机验证码，"
+                "还支持API二次开发，为普通用户和开发者提供稳定可靠的新选择。"
+            ),
+            "matched_keywords": ["验证码", "虚拟号码"],
+            "matched_themes": ["接码"],
+        }
+    )
+
+    assert classification.risk_category == "账号交易"
+    assert classification.secondary_label == "接码注册"
+
+
+def test_manual_heldout_consumer_verification_autofill_article_is_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-consumer-verification-autofill",
+            "source_name": "seeding_note_blackgray_search",
+            "source_type": "Social",
+            "source_url": "https://post.smzdm.com/p/apw3mro9/",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "手机验证码不用手输! 一键开启自动填充，再也不怕输错还能防偷窥。"
+                "手机软件文章介绍登录和支付时的验证码自动填充功能，提升账号安全。"
+            ),
+            "matched_keywords": ["验证码", "软件"],
+            "matched_themes": ["接码", "工具交易"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_manual_heldout_consumer_sms_verification_complaint_is_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-consumer-sms-verification-complaint",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "云闪付切换设备需付费短信验证，哪些软件也如此？"
+                "用户吐槽登录还要发短信验证码，讨论安全验证机制和短信费用。"
+            ),
+            "matched_keywords": ["验证码", "软件"],
+            "matched_themes": ["接码", "工具交易"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_manual_heldout_tool_group_send_procedure_is_not_defensive_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-tool-group-send-procedure",
+            "source_name": "telegram_public_delivery:tgliuxing",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "步骤3: 群组群发介绍说明 1: Sessions 目录中放广告文案和自动回复。"
+                "如果账号运行过程中有人咨询,这个账号要自动回复。"
+                "群组群发会记录生成 Group.txt, 程序设定默认每20秒左右发送1个群, "
+                "目录下所有session账号会同时启动发送。"
+            ),
+            "matched_keywords": ["群发"],
+            "matched_themes": ["众包任务"],
+        }
+    )
+
+    assert classification.risk_category == "工具交易"
+    assert classification.secondary_label == "群控脚本"
+    assert classification.review_decision_reason != "defensive_or_negative_context"
+
+
+def test_manual_heldout_public_addv_threshold_discussion_is_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-public-addv-threshold",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "现在加v门槛有多高? 一百多加v还下头? 平平淡淡既为真，恋人未满，来自 Android 客户端。",
+            "matched_keywords": ["加v", "加微"],
+            "matched_themes": ["诈骗引流"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_manual_heldout_sms_platform_second_use_gets_sms_secondary():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-sms-platform-second-use",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "接码平台二次使用显示不在线解决办法。我用飞鱼接的码，二次想用的时候显示指定专属手机码不在线，有偿求解。",
+            "matched_keywords": ["接码"],
+            "matched_themes": ["接码"],
+        }
+    )
+
+    assert classification.risk_category == "账号交易"
+    assert classification.secondary_label == "接码注册"
+
+
+def test_manual_heldout_websea_rebate_account_routes_to_rebate_traffic():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-websea-rebate",
+            "source_name": "x_blackgray_search",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "Websea合约高返佣账号今日推出活期理财，保本跟单特权码跟不了的资金别闲着，"
+                "高返佣账号支持拉新返利和合约交易量返点。"
+            ),
+            "matched_keywords": ["返佣"],
+            "matched_themes": ["刷单作弊"],
+        }
+    )
+
+    assert classification.risk_category == "诈骗引流"
+    assert classification.secondary_label == "返利引流"
+    assert "刷单作弊" not in classification.conflict_categories
+
+
+def test_manual_heldout_group_sender_download_is_tool_not_crowd_conflict():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-haodi-group-sender",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "欢迎大家使用豪迪群发器_豪迪群发器吧_百度贴吧。"
+                "欢迎下载:http://www.8222.cn 欢迎下载:http://www.haodisoft.com"
+            ),
+            "matched_keywords": ["群发"],
+            "matched_themes": ["众包任务", "工具交易"],
+        }
+    )
+
+    assert classification.risk_category == "工具交易"
+    assert classification.secondary_label == "群控脚本"
+    assert "众包服务" not in classification.conflict_categories
+
+
+def test_manual_heldout_bitget_rebate_variant_routes_to_rebate_traffic():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-bitget-rebate-variant",
+            "source_name": "x_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "Bitget Wallet 的美股现货反佣正式生效啦，有超高返佣，交易量越高返得越多。",
+            "matched_keywords": ["反佣"],
+            "matched_themes": ["刷单作弊"],
+        }
+    )
+
+    assert classification.risk_category == "诈骗引流"
+    assert classification.secondary_label == "返利引流"
+    assert "刷单作弊" not in classification.conflict_categories
+
+
+def test_manual_heldout_bitget_fanyong_spelling_routes_to_rebate_traffic():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-bitget-fanyong-spelling",
+            "source_name": "x_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "Bitget Wallet 的美股现货反佣正式生效啦，交易量越高反得越多，开户后按交易量返点。",
+            "matched_keywords": ["反佣"],
+            "matched_themes": ["刷单作弊"],
+        }
+    )
+
+    assert classification.risk_category == "诈骗引流"
+    assert classification.secondary_label == "返利引流"
+    assert "刷单作弊" not in classification.conflict_categories
+
+
+def test_manual_heldout_automation_license_manager_error_is_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-automation-license-manager",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "windows 无法启动 automation license manager service 报错1067。"
+                "博途吧建议删掉已经安装的 automation license manager，重新安装前关掉防火墙。"
+            ),
+            "matched_keywords": ["automation"],
+            "matched_themes": ["工具交易"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_manual_heldout_creator_addv_certification_question_is_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-creator-addv-certification",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "已通过创作人认证，如何申请加V？申请条件里写获得百家号原创标签，"
+                "现在原创标签已经下线，是不是有问题？"
+            ),
+            "matched_keywords": ["加v"],
+            "matched_themes": ["诈骗引流"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_manual_heldout_public_course_scam_discussion_is_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-public-course-scam-discussion",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "拉人进群的绘画群多为卖课骗局吗？吧友揭秘绘画群拉人套路及真假辨别方法。",
+            "matched_keywords": ["拉人", "拉群"],
+            "matched_themes": ["诈骗引流", "众包任务"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_manual_heldout_english_second_hand_account_sale_is_account_trade():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-carousell-account-sale",
+            "source_name": "second_hand_blackgray_search",
+            "source_type": "Vertical",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "Carousell account For Sale | Buy 1,000+ Carousell account online from sellers.",
+        }
+    )
+
+    assert classification.risk_category == "账号交易"
+    assert classification.secondary_label == "实名账号买卖"
+
+
+def test_manual_heldout_game_tanking_pull_guide_is_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "typical-error-wow-tanking-pull-guide",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "防骑拉怪技巧：命令圣印、奉献与嘲讽技能详解，BOSS阶段按天赋循环输出。",
+            "matched_keywords": ["拉怪"],
+            "matched_themes": ["诈骗引流", "众包任务"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
 
 
 def test_evidence_chain_renderer_outputs_reviewable_rows():
@@ -715,6 +1145,163 @@ def test_collect_public_sources_balanced_slice_keeps_non_im_source_groups():
     assert len(selected) == 4
     assert {"social_or_forum", "vertical_or_technical"} <= selected_classes
     assert {"forum_a", "forum_b", "vertical_a", "vertical_b"} == selected_groups
+
+
+def test_source_default_minimum_quotas_cover_required_non_im_groups():
+    quotas = source_minimum_quotas_from_args(
+        Namespace(source_min_quota=[], disable_source_min_quotas=False)
+    )
+
+    assert quotas["vertical_or_technical"] >= 1
+    assert quotas["social_or_forum"] >= 1
+    assert quotas["secondhand_market"] >= 1
+    assert quotas["crowdsourcing_platform"] >= 1
+
+
+def test_source_quota_groups_include_forum_tieba_and_granular_non_im_types():
+    records = [
+        {"source_name": "vertical_security_search", "source_type": "Vertical"},
+        {"source_name": "tieba_account_trade_search", "source_type": "Forum", "platform": "tieba"},
+        {"source_name": "secondhand_account_trade", "source_type": "Vertical", "platform": "second_hand_market"},
+        {"source_name": "crowdsourcing_task_search", "source_type": "Vertical", "platform": "crowdsourcing"},
+    ]
+
+    groups = {
+        group
+        for record in records
+        for group in source_quota_groups_for_record(record)
+    }
+
+    assert {"vertical_or_technical", "social_or_forum", "secondhand_market", "crowdsourcing_platform"} <= groups
+
+
+def test_collect_public_sources_per_source_cap_prevents_single_source_dominance(tmp_path):
+    catalog_path = tmp_path / "source_catalog_cap.yaml"
+    catalog_path.write_text(
+        """
+sources:
+  - source_name: telegram_public_big
+    source_type: IM
+    source_class: im_or_group
+    source_url: https://telegram.example/feed-1.json
+  - source_name: telegram_public_big
+    source_type: IM
+    source_class: im_or_group
+    source_url: https://telegram.example/feed-2.json
+  - source_name: telegram_public_big
+    source_type: IM
+    source_class: im_or_group
+    source_url: https://telegram.example/feed-3.json
+  - source_name: telegram_public_big
+    source_type: IM
+    source_class: im_or_group
+    source_url: https://telegram.example/feed-4.json
+  - source_name: telegram_public_big
+    source_type: IM
+    source_class: im_or_group
+    source_url: https://telegram.example/feed-5.json
+  - source_name: forum_public_search
+    source_type: Forum
+    source_url: https://forum.example/feed.json
+  - source_name: vertical_security_search
+    source_type: Vertical
+    source_url: https://vertical.example/feed.json
+  - source_name: article_public_search
+    source_type: Article
+    platform: wechat_public
+    source_url: https://article.example/feed.json
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    selected, summary = selected_sources_from_args(
+        Namespace(
+            source_class=[],
+            max_sources=5,
+            source_min_quota=[],
+            disable_source_min_quotas=True,
+        ),
+        catalog_path,
+    )
+
+    selected_name_counts = Counter(source["source_name"] for source in selected or [])
+    assert len(selected or []) == 5
+    assert selected_name_counts["telegram_public_big"] <= 2
+    assert summary["source_name_max_quota"] == 2
+    assert summary["source_name_quota_warnings"] == []
+
+
+def test_source_quota_selection_applies_source_name_cap_when_max_sources_is_unbounded():
+    sources = [
+        {
+            "source_name": "telegram_public_big",
+            "source_type": "IM",
+            "source_class": "im_or_group",
+            "source_url": f"https://telegram.example/feed-{index}.json",
+        }
+        for index in range(5)
+    ] + [
+        {"source_name": "forum_public_search", "source_type": "Forum", "source_url": "https://forum.example/feed.json"},
+        {"source_name": "vertical_security_search", "source_type": "Vertical", "source_url": "https://vertical.example/feed.json"},
+    ]
+
+    selected = quota_balanced_source_slice(
+        sources,
+        max_sources=0,
+        minimum_quotas=DEFAULT_SOURCE_MIN_QUOTAS,
+        source_name_max_quota=2,
+    )
+    selected_name_counts = Counter(source["source_name"] for source in selected)
+
+    assert selected_name_counts["telegram_public_big"] == 2
+    assert selected_name_counts["forum_public_search"] == 1
+    assert selected_name_counts["vertical_security_search"] == 1
+
+
+def test_collect_public_sources_balances_default_unbounded_catalog(tmp_path):
+    catalog_path = tmp_path / "source_catalog_default_quota.yaml"
+    catalog_path.write_text(
+        """
+sources:
+  - source_name: telegram_public_big
+    source_type: IM
+    source_class: im_or_group
+    source_url: https://telegram.example/feed-1.json
+  - source_name: telegram_public_big
+    source_type: IM
+    source_class: im_or_group
+    source_url: https://telegram.example/feed-2.json
+  - source_name: telegram_public_big
+    source_type: IM
+    source_class: im_or_group
+    source_url: https://telegram.example/feed-3.json
+  - source_name: forum_public_search
+    source_type: Forum
+    source_url: https://forum.example/feed.json
+  - source_name: vertical_security_search
+    source_type: Vertical
+    source_url: https://vertical.example/feed.json
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    selected, summary = selected_sources_from_args(
+        Namespace(
+            source_class=[],
+            max_sources=0,
+            source_min_quota=[],
+            disable_source_min_quotas=True,
+        ),
+        catalog_path,
+    )
+
+    selected_name_counts = Counter(source["source_name"] for source in selected or [])
+    assert selected is not None
+    assert summary["selection_mode"] == "catalog_expanded_filtered"
+    assert summary["max_sources"] == 0
+    assert selected_name_counts["telegram_public_big"] == 2
+    assert selected_name_counts["forum_public_search"] == 1
+    assert selected_name_counts["vertical_security_search"] == 1
 
 
 def test_acceptance_evidence_export_tracks_high_quality_target_and_source_classes():

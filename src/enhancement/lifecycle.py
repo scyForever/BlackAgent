@@ -106,6 +106,8 @@ class DynamicSlangLifecycleManager:
         evaluation_gain: Mapping[str, Any] | None = None,
     ) -> SlangLifecycleRecord:
         current = self._records[term]
+        if current.stage == self.GRAY_ROLLOUT:
+            return current
         if current.stage != self.REVIEWED:
             raise ValueError("term must be REVIEWED before gray rollout")
         return self._store_record(
@@ -239,7 +241,7 @@ class DynamicSlangLifecycleManager:
                     record = self._store_record(
                         term=term,
                         normalized_term=normalized_term,
-                        stage=self.REVIEWED,
+                        stage=self.GRAY_ROLLOUT,
                         evidence_trace_ids=[source_trace_id],
                         reviewer=reviewer,
                         notes=notes or "review_approved_wordlist",
@@ -300,7 +302,7 @@ class DynamicSlangLifecycleManager:
 
     @classmethod
     def runtime_stages(cls, *, include_candidates: bool = False) -> tuple[str, ...]:
-        stages = [cls.REVIEWED, cls.GRAY_ROLLOUT, cls.ACTIVE]
+        stages = [cls.GRAY_ROLLOUT, cls.ACTIVE]
         if include_candidates:
             stages.insert(0, cls.NEW_CANDIDATE)
         return tuple(stages)
