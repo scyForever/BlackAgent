@@ -419,7 +419,7 @@ def _evidence_time_range(
     records: Iterable[Mapping[str, Any] | Any],
 ) -> dict[str, str | None]:
     direct_start = _first_text_field(clue, ("first_seen", "time_range_start", "start_time"))
-    direct_end = _first_text_field(clue, ("last_seen", "observed_time", "time_range_end", "end_time", "publish_time", "created_at"))
+    direct_end = _first_text_field(clue, ("last_seen", "observed_time", "time_range_end", "end_time", "publish_time"))
     if direct_start or direct_end:
         return {"start": direct_start or direct_end, "end": direct_end or direct_start}
 
@@ -433,6 +433,9 @@ def _evidence_time_range(
         if value:
             observed.append(value)
     if not observed:
+        created_at = _first_text_field(clue, ("created_at",))
+        if created_at:
+            return {"start": created_at, "end": created_at}
         return {"start": None, "end": None}
     return {"start": _pick_time_string(observed, earliest=True), "end": _pick_time_string(observed, earliest=False)}
 

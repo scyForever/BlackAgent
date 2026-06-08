@@ -180,6 +180,21 @@ def test_manual_heldout_clue_gold_fixture_exists_with_evidence_chain_requirement
     assert "evidence_reviewability_rate" in object_eval
 
 
+def test_manual_heldout_pipeline_generates_reviewable_object_clues():
+    report = evaluate(
+        load_jsonl("tests/evaluation/manual_heldout_classification.jsonl"),
+        entity_records=load_jsonl("tests/evaluation/manual_heldout_classification.jsonl"),
+        clue_records=load_jsonl("tests/evaluation/manual_heldout_clues.jsonl"),
+        profile="fast",
+    )
+
+    object_eval = report["clue"]["object_clue_eval"]
+    assert object_eval["overall"]["f1"] > 0.0
+    assert object_eval["evidence_chain_precision"] > 0.0
+    assert object_eval["evidence_chain_recall"] > 0.0
+    assert object_eval["evidence_reviewability_rate"] > 0.0
+
+
 def test_evaluate_pipeline_quality_gate_failures_are_explicit():
     report = {
         "classification_f1": 0.4,

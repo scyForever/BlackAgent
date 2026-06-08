@@ -124,7 +124,21 @@ class EntityGraphStore:
         canonical_hash = _hash(f"{entity_type}:{value}")
         entity_id = f"entity:{entity_type}:{canonical_hash[:16]}"
         existing = self._entities.get(entity_id)
-        aliases = sorted({*(existing.aliases if existing else []), str(entity.get("entity_value") or entity.get("raw_value") or value)})
+        aliases = sorted(
+            {
+                *(existing.aliases if existing else []),
+                *[
+                    str(item)
+                    for item in (
+                        entity.get("normalized_value"),
+                        entity.get("entity_value"),
+                        entity.get("raw_value"),
+                        value,
+                    )
+                    if str(item or "").strip()
+                ],
+            }
+        )
         timestamp = seen_at or _utc_now()
         asset = EntityAsset(
             entity_id=entity_id,
@@ -311,12 +325,22 @@ class EntityGraphStore:
             profile = self.risk_profile(asset.entity_id)
             related_ids = sorted(_related_entity_ids(asset.entity_id, self._relations.values()))
             related_types = {self._entities[item].entity_type for item in related_ids if item in self._entities}
+            entity_values = _ordered_strings(
+                [
+                    _asset_display_value(asset),
+                    *[
+                        _asset_display_value(self._entities[item])
+                        for item in related_ids
+                        if item in self._entities
+                    ],
+                ]
+            )
             risk_category = _dominant_risk_category(profile.risk_categories)
             clue_type = _graph_clue_type(asset.entity_type, related_types, risk_category)
             clue = {
                 "clue_id": f"graph_clue_{uuid4().hex[:12]}",
                 "clue_type": clue_type,
-                "key": asset.entity_id,
+                "key": _asset_display_value(asset),
                 "risk_category": risk_category,
                 "risk_score": profile.risk_score,
                 "key_entity_id": asset.entity_id,
@@ -324,7 +348,7 @@ class EntityGraphStore:
                 "evidence_trace_ids": traces,
                 "evidence_observation_ids": [item.observation_id for item in observations],
                 "source_names": sources,
-                "entity_values": [asset.masked_display_value],
+                "entity_values": entity_values,
                 "confidence": round(min(0.96, 0.58 + 0.07 * len(traces) + 0.04 * len(sources)), 4),
                 "threshold_reason": "entity_graph_cross_source_observations_with_risk_profile",
                 "reason": _graph_reason(asset.entity_type, related_types, risk_category),
@@ -342,7 +366,7 @@ class EntityGraphStore:
                     {
                         "source_trace_id": observation.trace_id,
                         "entity_type": asset.entity_type,
-                        "normalized_value": asset.masked_display_value,
+                        "normalized_value": _asset_display_value(asset),
                     }
                     for observation in observations
                 ],
@@ -564,6 +588,8 @@ def _related_entity_ids(entity_id: str, relations: Iterable[EntityRelation]) -> 
 def _graph_clue_type(entity_type: str, related_types: set[str], risk_category: str) -> str:
     if risk_category == "工具交易" and entity_type in {"contact", "account"} and related_types.intersection({"tool_name", "domain", "url", "price"}):
         return "entity_graph_tool_trade_cluster"
+    if entity_type in {"contact", "account"} and related_types.intersection({"tool_name", "domain", "url", "settlement"}):
+        return "entity_graph_account_tool_overlap"
     if entity_type in {"contact", "account", "invite_code"}:
         return "graph_shared_contact_cross_source"
     return "graph_shared_entity_cross_source"
@@ -572,7 +598,36 @@ def _graph_clue_type(entity_type: str, related_types: set[str], risk_category: s
 def _graph_reason(entity_type: str, related_types: set[str], risk_category: str) -> str:
     if risk_category == "工具交易" and entity_type in {"contact", "account"} and related_types.intersection({"tool_name", "domain", "url", "price"}):
         return "同一联系方式关联工具、域名或价格实体并跨来源重复出现"
+    if entity_type in {"contact", "account"} and related_types.intersection({"tool_name", "domain", "url", "settlement"}):
+        return "同一账号或联系方式与工具、域名或结算实体形成跨来源重叠"
     return "同一实体跨来源重复出现并形成可追溯观察链"
+
+
+def _asset_display_value(asset: EntityAsset) -> str:
+    for value in asset.aliases:
+        text = str(value or "").strip()
+        if ":" in text or text.startswith(("http://", "https://")):
+            return text
+    for value in asset.aliases:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return asset.masked_display_value
+
+
+def _ordered_strings(values: Iterable[Any]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        output.append(text)
+    return output
 
 
 def _utc_now() -> str:

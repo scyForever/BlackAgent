@@ -146,7 +146,7 @@ OCR hard set 评测 `data/eval_ocr_hardset_report.json`：
 | 最低人工确认目标 | 100 |
 | claim status | `human_confirmed_gold_ready` |
 
-`data/eval_manual_heldout_report.json` 的人工 gold 离线评估：primary F1=0.6259，secondary F1=0.5088，hierarchical F1=0.4216，entity F1=0.9875，false positive rate=0.4454，classification review rate=0.4508。边界：该结果只证明本地公开 / 授权 held-out split，不代表线上生产泛化。
+`data/eval_manual_heldout_report.json` 的人工 gold 离线评估：primary F1=0.7484，secondary F1=0.6124，hierarchical F1=0.5314，entity F1=0.9484，clue F1=0.1538，clue recall=0.0833，object clue F1=0.0769，evidence reviewability rate=1.0，false positive rate=0.3361，classification review rate=0.3575。边界：该结果只证明本地公开 / 授权 held-out split，不代表线上生产泛化；对象级线索与证据链可复核率已从 0 拉起，但线索召回仍低，当前线索产出应作为人工复核增强候选。
 
 ## 3. 实体抽取结果
 

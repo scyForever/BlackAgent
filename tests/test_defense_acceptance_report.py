@@ -6,6 +6,39 @@ import sys
 from scripts import build_defense_acceptance_report
 
 
+def test_collection_coverage_uses_delivery_manifest_shape_by_default():
+    args = build_defense_acceptance_report.parse_args([])
+    coverage = build_defense_acceptance_report._collection_coverage(
+        {
+            "raw_record_count": 4163,
+            "source_class_counts": [
+                {"source_class": "im_or_group", "count": 3786},
+                {"source_class": "social_or_forum", "count": 356},
+                {"source_class": "vertical_or_technical", "count": 21},
+            ],
+            "defense_quota_balanced_sample": {
+                "selected_count": 209,
+                "class_counts": [
+                    {"source_class": "im_or_group", "count": 94},
+                    {"source_class": "social_or_forum", "count": 94},
+                    {"source_class": "vertical_or_technical", "count": 21},
+                ],
+                "warnings": [],
+            },
+        }
+    )
+
+    assert args.collection_stats == "data/collection_phase_delivery_manifest.json"
+    assert coverage["total_raw_records"] == 4163
+    assert coverage["source_class_counts"] == {
+        "im_or_group": 3786,
+        "social_or_forum": 356,
+        "vertical_or_technical": 21,
+    }
+    assert coverage["defense_balanced_sample"]["selected_count"] == 209
+    assert coverage["defense_balanced_sample"]["source_class_counts"]["social_or_forum"] == 94
+
+
 def test_build_report_aggregates_acceptance_sections_and_test_results(tmp_path):
     collection_stats = tmp_path / "collection.json"
     cleaning_summary = tmp_path / "cleaning.json"
@@ -149,6 +182,10 @@ def test_build_report_aggregates_acceptance_sections_and_test_results(tmp_path):
                         "evidence_trace_count": 3,
                         "evidence_trace_ids": ["risk", "review"],
                         "source_names": ["forum"],
+                        "evidence_reviewability": {
+                            "suggested_review_action": "human_verify_cross_source_trace",
+                            "review_action_reasons": ["verify_original_trace"],
+                        },
                         "evidence_chain": [
                             {
                                 "source_trace_id": "risk",
@@ -224,6 +261,7 @@ def test_build_report_aggregates_acceptance_sections_and_test_results(tmp_path):
     assert saved["classification_stats"]["record_review_bucket_total"] == 3
     assert saved["entity_stats"]["entity_type_counts"]["contact"] == 2
     assert saved["clue_samples"][0]["clue_id"] == "clue-1"
+    assert saved["clue_samples"][0]["suggested_review_action"] == "human_verify_cross_source_trace"
     assert saved["evaluation_metrics"]["primary_classification_f1"] == 0.82
     assert saved["evaluation_metrics"]["clue_f1"] == 0.42
     assert saved["evaluation_metrics"]["object_clue_f1"] == 0.25
@@ -244,8 +282,91 @@ def test_build_report_aggregates_acceptance_sections_and_test_results(tmp_path):
     assert demo["entities"]["entity_type_counts"]["contact"] == 2
     assert demo["clues"]["evidence_chain"][0]["clue_id"] == "clue-1"
     assert demo["clues"]["evidence_chain"][0]["evidence_trace_ids"] == ["risk", "review"]
+    assert demo["clues"]["evidence_chain"][0]["suggested_review_action"] == "human_verify_cross_source_trace"
     assert demo["cost_latency"]["elapsed_seconds"] == 1.25
     assert demo["cost_latency"]["llm_cost"]["total_usd"] == 0.02
     assert demo["verification"]["test_results"][0]["status"] == "passed"
     assert demo["evidence_scope"]["mode"] == "single_e2e_artifact_with_supporting_aggregates"
     assert "end_to_end_demo" in saved["acceptance_keys"]
+
+
+def test_build_report_hydrates_cost_latency_from_referenced_run_artifact(tmp_path):
+    run_artifact = tmp_path / "acceptance-run.json"
+    run_artifact.write_text(
+        json.dumps(
+            {
+                "elapsed_seconds": 2.75,
+                "execution_summary": {
+                    "budget": {
+                        "max_llm_calls": 40,
+                        "max_llm_tokens": 50000,
+                        "max_elapsed_seconds": 300,
+                    },
+                    "llm_cost": {
+                        "prompt_tokens": 1200,
+                        "completion_tokens": 300,
+                        "total_usd": 0.04,
+                    },
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_defense_acceptance_report.build_report(
+        e2e_evidence={
+            "status": "completed",
+            "run_artifact": str(run_artifact),
+            "agent_final_output": [],
+        }
+    )
+
+    cost_latency = report["end_to_end_demo"]["cost_latency"]
+    assert cost_latency["elapsed_seconds"] == 2.75
+    assert cost_latency["budget"]["max_llm_tokens"] == 50000
+    assert cost_latency["llm_cost"]["prompt_tokens"] == 1200
+
+
+def test_build_report_hydrates_nested_live_run_telemetry_from_referenced_artifact(tmp_path):
+    run_artifact = tmp_path / "acceptance-run-nested.json"
+    run_artifact.write_text(
+        json.dumps(
+            {
+                "execution_summary": {
+                    "budget": {
+                        "max_llm_calls": 40,
+                        "max_llm_tokens": 50000,
+                        "max_elapsed_seconds": 300,
+                    },
+                    "llm_cost": {
+                        "budget_reserved_tokens": 8901,
+                        "prompt_estimated_tokens": 8901,
+                    },
+                    "telemetry": {
+                        "elapsed_ms": 207244.5,
+                        "elapsed_budget_exhausted": False,
+                        "budget_controller": {
+                            "elapsed_seconds": 196.5113,
+                        },
+                    },
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_defense_acceptance_report.build_report(
+        e2e_evidence={
+            "status": "completed",
+            "run_artifact": str(run_artifact),
+            "agent_final_output": [],
+        }
+    )
+
+    cost_latency = report["end_to_end_demo"]["cost_latency"]
+    assert cost_latency["elapsed_seconds"] == 196.5113
+    assert cost_latency["elapsed_ms"] == 207244.5
+    assert cost_latency["budget"]["max_llm_tokens"] == 50000
+    assert cost_latency["llm_cost"]["budget_reserved_tokens"] == 8901

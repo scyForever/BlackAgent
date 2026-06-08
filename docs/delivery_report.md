@@ -135,12 +135,16 @@ OCR hard set：
 | confirmed manual gold rows | 193 |
 | rejected rows | 7 |
 | claim status | human_confirmed_gold_ready |
-| primary classification F1 | 0.6259 |
-| secondary classification F1 | 0.5088 |
-| hierarchical classification F1 | 0.4216 |
-| entity F1 | 0.9875 |
-| false positive rate | 0.4454 |
-| classification review rate | 0.4508 |
+| primary classification F1 | 0.7484 |
+| secondary classification F1 | 0.6124 |
+| hierarchical classification F1 | 0.5314 |
+| entity F1 | 0.9484 |
+| clue F1 | 0.1538 |
+| clue recall | 0.0833 |
+| object clue F1 | 0.0769 |
+| evidence reviewability rate | 1.0 |
+| false positive rate | 0.3361 |
+| classification review rate | 0.3575 |
 
 黑话候选：
 
@@ -153,6 +157,7 @@ OCR hard set：
 当前不能声称：
 
 - 全量 cleaned 语料 `unknown / 待研判 / 未细分` 已清零。
+- 线索召回已经充分达标；当前对象级线索和证据链可复核率已从 0 拉起，但召回仍低，线索产出仍应作为人工复核增强候选。
 - 人工 held-out 代表线上生产泛化；当前只证明本地公开 / 授权 held-out split。
 - OCR hard set 代表外部生产 OCR 泛化质量。
 - 黑话候选已经自动进入正式词库；当前需先在 `data/manual_review/slang_candidate_review_template.csv` 记录人工确认，再进入 review/gray_rollout/activate 生命周期。

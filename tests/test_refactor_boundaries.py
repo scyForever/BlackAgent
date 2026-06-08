@@ -944,6 +944,85 @@ def test_llm_enrich_stage_uses_model_router_budget_and_preserves_rule_fallback()
     assert "value_hash" in prompt
 
 
+def test_llm_enrich_stage_filters_template_entities_before_delivery_exit():
+    text = (
+        "Home Image https://cdn.example.com/logo.png "
+        "Search https://source.example/search?q=telegram "
+        "Follow us Telegram Channel https://t.me/SecurityDigest "
+        "真正风险：群控脚本出售，联系 TG:riskcore01。"
+    )
+
+    class _EntityGateway:
+        def chat(self, messages, **kwargs):  # noqa: ANN001
+            return type(
+                "Resp",
+                (),
+                {
+                    "ok": True,
+                    "parsed_json": {
+                        "enhanced_entities": [
+                            {"entity_type": "slang_term", "entity_value": "Image", "start_offset": text.find("Image")},
+                            {
+                                "entity_type": "url",
+                                "entity_value": "https://cdn.example.com/logo.png",
+                                "start_offset": text.find("https://cdn.example.com/logo.png"),
+                            },
+                            {
+                                "entity_type": "url",
+                                "entity_value": "https://source.example/search?q=telegram",
+                                "start_offset": text.find("https://source.example/search?q=telegram"),
+                            },
+                            {
+                                "entity_type": "url",
+                                "entity_value": "https://t.me/SecurityDigest",
+                                "start_offset": text.find("https://t.me/SecurityDigest"),
+                            },
+                            {
+                                "entity_type": "contact",
+                                "entity_value": "riskcore01",
+                                "start_offset": text.find("riskcore01"),
+                            },
+                            {"entity_type": "tool_name", "entity_value": "群控", "start_offset": text.find("群控")},
+                        ]
+                    },
+                    "error": None,
+                },
+            )()
+
+    pipeline = IntelligencePipeline(
+        clean_stage=PassThroughStage(),
+        dedup_stage=PassThroughStage(),
+        triage_stage=PassThroughStage(),
+        classify_stage=PassThroughStage(),
+        extract_stage=PassThroughStage(),
+        llm_enrich_stage=LLMEnrichStage(llm_gateway=_EntityGateway()),
+        correlate_stage=PassThroughStage(),
+        score_stage=PassThroughStage(),
+        model_router=ModelRouter(),
+    )
+
+    result = pipeline.run(
+        [
+            {
+                "trace_id": "llm-entity-postprocess",
+                "source_url": "https://source.example/post",
+                "query_url_template": "https://source.example/search?q={query}",
+                "content_text": text,
+                "classification": {"risk_category": "unknown", "confidence": 0.5, "review_required": True},
+                "confidence": 0.5,
+                "risk_score": 0.8,
+                "quality_score": 0.7,
+                "has_contact": True,
+                "entity_count": 1,
+            }
+        ]
+    )
+
+    values = [entity["normalized_value"] for entity in result.enriched[0]["entities"]]
+
+    assert values == ["Telegram:riskcore01", "群控"]
+
+
 def test_llm_enrich_stage_budget_denial_keeps_rule_result():
     budget = BudgetController(RuntimeBudget(max_llm_calls=0, max_llm_classify_records=0))
     pipeline = IntelligencePipeline(

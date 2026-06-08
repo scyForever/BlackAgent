@@ -173,8 +173,12 @@ class RiskClueAggregator:
         for key, group in grouped.items():
             value = _contact_clue_display_value(key, group)
             traces = sorted({str(get_record_field(entity, "source_trace_id") or "unknown") for entity in group})
-            if len(traces) >= 3 and self._within_48h([records.get(trace) for trace in traces if trace in records]):
-                clues.append(self._make_clue("shared_contact_48h", value, traces, records, categories, [value], "same_contact_appears_at_least_3_times_within_48h"))
+            sources = {
+                str(get_record_field(records.get(trace), "source_name") or get_record_field(records.get(trace), "source_type") or trace)
+                for trace in traces
+            }
+            if len(traces) >= 2 and len(sources) >= 2 and self._within_48h([records.get(trace) for trace in traces if trace in records]):
+                clues.append(self._make_clue("shared_contact_48h", value, traces, records, categories, [value], "same_contact_appears_in_at_least_2_sources_within_48h"))
         return clues
 
     def _url_clues(self, records: dict[str, Any], categories: dict[str, str], entities: Iterable[Any]) -> list[RiskClue]:

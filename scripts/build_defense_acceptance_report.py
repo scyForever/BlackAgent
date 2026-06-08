@@ -24,7 +24,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build BlackAgent defense acceptance summary JSON.")
-    parser.add_argument("--collection-stats", default="data/collection_phase_delivery_stats.json")
+    parser.add_argument("--collection-stats", default="data/collection_phase_delivery_manifest.json")
     parser.add_argument("--cleaning-summary", default="data/cleaning_phase_summary.json")
     parser.add_argument("--classification-summary", default="data/classification_extraction_phase_summary.json")
     parser.add_argument("--classifications-jsonl", default="data/classification_extraction_phase_classifications.jsonl")
@@ -98,6 +98,7 @@ def build_report(
     clue_samples = _clue_samples(e2e_evidence)
     evaluation_metrics = _evaluation_metrics(eval_report)
     test_results = _run_test_commands(test_commands or [], run_tests=run_tests)
+    referenced_run = _referenced_run_artifact(e2e_evidence)
 
     report = {
         "status": "completed",
@@ -120,6 +121,7 @@ def build_report(
             clue_samples=clue_samples,
             evaluation_metrics=evaluation_metrics,
             test_results=test_results,
+            referenced_run=referenced_run,
         ),
         "acceptance_keys": [
             "collection_coverage.source_class_counts",
@@ -149,11 +151,38 @@ def _collection_coverage(summary: dict[str, Any]) -> dict[str, Any]:
     skew = summary.get("source_skew") if isinstance(summary.get("source_skew"), dict) else {}
     source_rows = skew.get("source_class_counts") or summary.get("source_class_counts") or []
     counts = _rows_to_count_map(source_rows, "source_class")
+    total_raw_records = int(summary.get("total_raw_records") or summary.get("raw_record_count") or skew.get("total_raw_records") or 0)
+    im_or_group_count = int(counts.get("im_or_group") or 0)
+    im_or_group_share = (
+        float(skew.get("im_or_group_share"))
+        if skew.get("im_or_group_share") is not None
+        else round(im_or_group_count / total_raw_records, 4)
+        if total_raw_records
+        else 0.0
+    )
+    defense_sample = summary.get("defense_quota_balanced_sample") if isinstance(summary.get("defense_quota_balanced_sample"), dict) else {}
     return {
-        "total_raw_records": int(summary.get("total_raw_records") or skew.get("total_raw_records") or 0),
+        "total_raw_records": total_raw_records,
         "source_class_counts": counts,
-        "im_or_group_share": float(skew.get("im_or_group_share") or 0.0),
-        "warnings": [str(item) for item in (skew.get("warnings") or [])],
+        "im_or_group_share": im_or_group_share,
+        "warnings": [str(item) for item in (skew.get("warnings") or defense_sample.get("warnings") or [])],
+        "defense_balanced_sample": _balanced_sample_coverage(defense_sample),
+    }
+
+
+def _balanced_sample_coverage(sample: dict[str, Any]) -> dict[str, Any]:
+    if not sample:
+        return {
+            "selected_count": 0,
+            "source_class_counts": {},
+            "strict_balance": False,
+            "warnings": [],
+        }
+    return {
+        "selected_count": int(sample.get("selected_count") or 0),
+        "source_class_counts": _rows_to_count_map(sample.get("class_counts") or [], "source_class"),
+        "strict_balance": bool(sample.get("strict_balance")),
+        "warnings": [str(item) for item in (sample.get("warnings") or [])],
     }
 
 
@@ -230,6 +259,7 @@ def _clue_samples(evidence: dict[str, Any], *, limit: int = 5) -> list[dict[str,
     clues = [item for item in evidence.get("agent_final_output") or [] if isinstance(item, dict)]
     samples: list[dict[str, Any]] = []
     for clue in clues[:limit]:
+        reviewability = clue.get("evidence_reviewability") if isinstance(clue.get("evidence_reviewability"), dict) else {}
         samples.append(
             {
                 "clue_id": clue.get("clue_id"),
@@ -239,6 +269,8 @@ def _clue_samples(evidence: dict[str, Any], *, limit: int = 5) -> list[dict[str,
                 "source_names": [str(item) for item in (clue.get("source_names") or [])],
                 "quality_level": clue.get("quality_level"),
                 "review_required": bool(clue.get("quality_review_required") or clue.get("llm_review_required")),
+                "suggested_review_action": clue.get("suggested_review_action") or reviewability.get("suggested_review_action"),
+                "review_action_reasons": [str(item) for item in (reviewability.get("review_action_reasons") or [])],
             }
         )
     return samples
@@ -255,11 +287,14 @@ def _end_to_end_demo(
     clue_samples: list[dict[str, Any]],
     evaluation_metrics: dict[str, Any],
     test_results: list[dict[str, Any]],
+    referenced_run: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     counts = e2e_evidence.get("counts") if isinstance(e2e_evidence.get("counts"), dict) else {}
     execution_summary = (
         e2e_evidence.get("execution_summary")
         if isinstance(e2e_evidence.get("execution_summary"), dict)
+        else (referenced_run or {}).get("execution_summary")
+        if isinstance((referenced_run or {}).get("execution_summary"), dict)
         else {}
     )
     collection_runs = [item for item in e2e_evidence.get("collection_runs") or [] if isinstance(item, dict)]
@@ -296,7 +331,7 @@ def _end_to_end_demo(
             "samples": clue_samples,
             "evidence_chain": _demo_evidence_chain(e2e_evidence),
         },
-        "cost_latency": _demo_cost_latency(e2e_evidence, execution_summary),
+        "cost_latency": _demo_cost_latency(e2e_evidence, execution_summary, referenced_run=referenced_run or {}),
         "verification": {
             "evaluation_metrics": evaluation_metrics,
             "test_results": test_results,
@@ -382,6 +417,7 @@ def _demo_evidence_chain(evidence: dict[str, Any], *, limit: int = 5) -> list[di
     rows: list[dict[str, Any]] = []
     for clue in clues[:limit]:
         raw_chain = clue.get("evidence_chain") if isinstance(clue.get("evidence_chain"), list) else []
+        reviewability = clue.get("evidence_reviewability") if isinstance(clue.get("evidence_reviewability"), dict) else {}
         evidence_trace_ids = _string_list(clue.get("evidence_trace_ids")) or _unique_values(
             item.get("source_trace_id") for item in raw_chain if isinstance(item, dict)
         )
@@ -394,29 +430,87 @@ def _demo_evidence_chain(evidence: dict[str, Any], *, limit: int = 5) -> list[di
                 "source_names": _string_list(clue.get("source_names")),
                 "evidence_trace_count": int(clue.get("evidence_trace_count") or len(evidence_trace_ids)),
                 "evidence_chain": [dict(item) for item in raw_chain if isinstance(item, dict)],
+                "suggested_review_action": clue.get("suggested_review_action") or reviewability.get("suggested_review_action"),
+                "review_action_reasons": [str(item) for item in (reviewability.get("review_action_reasons") or [])],
             }
         )
     return rows
 
 
-def _demo_cost_latency(evidence: dict[str, Any], execution_summary: dict[str, Any]) -> dict[str, Any]:
-    budget = execution_summary.get("budget") if isinstance(execution_summary.get("budget"), dict) else {}
+def _demo_cost_latency(
+    evidence: dict[str, Any],
+    execution_summary: dict[str, Any],
+    *,
+    referenced_run: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    referenced_run = referenced_run or {}
+    referenced_summary = (
+        referenced_run.get("execution_summary")
+        if isinstance(referenced_run.get("execution_summary"), dict)
+        else {}
+    )
+    telemetry = (
+        execution_summary.get("telemetry")
+        if isinstance(execution_summary.get("telemetry"), dict)
+        else referenced_summary.get("telemetry")
+        if isinstance(referenced_summary.get("telemetry"), dict)
+        else {}
+    )
+    budget_controller = telemetry.get("budget_controller") if isinstance(telemetry.get("budget_controller"), dict) else {}
+    budget = (
+        execution_summary.get("budget")
+        if isinstance(execution_summary.get("budget"), dict)
+        else referenced_summary.get("budget")
+        if isinstance(referenced_summary.get("budget"), dict)
+        else budget_controller.get("budget")
+        if isinstance(budget_controller.get("budget"), dict)
+        else {}
+    )
     llm_cost = (
         execution_summary.get("llm_cost")
         if isinstance(execution_summary.get("llm_cost"), dict)
+        else referenced_summary.get("llm_cost")
+        if isinstance(referenced_summary.get("llm_cost"), dict)
+        else budget_controller.get("llm_cost")
+        if isinstance(budget_controller.get("llm_cost"), dict)
         else evidence.get("llm_cost")
         if isinstance(evidence.get("llm_cost"), dict)
         else {}
     )
     return {
-        "elapsed_seconds": _optional_float(execution_summary.get("elapsed_seconds") or evidence.get("elapsed_seconds")),
-        "elapsed_ms": _optional_float(execution_summary.get("elapsed_ms") or evidence.get("elapsed_ms")),
+        "elapsed_seconds": _optional_float(
+            execution_summary.get("elapsed_seconds")
+            or telemetry.get("elapsed_seconds")
+            or budget_controller.get("elapsed_seconds")
+            or evidence.get("elapsed_seconds")
+            or referenced_run.get("elapsed_seconds")
+            or referenced_summary.get("elapsed_seconds")
+        ),
+        "elapsed_ms": _optional_float(
+            execution_summary.get("elapsed_ms")
+            or telemetry.get("elapsed_ms")
+            or budget_controller.get("elapsed_ms")
+            or evidence.get("elapsed_ms")
+            or referenced_run.get("elapsed_ms")
+            or referenced_summary.get("elapsed_ms")
+        ),
         "budget": budget,
         "llm_cost": llm_cost,
         "elapsed_budget_exhausted": bool(
-            execution_summary.get("elapsed_budget_exhausted") or evidence.get("elapsed_budget_exhausted")
+            execution_summary.get("elapsed_budget_exhausted")
+            or telemetry.get("elapsed_budget_exhausted")
+            or budget_controller.get("elapsed_budget_exhausted")
+            or evidence.get("elapsed_budget_exhausted")
+            or referenced_summary.get("elapsed_budget_exhausted")
         ),
     }
+
+
+def _referenced_run_artifact(evidence: dict[str, Any]) -> dict[str, Any]:
+    run_path = evidence.get("run_artifact")
+    if not str(run_path or "").strip():
+        return {}
+    return load_json(str(run_path))
 
 
 def _evaluation_metrics(report: dict[str, Any]) -> dict[str, Any]:

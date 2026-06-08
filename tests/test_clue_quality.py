@@ -1,4 +1,4 @@
-from src.enhancement.clue_quality import ClueQualityEvaluator
+from src.enhancement.clue_quality import ClueQualityEvaluator, build_evidence_reviewability
 from src.enhancement.strategy import RiskClueAggregator
 from src.pipeline.stages import ScoreStage
 
@@ -180,6 +180,29 @@ def test_score_stage_adds_reviewability_metadata_for_multi_source_entity_support
     assert reviewability["false_positive_risk"]["level"] == "low"
     assert reviewability["false_positive_risk"]["score"] < 0.4
     assert reviewability["suggested_review_action"] == "review_original_snippets_and_confirm_entity_linkage"
+
+
+def test_evidence_reviewability_uses_record_times_before_clue_created_at():
+    reviewability = build_evidence_reviewability(
+        {
+            "clue_id": "record-time-review",
+            "clue_type": "shared_contact_48h",
+            "key": "Telegram:core01",
+            "evidence_trace_ids": ["record-time-a", "record-time-b"],
+            "source_names": ["tg-a", "forum-b"],
+            "entity_values": ["Telegram:core01"],
+            "created_at": "2026-06-08T06:43:39+00:00",
+        },
+        records=[
+            {"trace_id": "record-time-a", "publish_time": "2026-05-31T01:00:00+00:00"},
+            {"trace_id": "record-time-b", "publish_time": "2026-05-31T02:00:00+00:00"},
+        ],
+    )
+
+    assert reviewability["time_range"] == {
+        "start": "2026-05-31T01:00:00+00:00",
+        "end": "2026-05-31T02:00:00+00:00",
+    }
 
 
 def test_contact_clue_aggregator_merges_telegram_prefixed_and_bare_handles():
