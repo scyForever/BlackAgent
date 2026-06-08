@@ -482,6 +482,7 @@ def evaluate_clues(records: list[dict[str, Any]], actual_clues: Iterable[Mapping
     overall_eval = _evaluate_clue_layer(records, actual, layer="overall")
     standard_eval = _evaluate_clue_layer(records, actual, layer="standard")
     graph_eval = _evaluate_clue_layer(records, actual, layer="graph")
+    object_eval = _evaluate_clue_objects(records, actual)
     review_load_eval = {
         "clue_overgeneration_ratio": overall_eval["clue_overgeneration_ratio"],
         "review_load_per_100_records": overall_eval["review_load_per_100_records"],
@@ -494,8 +495,9 @@ def evaluate_clues(records: list[dict[str, Any]], actual_clues: Iterable[Mapping
         **overall_eval,
         "standard_clue_eval": standard_eval,
         "graph_clue_eval": graph_eval,
+        "object_clue_eval": object_eval,
         "overall_review_load_eval": review_load_eval,
-        "evaluation_layers": ["standard_clue_eval", "graph_clue_eval", "overall_review_load_eval"],
+        "evaluation_layers": ["standard_clue_eval", "graph_clue_eval", "object_clue_eval", "overall_review_load_eval"],
     }
 
 
@@ -569,6 +571,147 @@ def _expected_clue_gold(records: list[dict[str, Any]], *, layer: str) -> tuple[i
         )
     expected_count = max(expected_count, len(expected_types))
     return expected_count, expected_types
+
+
+def _evaluate_clue_objects(records: list[dict[str, Any]], actual_clues: list[dict[str, Any]]) -> dict[str, Any]:
+    expected = _expected_clue_objects(records)
+    if not expected:
+        return {
+            "status": "not_applicable_no_expected_clue_objects",
+            "overall": {**prf(0, 0, 0), "tp": 0, "fp": 0, "fn": 0, "status": "not_applicable_no_expected_clue_objects"},
+            "expected_clue_count": 0,
+            "actual_clue_count": len(actual_clues),
+            "evidence_chain_precision": 0.0,
+            "evidence_chain_recall": 0.0,
+            "evidence_reviewability_rate": 0.0,
+            "duplicate_clue_rate": _duplicate_clue_rate(actual_clues),
+        }
+
+    matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    matched_actual_indexes: set[int] = set()
+    for expected_clue in expected:
+        match_index = _best_clue_object_match(expected_clue, actual_clues, matched_actual_indexes)
+        if match_index is None:
+            continue
+        matched_actual_indexes.add(match_index)
+        matches.append((expected_clue, actual_clues[match_index]))
+
+    tp = len(matches)
+    fp = max(0, len(actual_clues) - tp)
+    fn = max(0, len(expected) - tp)
+    evidence_precision, evidence_recall = _evidence_chain_pr(matches)
+    reviewable_count = sum(1 for expected_clue, actual in matches if _clue_reviewability_satisfied(expected_clue, actual))
+    overall = prf(tp, fp, fn)
+    return {
+        "status": "completed",
+        "overall": {**overall, "tp": tp, "fp": fp, "fn": fn, "status": "completed", "metric_note": "object_level_expected_clues"},
+        "expected_clue_count": len(expected),
+        "actual_clue_count": len(actual_clues),
+        "matched_clue_count": tp,
+        "evidence_chain_precision": evidence_precision,
+        "evidence_chain_recall": evidence_recall,
+        "evidence_reviewability_rate": round(reviewable_count / max(tp, 1), 4),
+        "duplicate_clue_rate": _duplicate_clue_rate(actual_clues),
+        "matched_expected_clue_types": sorted({str(item[0].get("clue_type") or "") for item in matches if str(item[0].get("clue_type") or "")}),
+    }
+
+
+def _expected_clue_objects(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    objects: list[dict[str, Any]] = []
+    for record in records:
+        raw = record.get("expected_clues")
+        if not isinstance(raw, list):
+            continue
+        for clue in raw:
+            if not isinstance(clue, Mapping):
+                continue
+            item = dict(clue)
+            item.setdefault("record_trace_id", _trace_id(record))
+            if str(item.get("clue_type") or "").strip():
+                objects.append(item)
+    return objects
+
+
+def _best_clue_object_match(
+    expected: Mapping[str, Any],
+    actual_clues: list[dict[str, Any]],
+    used_indexes: set[int],
+) -> int | None:
+    scored: list[tuple[int, int]] = []
+    for index, actual in enumerate(actual_clues):
+        if index in used_indexes:
+            continue
+        score = _clue_object_match_score(expected, actual)
+        if score > 0:
+            scored.append((score, index))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return scored[0][1]
+
+
+def _clue_object_match_score(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> int:
+    if _normalize_label(expected.get("clue_type")) != _normalize_label(actual.get("clue_type")):
+        return 0
+    score = 2
+    expected_key = _normalize_entity_value(expected.get("key"))
+    actual_key = _normalize_entity_value(actual.get("key"))
+    if expected_key and actual_key and (expected_key == actual_key or expected_key in actual_key or actual_key in expected_key):
+        score += 4
+    expected_risk = _normalize_label(expected.get("risk_category"))
+    actual_risk = _normalize_label(actual.get("risk_category"))
+    if expected_risk and actual_risk and expected_risk == actual_risk:
+        score += 2
+    expected_entities = {_normalize_entity_value(item) for item in expected.get("expected_entity_values") or [] if _normalize_entity_value(item)}
+    actual_entities = {_normalize_entity_value(item) for item in actual.get("entity_values") or [] if _normalize_entity_value(item)}
+    if expected_entities and actual_entities & expected_entities:
+        score += 3
+    if not expected_key and not expected_entities:
+        expected_evidence = _evidence_set(expected)
+        actual_evidence = _evidence_set(actual)
+        if expected_evidence and actual_evidence & expected_evidence:
+            score += 2
+    return score if score >= 5 else 0
+
+
+def _evidence_chain_pr(matches: list[tuple[dict[str, Any], dict[str, Any]]]) -> tuple[float, float]:
+    expected_total = actual_total = matched_total = 0
+    for expected, actual in matches:
+        expected_evidence = _evidence_set(expected)
+        actual_evidence = _evidence_set(actual)
+        expected_total += len(expected_evidence)
+        actual_total += len(actual_evidence)
+        matched_total += len(expected_evidence & actual_evidence)
+    precision = matched_total / actual_total if actual_total else 0.0
+    recall = matched_total / expected_total if expected_total else 0.0
+    return round(precision, 4), round(recall, 4)
+
+
+def _clue_reviewability_satisfied(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> bool:
+    reviewability = actual.get("evidence_reviewability") if isinstance(actual.get("evidence_reviewability"), Mapping) else {}
+    evidence_count = len(_evidence_set(actual))
+    source_count = int(reviewability.get("source_count") or len({str(item) for item in actual.get("source_names") or [] if str(item).strip()}) or 0)
+    entity_support_count = int(reviewability.get("entity_support_count") or len({str(item) for item in actual.get("entity_values") or [] if str(item).strip()}) or 0)
+    if evidence_count < int(expected.get("min_evidence_count") or 0):
+        return False
+    if source_count < int(expected.get("min_source_count") or 0):
+        return False
+    expected_entities = {_normalize_entity_value(item) for item in expected.get("expected_entity_values") or [] if _normalize_entity_value(item)}
+    actual_entities = {_normalize_entity_value(item) for item in actual.get("entity_values") or [] if _normalize_entity_value(item)}
+    if expected_entities and not (expected_entities & actual_entities):
+        return False
+    if expected.get("requires_original_snippets") and not list(reviewability.get("original_snippets") or actual.get("original_snippets") or []):
+        return False
+    if expected.get("requires_time_range"):
+        time_range = reviewability.get("time_range") if isinstance(reviewability.get("time_range"), Mapping) else {}
+        if not (time_range.get("start") and time_range.get("end")):
+            return False
+    return entity_support_count >= 0
+
+
+def _evidence_set(clue: Mapping[str, Any]) -> set[str]:
+    values = clue.get("expected_evidence_trace_ids") or clue.get("evidence_trace_ids") or []
+    return {str(item).strip() for item in values if str(item).strip()}
 
 
 def dataset_profile(

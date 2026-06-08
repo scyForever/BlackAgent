@@ -25,6 +25,7 @@ from src.collector.base_collector import get_record_field
 from src.extractor.entity_extractor import ACCOUNT, CONTACT, TOOL_NAME, URL, BasicEntityExtractor
 from src.enhancement.context_polarity import NEGATIVE_RISK_ASSERTION, polarity_from_config
 from src.intelligence.entity_normalizer import EntityNormalizer
+from src.intelligence.entity_postprocessor import filter_and_order_entities
 from src.rules import RuleRegistry
 
 
@@ -757,6 +758,12 @@ class FineGrainedIntentClassifier:
         )
         top_category, top_score = ordered[0]
         raw_conflicts = [category for category, score in ordered[1:] if score == top_score or (top_score - score <= 1 and score >= 2)]
+        raw_conflicts = self._account_tool_cross_conflicts(
+            raw_conflicts,
+            top_category=top_category,
+            category_scores=category_scores,
+            text=match_text,
+        )
         conflict_status = "RESOLVED"
         secondary_label, secondary_evidence, secondary_candidates = self._secondary_label(top_category, match_text, matched_keywords)
         supporting_evidence = self._ordered_unique((*category_evidence.get(top_category, []), *secondary_evidence))
@@ -993,6 +1000,10 @@ class FineGrainedIntentClassifier:
                 if self._is_ordinary_platform_reference(text):
                     return False
                 return True
+        if self._is_ordinary_game_mod_discussion(text):
+            solicitation_hits = self._marker_hits(text, self.STRONG_TRANSACTION_INTENT_MARKERS)
+            risky_hits = [hit for hit in solicitation_hits if hit not in {"招募"}]
+            return bool(risky_hits)
         return bool(self._marker_hits(text, self.STRONG_TRANSACTION_INTENT_MARKERS))
 
     def _is_ordinary_platform_reference(self, text: str) -> bool:
@@ -1001,6 +1012,15 @@ class FineGrainedIntentClassifier:
         if any(marker in text.lower() for marker in ("wx:", "wechat:", "微信:", "微信号", "加微信", "加v", "联系微信")):
             return False
         return any(marker in text for marker in ("微信群", "交流群", "群二维码"))
+
+    def _is_ordinary_game_mod_discussion(self, text: str) -> bool:
+        lowered = text.lower()
+        if self._has_contact_marker(text):
+            return False
+        game_hits = self._marker_hits(text, self.ORDINARY_GAME_CONTEXT_MARKERS)
+        if not game_hits:
+            return False
+        return any(marker in lowered for marker in ("steam", "mod", "automation", "创意工坊", "游戏"))
 
     def _has_blackgray_business_operation_signal(
         self,
@@ -1031,6 +1051,50 @@ class FineGrainedIntentClassifier:
         ):
             return True
         return False
+
+    def _suppress_affiliate_rebate_click_confusion(
+        self,
+        score_map: dict[str, int],
+        evidence_map: dict[str, list[str]],
+        *,
+        text: str,
+    ) -> None:
+        if not score_map.get(FRAUD_TRAFFIC) or not score_map.get(CLICK_FARMING):
+            return
+        if self._marker_hits(text, ("刷单", "补单", "垫付", "做任务", "点赞任务", "关注任务", "卡单", "日结", "兼职")):
+            return
+        fraud_hits = self._marker_hits(text, ("交易所", "okx", "币安", "binance", "api", "开户链接", "开户", "拉新", "高佣", "返利", "合约", "节点"))
+        click_evidence = {
+            str(item).replace("click:", "").strip()
+            for item in evidence_map.get(CLICK_FARMING, [])
+            if str(item).strip()
+        }
+        if fraud_hits and click_evidence and click_evidence <= {"返佣"}:
+            score_map.pop(CLICK_FARMING, None)
+            evidence_map.pop(CLICK_FARMING, None)
+
+    def _account_tool_cross_conflicts(
+        self,
+        raw_conflicts: list[str],
+        *,
+        top_category: str,
+        category_scores: Mapping[str, int],
+        text: str,
+    ) -> list[str]:
+        if top_category not in {ACCOUNT_TRADING, TOOL_TRADING}:
+            return raw_conflicts
+        other = ACCOUNT_TRADING if top_category == TOOL_TRADING else TOOL_TRADING
+        if other in raw_conflicts:
+            return raw_conflicts
+        if not category_scores.get(other):
+            return raw_conflicts
+        lowered = text.lower()
+        account_hits = self._marker_hits(text, ("注册账号", "账号", "接码", "验证码", "手机码"))
+        tool_hits = self._marker_hits(text, ("接码平台", "卡密", "用户端", "电脑端", "网址", "后台"))
+        has_contact_or_url = any(marker in lowered for marker in ("@", "tg:", "telegram", "http://", "https://", "客服", "联系"))
+        if account_hits and tool_hits and has_contact_or_url:
+            return [*raw_conflicts, other]
+        return raw_conflicts
 
     def _signal_terms(self, record: Mapping[str, Any] | Any, field_name: str) -> tuple[str, ...]:
         values = get_record_field(record, field_name) or ()
@@ -1116,6 +1180,8 @@ class FineGrainedIntentClassifier:
         if click_core_markers:
             score_map[CLICK_FARMING] = score_map.get(CLICK_FARMING, 0) + min(2, len(click_core_markers))
             evidence_map[CLICK_FARMING].extend(f"click:{marker}" for marker in click_core_markers[:2])
+
+        self._suppress_affiliate_rebate_click_confusion(score_map, evidence_map, text=text)
 
         theme_only_scores = {
             category: all(item.startswith("theme:") for item in evidence_map.get(category, []))
@@ -1470,7 +1536,7 @@ class AdvancedEntityExtractor:
                 value = match.group(group_index) if group_index is not None else match.group(0)
                 start = match.start(group_index) if group_index is not None else match.start()
                 add(entity_type, value, start, start + len(value), method=method, confidence=0.84)
-        return sorted(entities, key=lambda item: (item.source_trace_id, item.start_offset, item.entity_type))
+        return filter_and_order_entities(entities, record)
 
 
 def _first_group_index(match: re.Match[str]) -> int | None:

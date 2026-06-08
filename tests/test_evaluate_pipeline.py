@@ -1,7 +1,7 @@
 from argparse import Namespace
 
 from scripts import evaluate_pipeline
-from scripts.evaluate_pipeline import evaluate, evaluate_ablation, load_jsonl, quality_gate_failures
+from scripts.evaluate_pipeline import evaluate, evaluate_ablation, evaluate_clues, load_jsonl, quality_gate_failures
 from src.evaluation.llm_ablation import LLMValueGate
 
 
@@ -60,6 +60,100 @@ def test_evaluate_pipeline_reports_classification_entity_and_clue_metrics():
     assert "rule_version" in report
     assert "llm_calls_per_1000_records" in report
     assert "profile_comparison_dimensions" in report
+
+
+def test_evaluate_clues_scores_expected_clue_objects_evidence_chains_and_reviewability():
+    records = [
+        {
+            "trace_id": "clue-gold-a",
+            "expected_clues": [
+                {
+                    "clue_type": "shared_contact_48h",
+                    "key": "TG:core01",
+                    "risk_category": "工具交易",
+                    "expected_evidence_trace_ids": ["clue-gold-a", "clue-gold-b"],
+                    "expected_entity_values": ["TG:core01"],
+                    "min_evidence_count": 2,
+                    "min_source_count": 2,
+                    "requires_original_snippets": True,
+                    "requires_time_range": True,
+                }
+            ],
+        },
+        {
+            "trace_id": "clue-gold-c",
+            "expected_clues": [
+                {
+                    "clue_type": "shared_domain_multi_source",
+                    "key": "risk.example",
+                    "risk_category": "诈骗引流",
+                    "expected_evidence_trace_ids": ["clue-gold-c"],
+                    "expected_entity_values": ["risk.example"],
+                    "min_evidence_count": 1,
+                    "min_source_count": 1,
+                }
+            ],
+        },
+    ]
+    actual = [
+        {
+            "clue_type": "shared_contact_48h",
+            "key": "TG:core01",
+            "risk_category": "工具交易",
+            "evidence_trace_ids": ["clue-gold-a", "clue-gold-b"],
+            "entity_values": ["TG:core01"],
+            "source_names": ["tg-a", "forum-a"],
+            "evidence_reviewability": {
+                "source_count": 2,
+                "entity_support_count": 1,
+                "original_snippets": ["群控脚本 TG:core01", "论坛复现 TG:core01"],
+                "time_range": {
+                    "start": "2026-06-07T08:00:00+00:00",
+                    "end": "2026-06-07T10:00:00+00:00",
+                },
+            },
+        },
+        {
+            "clue_type": "shared_contact_48h",
+            "key": "TG:core01",
+            "risk_category": "工具交易",
+            "evidence_trace_ids": ["clue-gold-a", "clue-gold-b"],
+            "entity_values": ["TG:core01"],
+        },
+        {
+            "clue_type": "shared_domain_multi_source",
+            "key": "noise.example",
+            "risk_category": "诈骗引流",
+            "evidence_trace_ids": ["unrelated"],
+            "entity_values": ["noise.example"],
+        },
+    ]
+
+    metrics = evaluate_clues(records, actual)
+
+    assert metrics["object_clue_eval"]["expected_clue_count"] == 2
+    assert metrics["object_clue_eval"]["overall"]["tp"] == 1
+    assert metrics["object_clue_eval"]["overall"]["fp"] == 2
+    assert metrics["object_clue_eval"]["overall"]["fn"] == 1
+    assert metrics["object_clue_eval"]["evidence_chain_precision"] == 1.0
+    assert metrics["object_clue_eval"]["evidence_chain_recall"] == 1.0
+    assert metrics["object_clue_eval"]["evidence_reviewability_rate"] == 1.0
+    assert metrics["duplicate_clue_rate"] > 0
+
+
+def test_manual_heldout_clue_gold_fixture_exists_with_evidence_chain_requirements():
+    records = load_jsonl("tests/evaluation/manual_heldout_clues.jsonl")
+
+    expected = [
+        clue
+        for record in records
+        for clue in record.get("expected_clues", [])
+    ]
+
+    assert len(records) >= 8
+    assert len(expected) >= 8
+    assert all(clue.get("expected_evidence_trace_ids") for clue in expected)
+    assert all(clue.get("min_source_count") for clue in expected)
 
 
 def test_evaluate_pipeline_quality_gate_failures_are_explicit():

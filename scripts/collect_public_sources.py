@@ -14,14 +14,22 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config_loader import PROJECT_ROOT as APP_PROJECT_ROOT, Settings, resolve_project_path
-from src.collector.source_config import load_source_catalog
-from src.collector.source_metadata import source_class_for_record
+from src.collector.source_config import apply_source_min_quotas, load_source_catalog
+from src.collector.source_metadata import source_class_for_record, source_quota_groups_for_record
 from src.local_runtime import LocalAgentRuntime
 from storage.sql_backend import connect
 
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
+
+
+DEFAULT_SOURCE_MIN_QUOTAS: dict[str, int] = {
+    "vertical_or_technical": 1,
+    "public_account_or_article": 1,
+    "secondhand_market": 1,
+    "crowdsourcing_platform": 1,
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,6 +84,21 @@ def parse_args() -> argparse.Namespace:
         help="Filter expanded sources by source diversity class; repeatable.",
     )
     parser.add_argument(
+        "--source-min-quota",
+        action="append",
+        default=[],
+        metavar="GROUP=COUNT",
+        help=(
+            "Minimum quota for a granular source group before overflow selection; repeatable. "
+            "Defaults cover vertical/technical, public-account/article, secondhand, and crowdsourcing sources."
+        ),
+    )
+    parser.add_argument(
+        "--disable-source-min-quotas",
+        action="store_true",
+        help="Disable default granular source minimum quotas when --max-sources is used.",
+    )
+    parser.add_argument(
         "--summary-out",
         default="",
         help="Optional JSON file for the collection run summary.",
@@ -113,6 +136,29 @@ def balanced_source_slice(sources: list[Mapping[str, Any]], *, max_sources: int)
     return selected
 
 
+def source_minimum_quotas_from_args(args: argparse.Namespace) -> dict[str, int]:
+    quotas = {} if bool(getattr(args, "disable_source_min_quotas", False)) else dict(DEFAULT_SOURCE_MIN_QUOTAS)
+    for raw_item in getattr(args, "source_min_quota", []) or []:
+        item = str(raw_item or "").strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"source min quota must use GROUP=COUNT, got {item!r}")
+        group, raw_count = item.split("=", 1)
+        group = group.strip()
+        if not group:
+            raise ValueError(f"source min quota group cannot be empty in {item!r}")
+        try:
+            count = int(raw_count)
+        except ValueError as exc:
+            raise ValueError(f"source min quota count must be an integer in {item!r}") from exc
+        if count <= 0:
+            quotas.pop(group, None)
+        else:
+            quotas[group] = count
+    return dict(quotas)
+
+
 def selected_sources_from_args(args: argparse.Namespace, catalog_path: Path) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
     """Return explicitly selected expanded sources when source filters are used."""
 
@@ -133,22 +179,34 @@ def selected_sources_from_args(args: argparse.Namespace, catalog_path: Path) -> 
         for source in expanded
         if not requested_classes or source_class_for_record(source) in requested_classes
     ]
-    selected = balanced_source_slice(filtered, max_sources=max_sources)
+    minimum_quotas = source_minimum_quotas_from_args(args)
+    quota_selection = apply_source_min_quotas(
+        filtered,
+        max_sources=max_sources,
+        minimum_quotas=minimum_quotas,
+    )
+    selected = quota_selection.selected
     selected_class_counts = Counter(source_class_for_record(source) for source in selected)
     selected_group_counts = Counter(
         f"{source_class_for_record(source)}:{source.get('source_name') or source.get('name') or 'unknown_source'}"
         for source in selected
     )
+    selected_quota_counts: Counter[str] = Counter()
+    for source in selected:
+        selected_quota_counts.update(source_quota_groups_for_record(source))
     return selected, {
         "selection_mode": "catalog_expanded_filtered",
         "source_class_filter": sorted(requested_classes),
         "max_sources": max_sources,
+        "source_minimum_quotas": minimum_quotas,
         "expanded_source_count": len(expanded),
         "filtered_source_count": len(filtered),
         "selected_source_count": len(selected),
         "selected_source_classes": sorted({source_class_for_record(source) for source in selected}),
         "selected_source_class_counts": dict(sorted(selected_class_counts.items())),
         "selected_source_group_counts": dict(sorted(selected_group_counts.items())),
+        "selected_source_quota_counts": dict(sorted(selected_quota_counts.items())),
+        "source_quota_warnings": quota_selection.warnings,
         "selected_source_names": [str(source.get("source_name") or "") for source in selected],
     }
 

@@ -7,6 +7,7 @@ signals to verify the routing contract.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Mapping
 
@@ -61,7 +62,10 @@ class LocalBertAdapter:
         if self.config.enabled and self.runner is not None:
             return self._from_runner(dict(self.runner(text)))
         deterministic = self.classifier.classify({"trace_id": "local-bert-prestage", "content_text": text})
-        entities = [item.model_dump() for item in self.extractor.extract({"trace_id": "local-bert-prestage", "content_text": text})]
+        entities = [
+            _prestage_entity_payload(item.model_dump())
+            for item in self.extractor.extract({"trace_id": "local-bert-prestage", "content_text": text})
+        ]
         confidence = float(deterministic.confidence)
         return LocalBertResult(
             status="deterministic_fallback" if not self.config.enabled else "model_runner_missing",
@@ -84,6 +88,17 @@ class LocalBertAdapter:
             should_route_to_llm=confidence < self.config.route_llm_below_confidence or bool(payload.get("has_conflict")),
             reason=str(payload.get("reason") or "local_model_runner"),
         )
+
+
+def _prestage_entity_payload(entity: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(entity)
+    normalized = str(payload.get("normalized_value") or "")
+    if str(payload.get("entity_type") or "") == "contact" and normalized.lower().startswith("telegram:"):
+        bare_value = normalized.split(":", 1)[1]
+        payload["normalized_value"] = bare_value
+        payload["canonical_hash"] = hashlib.sha256(f"contact:{bare_value.lower()}".encode("utf-8")).hexdigest()
+        payload["masked_value"] = f"***{bare_value[-2:]}" if len(bare_value) > 2 else "***"
+    return payload
 
 
 __all__ = ["LocalBertAdapter", "LocalBertConfig", "LocalBertResult"]

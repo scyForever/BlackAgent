@@ -18,6 +18,15 @@ class SlangLifecycleRecord:
     evidence_trace_ids: list[str]
     reviewer: str | None = None
     notes: str | None = None
+    lifecycle_version: str | None = None
+    batch_id: str | None = None
+    target_risk_category: str | None = None
+    reviewed_at: str | None = None
+    gray_rollout_at: str | None = None
+    activated_at: str | None = None
+    baseline_eval_version: str | None = None
+    post_eval_version: str | None = None
+    evaluation_gain: dict[str, Any] | None = None
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def model_dump(self) -> dict[str, Any]:
@@ -48,7 +57,21 @@ class DynamicSlangLifecycleManager:
             allow_downgrade=False,
         )
 
-    def review(self, term: str, *, approved: bool, reviewer: str = "system", notes: str | None = None) -> SlangLifecycleRecord:
+    def review(
+        self,
+        term: str,
+        *,
+        approved: bool,
+        reviewer: str = "system",
+        notes: str | None = None,
+        lifecycle_version: str | None = None,
+        batch_id: str | None = None,
+        target_risk_category: str | None = None,
+        reviewed_at: str | None = None,
+        baseline_eval_version: str | None = None,
+        post_eval_version: str | None = None,
+        evaluation_gain: Mapping[str, Any] | None = None,
+    ) -> SlangLifecycleRecord:
         current = self._records[term]
         stage = self.REVIEWED if approved else self.REJECTED
         return self._store_record(
@@ -58,10 +81,30 @@ class DynamicSlangLifecycleManager:
             evidence_trace_ids=current.evidence_trace_ids,
             reviewer=reviewer,
             notes=notes,
+            lifecycle_version=lifecycle_version,
+            batch_id=batch_id,
+            target_risk_category=target_risk_category,
+            reviewed_at=reviewed_at or datetime.now(timezone.utc).isoformat(),
+            baseline_eval_version=baseline_eval_version,
+            post_eval_version=post_eval_version,
+            evaluation_gain=evaluation_gain,
             allow_downgrade=not approved,
         )
 
-    def gray_rollout(self, term: str, *, reviewer: str = "system", notes: str | None = None) -> SlangLifecycleRecord:
+    def gray_rollout(
+        self,
+        term: str,
+        *,
+        reviewer: str = "system",
+        notes: str | None = None,
+        lifecycle_version: str | None = None,
+        batch_id: str | None = None,
+        target_risk_category: str | None = None,
+        gray_rollout_at: str | None = None,
+        baseline_eval_version: str | None = None,
+        post_eval_version: str | None = None,
+        evaluation_gain: Mapping[str, Any] | None = None,
+    ) -> SlangLifecycleRecord:
         current = self._records[term]
         if current.stage != self.REVIEWED:
             raise ValueError("term must be REVIEWED before gray rollout")
@@ -72,10 +115,30 @@ class DynamicSlangLifecycleManager:
             evidence_trace_ids=current.evidence_trace_ids,
             reviewer=reviewer,
             notes=notes,
+            lifecycle_version=lifecycle_version,
+            batch_id=batch_id,
+            target_risk_category=target_risk_category,
+            gray_rollout_at=gray_rollout_at or datetime.now(timezone.utc).isoformat(),
+            baseline_eval_version=baseline_eval_version,
+            post_eval_version=post_eval_version,
+            evaluation_gain=evaluation_gain,
             allow_downgrade=True,
         )
 
-    def activate(self, term: str, *, reviewer: str = "system", notes: str | None = None) -> SlangLifecycleRecord:
+    def activate(
+        self,
+        term: str,
+        *,
+        reviewer: str = "system",
+        notes: str | None = None,
+        lifecycle_version: str | None = None,
+        batch_id: str | None = None,
+        target_risk_category: str | None = None,
+        activated_at: str | None = None,
+        baseline_eval_version: str | None = None,
+        post_eval_version: str | None = None,
+        evaluation_gain: Mapping[str, Any] | None = None,
+    ) -> SlangLifecycleRecord:
         current = self._records[term]
         if current.stage != self.GRAY_ROLLOUT:
             raise ValueError("term must be in GRAY_ROLLOUT before activation")
@@ -86,7 +149,74 @@ class DynamicSlangLifecycleManager:
             evidence_trace_ids=current.evidence_trace_ids,
             reviewer=reviewer,
             notes=notes,
+            lifecycle_version=lifecycle_version,
+            batch_id=batch_id,
+            target_risk_category=target_risk_category,
+            activated_at=activated_at or datetime.now(timezone.utc).isoformat(),
+            baseline_eval_version=baseline_eval_version,
+            post_eval_version=post_eval_version,
+            evaluation_gain=evaluation_gain,
             allow_downgrade=True,
+        )
+
+    def promote_approved_candidate(
+        self,
+        term: str,
+        normalized_term: str,
+        evidence_trace_ids: Iterable[str],
+        *,
+        reviewer: str = "system",
+        notes: str | None = None,
+        lifecycle_version: str | None = None,
+        batch_id: str | None = None,
+        target_risk_category: str | None = None,
+        reviewed_at: str | None = None,
+        gray_rollout_at: str | None = None,
+        activated_at: str | None = None,
+        baseline_eval_version: str | None = None,
+        post_eval_version: str | None = None,
+        evaluation_gain: Mapping[str, Any] | None = None,
+    ) -> SlangLifecycleRecord:
+        """Promote a human-approved candidate through review, gray rollout, and activation."""
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        self.nominate(term, normalized_term, evidence_trace_ids)
+        self.review(
+            term,
+            approved=True,
+            reviewer=reviewer,
+            notes=notes,
+            lifecycle_version=lifecycle_version,
+            batch_id=batch_id,
+            target_risk_category=target_risk_category,
+            reviewed_at=reviewed_at or timestamp,
+            baseline_eval_version=baseline_eval_version,
+            post_eval_version=post_eval_version,
+            evaluation_gain=evaluation_gain,
+        )
+        self.gray_rollout(
+            term,
+            reviewer=reviewer,
+            notes=notes,
+            lifecycle_version=lifecycle_version,
+            batch_id=batch_id,
+            target_risk_category=target_risk_category,
+            gray_rollout_at=gray_rollout_at or timestamp,
+            baseline_eval_version=baseline_eval_version,
+            post_eval_version=post_eval_version,
+            evaluation_gain=evaluation_gain,
+        )
+        return self.activate(
+            term,
+            reviewer=reviewer,
+            notes=notes,
+            lifecycle_version=lifecycle_version,
+            batch_id=batch_id,
+            target_risk_category=target_risk_category,
+            activated_at=activated_at or timestamp,
+            baseline_eval_version=baseline_eval_version,
+            post_eval_version=post_eval_version,
+            evaluation_gain=evaluation_gain,
         )
 
     def ingest_review_decision(self, event_or_payload: Mapping[str, Any] | Any) -> None:
@@ -195,6 +325,15 @@ class DynamicSlangLifecycleManager:
         evidence_trace_ids: Iterable[str],
         reviewer: str | None = None,
         notes: str | None = None,
+        lifecycle_version: str | None = None,
+        batch_id: str | None = None,
+        target_risk_category: str | None = None,
+        reviewed_at: str | None = None,
+        gray_rollout_at: str | None = None,
+        activated_at: str | None = None,
+        baseline_eval_version: str | None = None,
+        post_eval_version: str | None = None,
+        evaluation_gain: Mapping[str, Any] | None = None,
         allow_downgrade: bool,
     ) -> SlangLifecycleRecord:
         normalized_key = str(term).strip()
@@ -217,6 +356,18 @@ class DynamicSlangLifecycleManager:
                 final_reviewer = current.reviewer
             if notes is None:
                 final_notes = current.notes
+        metadata = self._record_metadata(
+            current,
+            lifecycle_version=lifecycle_version,
+            batch_id=batch_id,
+            target_risk_category=target_risk_category,
+            reviewed_at=reviewed_at,
+            gray_rollout_at=gray_rollout_at,
+            activated_at=activated_at,
+            baseline_eval_version=baseline_eval_version,
+            post_eval_version=post_eval_version,
+            evaluation_gain=evaluation_gain,
+        )
         record = SlangLifecycleRecord(
             term=normalized_key,
             normalized_term=final_normalized,
@@ -224,9 +375,42 @@ class DynamicSlangLifecycleManager:
             evidence_trace_ids=merged_evidence,
             reviewer=final_reviewer,
             notes=final_notes,
+            **metadata,
         )
         self._records[normalized_key] = record
         return record
+
+    @staticmethod
+    def _record_metadata(
+        current: SlangLifecycleRecord | None,
+        *,
+        lifecycle_version: str | None,
+        batch_id: str | None,
+        target_risk_category: str | None,
+        reviewed_at: str | None,
+        gray_rollout_at: str | None,
+        activated_at: str | None,
+        baseline_eval_version: str | None,
+        post_eval_version: str | None,
+        evaluation_gain: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        def choose(field_name: str, incoming: Any) -> Any:
+            if incoming is not None:
+                return incoming
+            return getattr(current, field_name) if current is not None else None
+
+        selected_gain = choose("evaluation_gain", dict(evaluation_gain) if evaluation_gain is not None else None)
+        return {
+            "lifecycle_version": choose("lifecycle_version", lifecycle_version),
+            "batch_id": choose("batch_id", batch_id),
+            "target_risk_category": choose("target_risk_category", target_risk_category),
+            "reviewed_at": choose("reviewed_at", reviewed_at),
+            "gray_rollout_at": choose("gray_rollout_at", gray_rollout_at),
+            "activated_at": choose("activated_at", activated_at),
+            "baseline_eval_version": choose("baseline_eval_version", baseline_eval_version),
+            "post_eval_version": choose("post_eval_version", post_eval_version),
+            "evaluation_gain": dict(selected_gain) if isinstance(selected_gain, Mapping) else selected_gain,
+        }
 
     @staticmethod
     def _merge_evidence(existing: Iterable[str], incoming: Iterable[str]) -> list[str]:

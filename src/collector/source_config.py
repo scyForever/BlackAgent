@@ -9,6 +9,7 @@ from urllib.parse import quote
 from src.config_loader import load_yaml_file
 
 from .relevance import get_theme_search_variants
+from .source_quota import apply_source_min_quotas, quota_balanced_source_slice
 
 
 class SourceCatalogError(ValueError):
@@ -229,8 +230,10 @@ def expand_source_definition(source: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 __all__ = [
     "SourceCatalogError",
+    "apply_source_min_quotas",
     "build_query_variants",
     "expand_source_definition",
     "load_source_catalog",
     "normalize_source_definition",
+    "quota_balanced_source_slice",
 ]

@@ -19,6 +19,8 @@ postgres = [
 ]
 telegram = [
     "telethon>=1.36,<2.0",
+    "PySocks>=1.7,<2.0",
+    "python-socks[asyncio]>=2.4,<3.0",
 ]
 dev = [
     "pytest>=7.4,<9.0",

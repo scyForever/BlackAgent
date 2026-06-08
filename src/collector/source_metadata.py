@@ -59,6 +59,26 @@ ARTICLE_SOURCE_MARKERS = {
     "html_article",
 }
 
+SECONDHAND_SOURCE_MARKERS = {
+    "secondhand",
+    "second_hand",
+    "used_goods",
+    "marketplace",
+    "二手",
+    "闲鱼",
+    "交易市场",
+}
+
+CROWDSOURCING_SOURCE_MARKERS = {
+    "crowdsourcing",
+    "crowd",
+    "task_platform",
+    "task_market",
+    "众包",
+    "任务平台",
+    "接单平台",
+}
+
 TOOL_MARKERS = {
     "群控",
     "脚本",
@@ -242,6 +262,45 @@ def is_article_source_record(record: Mapping[str, Any]) -> bool:
     return bool({source_type, platform} & ARTICLE_SOURCE_MARKERS)
 
 
+def source_quota_groups_for_record(record: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return granular source quota groups while preserving broad source classes."""
+
+    explicit = record.get("source_quota_groups") or record.get("quota_groups") or record.get("source_quota_group")
+    groups: list[str] = []
+    if isinstance(explicit, str):
+        groups.extend(item.strip() for item in explicit.split(","))
+    elif explicit:
+        try:
+            groups.extend(str(item).strip() for item in explicit)
+        except TypeError:
+            groups.append(str(explicit).strip())
+
+    existing_class = str(record.get("source_class") or "").strip().lower()
+    if existing_class in {
+        "public_account_or_article",
+        "public_account_article",
+        "secondhand_market",
+        "crowdsourcing_platform",
+    }:
+        groups.append(existing_class)
+
+    text = " ".join(
+        str(record.get(field) or "").strip().lower()
+        for field in ("source_type", "type", "platform", "source_name", "name", "source_url", "url")
+    )
+    has_granular_non_vertical = any(marker in text for marker in SECONDHAND_SOURCE_MARKERS | CROWDSOURCING_SOURCE_MARKERS)
+    if source_class_for_record(record) == "vertical_or_technical" and not has_granular_non_vertical:
+        groups.append("vertical_or_technical")
+    if is_article_source_record(record):
+        groups.append("public_account_or_article")
+        groups.append("public_account_article")
+    if any(marker in text for marker in SECONDHAND_SOURCE_MARKERS):
+        groups.append("secondhand_market")
+    if any(marker in text for marker in CROWDSOURCING_SOURCE_MARKERS):
+        groups.append("crowdsourcing_platform")
+    return tuple(dict.fromkeys(group for group in groups if group))
+
+
 def classify_collection_failure(exc_or_text: Any) -> str:
     """Return a stable failure reason for compliance audit reports."""
 
@@ -276,10 +335,13 @@ def _duplicate_probability(record: Mapping[str, Any]) -> float:
 __all__ = [
     "ARTICLE_SOURCE_MARKERS",
     "SOURCE_ACCESS_TYPES",
+    "CROWDSOURCING_SOURCE_MARKERS",
+    "SECONDHAND_SOURCE_MARKERS",
     "build_collection_metadata",
     "build_collection_quality_profile",
     "classify_collection_failure",
     "is_article_source_record",
     "normalize_source_access_type",
+    "source_quota_groups_for_record",
     "source_class_for_record",
 ]

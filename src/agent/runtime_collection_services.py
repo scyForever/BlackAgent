@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterable, Mapping
 
 from src.config_loader import InvestigationConfig, InvestigationPolicyOverride
+from src.collector.source_quota import apply_source_min_quotas
 from src.collector.source_metadata import source_class_for_record
 from src.domain import RunPolicyContext
 from src.scheduling.layered_collection import (
@@ -65,6 +66,14 @@ def _source_identity(source: Mapping[str, Any]) -> str:
 
 def _available_class_count(scored_sources: Iterable[tuple[int, Mapping[str, Any]]]) -> int:
     return len({_source_diversity_class(source) for _score, source in scored_sources})
+
+
+DEFAULT_INVESTIGATION_SOURCE_MIN_QUOTAS: dict[str, int] = {
+    "vertical_or_technical": 1,
+    "public_account_or_article": 1,
+    "secondhand_market": 1,
+    "crowdsourcing_platform": 1,
+}
 
 
 class InvestigationCollectionMixin:
@@ -143,6 +152,13 @@ class InvestigationCollectionMixin:
             if max_sources is None or max_sources <= 0:
                 return [dict(source) for _score, source in scored_sources]
             limit = int(max_sources)
+            quota_selection = apply_source_min_quotas(
+                (source for _score, source in scored_sources),
+                max_sources=limit,
+                minimum_quotas=DEFAULT_INVESTIGATION_SOURCE_MIN_QUOTAS,
+            )
+            if quota_selection.selected:
+                return quota_selection.selected
             selected: list[dict[str, Any]] = []
             selected_keys: set[str] = set()
             selected_classes: set[str] = set()

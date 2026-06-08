@@ -256,6 +256,56 @@ def test_conflict_review_calibration_resolves_only_high_evidence_cases():
     assert unresolved.conflict_status == "CONFLICT_REVIEW"
 
 
+def test_manual_heldout_typical_errors_handle_tutorial_rebate_and_account_tool_conflicts():
+    classifier = FineGrainedIntentClassifier()
+
+    ordinary_mod_discussion = classifier.classify(
+        {
+            "trace_id": "typical-error-tutorial",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Forum",
+            "content_text": (
+                "CK3 steam版MOD教程：如何开启自动招募宫廷职位功能，"
+                "下载 Court Position Automation 后在创意工坊订阅说明里配置。"
+            ),
+        }
+    )
+    rebate_traffic = classifier.classify(
+        {
+            "trace_id": "typical-error-rebate",
+            "source_name": "x_blackgray_search",
+            "source_type": "Social",
+            "content_text": (
+                "交易所高返佣账号开户链接，支持 API 高返佣和拉新，"
+                "联系 TG:rebate001 领取节点。"
+            ),
+        }
+    )
+    account_tool_hybrid = classifier.classify(
+        {
+            "trace_id": "typical-error-account-tool",
+            "source_name": "telegram_public_delivery:chaojiyun88",
+            "source_type": "IM",
+            "content_text": (
+                "用户端注册账号，免费赠送测试卡密，接码平台电脑端客服 @kefututu88，"
+                "网址 https://2222sim.example.com"
+            ),
+        }
+    )
+
+    assert ordinary_mod_discussion.risk_category == "正常业务白噪声"
+    assert ordinary_mod_discussion.secondary_label == "低相关"
+    assert ordinary_mod_discussion.review_required is False
+
+    assert rebate_traffic.risk_category == "诈骗引流"
+    assert rebate_traffic.secondary_label == "返利引流"
+    assert "刷单作弊" not in rebate_traffic.conflict_categories
+
+    assert account_tool_hybrid.review_required is True
+    assert account_tool_hybrid.conflict_status == "CONFLICT_REVIEW"
+    assert set(account_tool_hybrid.conflict_categories) >= {"账号交易", "工具交易"} - {account_tool_hybrid.risk_category}
+
+
 def test_evidence_chain_renderer_outputs_reviewable_rows():
     clue = RiskClue(
         clue_id="clue-1",

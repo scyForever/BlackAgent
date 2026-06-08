@@ -243,6 +243,69 @@ def test_source_selection_uses_structured_evidence_gap():
     assert selected[0]["source_name"] == "domain-forum"
 
 
+def test_runtime_source_selection_applies_granular_quotas_before_im_overflow():
+    orchestrator = InvestigationOrchestrator(llm_gateway=LLMGateway(dry_run=True, mock=True))
+
+    selected = orchestrator._select_sources(
+        {"source_selection_strategy": {"match_query_keywords": ["risk"]}},
+        [
+            {
+                "source_name": "telegram-public-big",
+                "source_type": "IM",
+                "source_class": "im_or_group",
+                "search_query": "risk",
+                "source_url": "https://telegram.example/feed.json",
+            },
+            {
+                "source_name": "telegram-public-big",
+                "source_type": "IM",
+                "source_class": "im_or_group",
+                "search_query": "risk overflow",
+                "source_url": "https://telegram.example/feed-2.json",
+            },
+            {
+                "source_name": "vertical-threat",
+                "source_type": "Vertical",
+                "search_query": "risk",
+                "source_url": "https://vertical.example/feed.json",
+            },
+            {
+                "source_name": "wechat-risk-articles",
+                "source_type": "Public_Account",
+                "platform": "wechat_public",
+                "search_query": "risk",
+                "source_url": "https://article.example/feed.json",
+            },
+            {
+                "source_name": "secondhand-market",
+                "source_type": "Vertical",
+                "platform": "second_hand_market",
+                "search_query": "risk",
+                "source_url": "https://market.example/feed.json",
+            },
+            {
+                "source_name": "crowd-platform",
+                "source_type": "Vertical",
+                "platform": "crowdsourcing",
+                "search_query": "risk",
+                "source_url": "https://crowd.example/feed.json",
+            },
+        ],
+        max_sources=5,
+        risk_types=["诈骗引流"],
+        evidence_gap=EvidenceGap(need_cross_source_support=True),
+    )
+
+    selected_names = [source["source_name"] for source in selected]
+    assert selected_names[:4] == [
+        "vertical-threat",
+        "wechat-risk-articles",
+        "secondhand-market",
+        "crowd-platform",
+    ]
+    assert selected_names.count("telegram-public-big") == 1
+
+
 def test_entity_graph_retrieval_service_feeds_preflight_candidates():
     from src.intelligence import EntityGraphRetrievalService
     from storage.entity_graph import EntityGraphStore

@@ -8,6 +8,7 @@ import json
 import re
 import sys
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -214,6 +215,11 @@ REVIEW_CSV_FIELDS = [
     "normalized_term",
     "review_status",
     "target_risk_category",
+    "target_stage",
+    "lifecycle_version",
+    "batch_id",
+    "baseline_eval_report",
+    "post_eval_report",
     "reviewer",
     "review_date",
     "notes",
@@ -238,6 +244,11 @@ def write_review_csv(report: Mapping[str, Any], path: str | Path) -> Path:
                     "normalized_term": candidate.get("normalized_term") or candidate.get("term") or "",
                     "review_status": "pending",
                     "target_risk_category": "",
+                    "target_stage": DynamicSlangLifecycleManager.ACTIVE,
+                    "lifecycle_version": "",
+                    "batch_id": "",
+                    "baseline_eval_report": "",
+                    "post_eval_report": "",
                     "reviewer": "",
                     "review_date": "",
                     "notes": "",
@@ -263,6 +274,8 @@ def lifecycle_records_from_review_csv(path: str | Path) -> dict[str, Any]:
     approved_count = 0
     rejected_count = 0
     pending_count = 0
+    default_lifecycle_version = f"slang-lifecycle-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    default_batch_id = f"slang-review-{target.stem}"
     with target.open("r", encoding="utf-8-sig", newline="") as file_obj:
         reader = csv.DictReader(file_obj)
         for row in reader:
@@ -276,16 +289,51 @@ def lifecycle_records_from_review_csv(path: str | Path) -> dict[str, Any]:
                 if item.strip()
             ]
             normalized = str(row.get("normalized_term") or term).strip() or term
-            record = manager.nominate(term, normalized, evidence_ids)
             reviewer = str(row.get("reviewer") or "human_review").strip() or "human_review"
             notes = str(row.get("notes") or "").strip() or None
+            target_risk_category = str(row.get("target_risk_category") or "").strip() or None
+            review_date = str(row.get("review_date") or "").strip() or None
+            lifecycle_version = str(row.get("lifecycle_version") or "").strip() or default_lifecycle_version
+            batch_id = str(row.get("batch_id") or "").strip() or default_batch_id
+            baseline_eval_report = parse_eval_report(row.get("baseline_eval_report"))
+            post_eval_report = parse_eval_report(row.get("post_eval_report"))
+            evaluation_gain = evaluation_gain_from_reports(baseline_eval_report, post_eval_report)
+            baseline_eval_version = _eval_rule_version(baseline_eval_report)
+            post_eval_version = _eval_rule_version(post_eval_report)
             if status in {"approved", "approve", "reviewed", "accepted"}:
-                record = manager.review(term, approved=True, reviewer=reviewer, notes=notes)
+                record = manager.promote_approved_candidate(
+                    term,
+                    normalized,
+                    evidence_ids,
+                    reviewer=reviewer,
+                    notes=notes,
+                    lifecycle_version=lifecycle_version,
+                    batch_id=batch_id,
+                    target_risk_category=target_risk_category,
+                    reviewed_at=review_date,
+                    baseline_eval_version=baseline_eval_version,
+                    post_eval_version=post_eval_version,
+                    evaluation_gain=evaluation_gain or None,
+                )
                 approved_count += 1
             elif status in {"rejected", "reject", "denied"}:
-                record = manager.review(term, approved=False, reviewer=reviewer, notes=notes)
+                manager.nominate(term, normalized, evidence_ids)
+                record = manager.review(
+                    term,
+                    approved=False,
+                    reviewer=reviewer,
+                    notes=notes,
+                    lifecycle_version=lifecycle_version,
+                    batch_id=batch_id,
+                    target_risk_category=target_risk_category,
+                    reviewed_at=review_date,
+                    baseline_eval_version=baseline_eval_version,
+                    post_eval_version=post_eval_version,
+                    evaluation_gain=evaluation_gain or None,
+                )
                 rejected_count += 1
             else:
+                record = manager.nominate(term, normalized, evidence_ids)
                 pending_count += 1
             _ = record
     records = [record.model_dump() for record in manager.list_records()]
@@ -308,6 +356,83 @@ def lifecycle_records_from_review_csv(path: str | Path) -> dict[str, Any]:
     }
 
 
+EVAL_GAIN_METRICS = (
+    "classification_f1",
+    "primary_classification_f1",
+    "secondary_classification_f1",
+    "hierarchical_classification_f1",
+    "entity_f1",
+    "clue_f1",
+    "classification_review_rate",
+)
+
+
+def evaluation_gain_from_reports(
+    baseline: Mapping[str, Any] | str | Path | None,
+    post: Mapping[str, Any] | str | Path | None,
+) -> dict[str, Any]:
+    baseline_report = parse_eval_report(baseline)
+    post_report = parse_eval_report(post)
+    if not baseline_report or not post_report:
+        return {}
+
+    gain: dict[str, Any] = {}
+    baseline_rule_version = _eval_rule_version(baseline_report)
+    post_rule_version = _eval_rule_version(post_report)
+    if baseline_rule_version is not None:
+        gain["baseline_rule_version"] = baseline_rule_version
+    if post_rule_version is not None:
+        gain["post_rule_version"] = post_rule_version
+    for metric in EVAL_GAIN_METRICS:
+        baseline_value = _numeric_metric(baseline_report.get(metric))
+        post_value = _numeric_metric(post_report.get(metric))
+        if baseline_value is None or post_value is None:
+            continue
+        gain[f"{metric}_delta"] = round(post_value - baseline_value, 6)
+    return gain
+
+
+def parse_eval_report(value: Mapping[str, Any] | str | Path | None) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, Mapping):
+        return dict(value)
+    text = str(value).strip()
+    if not text:
+        return {}
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+        return dict(parsed) if isinstance(parsed, Mapping) else {}
+    path = _project_path(text)
+    if not path.exists() or not path.is_file():
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return dict(parsed) if isinstance(parsed, Mapping) else {}
+
+
+def _eval_rule_version(report: Mapping[str, Any]) -> str | None:
+    value = report.get("rule_version")
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _numeric_metric(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     report = build_report(
@@ -319,7 +444,9 @@ def main(argv: list[str] | None = None) -> int:
     output = _project_path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    review_csv = write_review_csv(report, args.review_csv_out)
+    review_csv = _project_path(args.review_csv_out)
+    if not review_csv.exists():
+        review_csv = write_review_csv(report, args.review_csv_out)
     lifecycle = lifecycle_records_from_review_csv(review_csv)
     lifecycle_out = _project_path(args.lifecycle_out)
     lifecycle_out.parent.mkdir(parents=True, exist_ok=True)

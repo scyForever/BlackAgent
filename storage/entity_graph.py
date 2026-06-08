@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
-from src.enhancement.clue_quality import build_evidence_reviewability
 
 
 @dataclass(frozen=True)
@@ -299,6 +298,8 @@ class EntityGraphStore:
 
     def generate_clues(self) -> list[dict[str, Any]]:
         """Generate graph-view clues from persisted/cross-source entity facts."""
+
+        from src.enhancement.clue_quality import build_evidence_reviewability
 
         clues: list[dict[str, Any]] = []
         for asset in self.cross_source_entities():

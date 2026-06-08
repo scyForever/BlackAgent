@@ -755,6 +755,42 @@ def test_multimodal_text_extractor_merges_nested_image_ocr_and_tracks_sources():
     assert "images.text_blocks.text" in materialized["multimodal_text_sources"]
 
 
+def test_advanced_entity_extractor_filters_source_aware_boilerplate_and_prioritizes_high_value_entities():
+    entities = AdvancedEntityExtractor().extract(
+        {
+            "trace_id": "entity-postprocess",
+            "source_name": "automationforum",
+            "source_type": "Article",
+            "source_class": "social_or_forum",
+            "content_text": (
+                "Home Channel Image https://static.example.com/logo.png Follow Us On LinkedIn "
+                "真正风险：群控脚本出售，联系 TG:riskcore01，微信 wxrisk01，"
+                "邀请码 code:ABCD88，USDT 结算，落地 risk-pay.example/path，账号 UID:acct8899"
+            ),
+        }
+    )
+
+    values = [item.normalized_value for item in entities]
+    types = [item.entity_type for item in entities]
+
+    assert "Image" not in values
+    assert "Channel" not in values
+    assert "https://static.example.com/logo.png" not in values
+    assert values[:7] == [
+        "Telegram:riskcore01",
+        "WeChat:wxrisk01",
+        "https://risk-pay.example/path",
+        "acct8899",
+        "ABCD88",
+        "USDT",
+        "群控",
+    ]
+    assert types[:7] == ["contact", "contact", "url", "account", "invite_code", "settlement", "tool_name"]
+    import hashlib
+
+    assert entities[0].canonical_hash == hashlib.sha256("contact:telegram:riskcore01".encode("utf-8")).hexdigest()
+
+
 def test_vector_and_graph_repositories_are_adapter_shaped():
     vector_repo = VectorRepo()
     vector_repo.upsert("a", "群控脚本 接码", {"source": "fixture"})

@@ -38,6 +38,8 @@ def test_slang_candidate_report_exports_review_csv_and_lifecycle_records(tmp_pat
     rows[0]["target_risk_category"] = "诈骗引流"
     rows[0]["normalized_term"] = "WhatsApp"
     rows[0]["notes"] = "confirmed from reviewed traces"
+    rows[0]["baseline_eval_report"] = json.dumps({"rule_version": "rules-before", "primary_classification_f1": 0.62})
+    rows[0]["post_eval_report"] = json.dumps({"rule_version": "rules-after", "primary_classification_f1": 0.67})
     rows[1]["review_status"] = "rejected"
     rows[1]["reviewer"] = "analyst-a"
     rows[1]["notes"] = "generic phrase"
@@ -51,8 +53,12 @@ def test_slang_candidate_report_exports_review_csv_and_lifecycle_records(tmp_pat
     assert lifecycle["approved_count"] == 1
     assert lifecycle["rejected_count"] == 1
     assert lifecycle["records"][0]["term"] == "火苗"
-    assert lifecycle["records"][0]["stage"] == "REVIEWED"
+    assert lifecycle["records"][0]["stage"] == "ACTIVE"
     assert lifecycle["records"][0]["reviewer"] == "analyst-a"
+    assert lifecycle["records"][0]["lifecycle_version"]
+    assert lifecycle["records"][0]["batch_id"]
+    assert lifecycle["records"][0]["target_risk_category"] == "诈骗引流"
+    assert lifecycle["records"][0]["evaluation_gain"]["primary_classification_f1_delta"] == 0.05
 
     output.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(
@@ -75,3 +81,40 @@ def test_slang_candidate_report_exports_review_csv_and_lifecycle_records(tmp_pat
     assert build_slang_candidate_report.main() == 0
     assert review_csv.exists()
     assert lifecycle_json.exists()
+    lifecycle_payload = json.loads(lifecycle_json.read_text(encoding="utf-8"))
+    assert lifecycle_payload["approved_count"] == 1
+    assert lifecycle_payload["records"][0]["stage"] == "ACTIVE"
+
+
+def test_slang_lifecycle_eval_gain_compares_baseline_and_post_reports():
+    gain = build_slang_candidate_report.evaluation_gain_from_reports(
+        {
+            "rule_version": "rules-before",
+            "primary_classification_f1": 0.62,
+            "secondary_classification_f1": 0.51,
+            "hierarchical_classification_f1": 0.42,
+            "entity_f1": 0.9,
+            "clue_f1": 0.25,
+            "classification_review_rate": 0.45,
+        },
+        {
+            "rule_version": "rules-after",
+            "primary_classification_f1": 0.67,
+            "secondary_classification_f1": 0.56,
+            "hierarchical_classification_f1": 0.49,
+            "entity_f1": 0.93,
+            "clue_f1": 0.4,
+            "classification_review_rate": 0.37,
+        },
+    )
+
+    assert gain == {
+        "baseline_rule_version": "rules-before",
+        "post_rule_version": "rules-after",
+        "primary_classification_f1_delta": 0.05,
+        "secondary_classification_f1_delta": 0.05,
+        "hierarchical_classification_f1_delta": 0.07,
+        "entity_f1_delta": 0.03,
+        "clue_f1_delta": 0.15,
+        "classification_review_rate_delta": -0.08,
+    }

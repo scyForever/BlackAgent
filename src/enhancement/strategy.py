@@ -166,9 +166,12 @@ class RiskClueAggregator:
         grouped: dict[str, list[Any]] = defaultdict(list)
         for entity in entities:
             if str(get_record_field(entity, "entity_type") or "").lower() in self.CONTACT_TYPES:
-                grouped[str(get_record_field(entity, "normalized_value") or get_record_field(entity, "entity_value"))].append(entity)
+                key = _contact_clue_group_key(str(get_record_field(entity, "normalized_value") or get_record_field(entity, "entity_value") or ""))
+                if key:
+                    grouped[key].append(entity)
         clues: list[RiskClue] = []
-        for value, group in grouped.items():
+        for key, group in grouped.items():
+            value = _contact_clue_display_value(key, group)
             traces = sorted({str(get_record_field(entity, "source_trace_id") or "unknown") for entity in group})
             if len(traces) >= 3 and self._within_48h([records.get(trace) for trace in traces if trace in records]):
                 clues.append(self._make_clue("shared_contact_48h", value, traces, records, categories, [value], "same_contact_appears_at_least_3_times_within_48h"))
@@ -358,6 +361,36 @@ def _domain(url: str) -> str:
     text = text.split("//", 1)[-1]
     text = text.split("/", 1)[0]
     return text.strip(" .，,;；")
+
+
+def _contact_clue_group_key(value: str) -> str:
+    text = normalize_text(str(value or "")).strip(" ,，。;；")
+    if not text:
+        return ""
+    lowered = text.lower()
+    for prefix in ("telegram:", "tg:"):
+        if lowered.startswith(prefix):
+            handle = text.split(":", 1)[1].lstrip("@").strip()
+            return handle.lower() if handle else ""
+    if lowered.startswith("@"):
+        return text[1:].strip().lower()
+    return lowered
+
+
+def _contact_clue_display_value(group_key: str, group: Iterable[Any]) -> str:
+    fallback = ""
+    for entity in group:
+        raw = normalize_text(str(get_record_field(entity, "normalized_value") or get_record_field(entity, "entity_value") or "")).strip(" ,，。;；")
+        if not raw:
+            continue
+        fallback = fallback or raw
+        lowered = raw.lower()
+        if lowered.startswith(("telegram:", "tg:")):
+            handle = raw.split(":", 1)[1].lstrip("@").strip()
+            return f"Telegram:{handle}" if handle else raw
+        if lowered.startswith("@"):
+            return f"Telegram:{raw[1:].strip()}"
+    return fallback or group_key
 
 
 def _remove_entities(text: str) -> str:

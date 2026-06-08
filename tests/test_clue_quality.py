@@ -1,4 +1,5 @@
 from src.enhancement.clue_quality import ClueQualityEvaluator
+from src.enhancement.strategy import RiskClueAggregator
 from src.pipeline.stages import ScoreStage
 
 
@@ -179,3 +180,27 @@ def test_score_stage_adds_reviewability_metadata_for_multi_source_entity_support
     assert reviewability["false_positive_risk"]["level"] == "low"
     assert reviewability["false_positive_risk"]["score"] < 0.4
     assert reviewability["suggested_review_action"] == "review_original_snippets_and_confirm_entity_linkage"
+
+
+def test_contact_clue_aggregator_merges_telegram_prefixed_and_bare_handles():
+    records = [
+        {"trace_id": "contact-alias-1", "source_name": "tg-a", "publish_time": "2026-06-07T01:00:00+00:00"},
+        {"trace_id": "contact-alias-2", "source_name": "forum-a", "publish_time": "2026-06-07T02:00:00+00:00"},
+        {"trace_id": "contact-alias-3", "source_name": "feed-a", "publish_time": "2026-06-07T03:00:00+00:00"},
+    ]
+    classifications = [
+        {"source_trace_id": "contact-alias-1", "risk_category": "工具交易"},
+        {"source_trace_id": "contact-alias-2", "risk_category": "工具交易"},
+        {"source_trace_id": "contact-alias-3", "risk_category": "工具交易"},
+    ]
+    entities = [
+        {"source_trace_id": "contact-alias-1", "entity_type": "contact", "normalized_value": "Telegram:core01"},
+        {"source_trace_id": "contact-alias-2", "entity_type": "contact", "normalized_value": "TG:core01"},
+        {"source_trace_id": "contact-alias-3", "entity_type": "contact", "normalized_value": "core01"},
+    ]
+
+    clues = RiskClueAggregator().aggregate(records=records, classifications=classifications, entities=entities)
+
+    contact_clue = next(item for item in clues if item.clue_type == "shared_contact_48h")
+    assert contact_clue.key == "Telegram:core01"
+    assert contact_clue.evidence_trace_ids == ["contact-alias-1", "contact-alias-2", "contact-alias-3"]

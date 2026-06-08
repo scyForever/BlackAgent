@@ -1,4 +1,5 @@
 import json
+from argparse import Namespace
 from http.client import IncompleteRead
 from io import BytesIO
 from urllib.error import HTTPError
@@ -7,9 +8,11 @@ import pytest
 
 from src.collector import HTTPFeedCollector, HTTPFeedConfig, NetworkCollectionDisabled, SourceAuthorizationError, load_source_catalog
 from src.collector.base_collector import model_dump
+from src.collector.source_config import quota_balanced_source_slice
 from src.config_loader import Settings
 from src.local_runtime import LocalAgentRuntime
 from storage.sql_backend import connect
+from scripts.collect_public_sources import selected_sources_from_args
 import src.collector.http_feed_collector as http_feed_collector_module
 
 
@@ -680,6 +683,164 @@ sources:
     assert sources[7]["query_term"] == "进裙"
     assert sources[8]["query_term"] == "加微"
     assert sources[9]["query_term"] == "加威"
+
+
+def test_quota_balanced_source_slice_satisfies_non_im_minimums_before_telegram_overflow():
+    sources = [
+        {
+            "source_name": "telegram-public-big",
+            "source_type": "IM",
+            "source_class": "im_or_group",
+            "source_url": "https://telegram.example/feed.json",
+        },
+        {
+            "source_name": "telegram-public-big",
+            "source_type": "IM",
+            "source_class": "im_or_group",
+            "source_url": "https://telegram.example/feed-2.json",
+        },
+        {
+            "source_name": "vertical-market",
+            "source_type": "Vertical",
+            "source_url": "https://vertical.example/feed.json",
+        },
+        {
+            "source_name": "wechat-risk-articles",
+            "source_type": "Public_Account",
+            "platform": "wechat_public",
+            "source_url": "https://article.example/feed.json",
+        },
+        {
+            "source_name": "secondhand-market",
+            "source_type": "Marketplace",
+            "source_class": "secondhand_market",
+            "source_url": "https://market.example/feed.json",
+        },
+        {
+            "source_name": "crowd-platform",
+            "source_type": "Crowdsourcing",
+            "source_class": "crowdsourcing_platform",
+            "source_url": "https://crowd.example/feed.json",
+        },
+    ]
+
+    selected = quota_balanced_source_slice(
+        sources,
+        max_sources=5,
+        minimum_quotas={
+            "vertical_or_technical": 1,
+            "public_account_or_article": 1,
+            "secondhand_market": 1,
+            "crowdsourcing_platform": 1,
+        },
+    )
+
+    selected_names = [source["source_name"] for source in selected]
+    assert selected_names[:4] == [
+        "vertical-market",
+        "wechat-risk-articles",
+        "secondhand-market",
+        "crowd-platform",
+    ]
+    assert selected_names.count("telegram-public-big") == 1
+
+
+def test_collect_public_sources_applies_granular_source_minimum_quotas(tmp_path):
+    catalog_path = tmp_path / "source_catalog_quota.yaml"
+    catalog_path.write_text(
+        """
+sources:
+  - source_name: telegram-public-big
+    source_type: IM
+    source_class: im_or_group
+    source_url: https://telegram.example/feed.json
+  - source_name: telegram-public-big
+    source_type: IM
+    source_class: im_or_group
+    source_url: https://telegram.example/feed-2.json
+  - source_name: vertical-market
+    source_type: Vertical
+    source_url: https://vertical.example/feed.json
+  - source_name: wechat-risk-articles
+    source_type: Public_Account
+    platform: wechat_public
+    source_url: https://article.example/feed.json
+  - source_name: secondhand-market
+    source_type: Vertical
+    platform: second_hand_market
+    source_url: https://market.example/feed.json
+  - source_name: crowd-platform
+    source_type: Vertical
+    platform: crowdsourcing
+    source_url: https://crowd.example/feed.json
+        """.strip(),
+        encoding="utf-8",
+    )
+    args = Namespace(
+        source_class=[],
+        max_sources=5,
+        source_min_quota=[],
+        disable_source_min_quotas=False,
+    )
+
+    selected, summary = selected_sources_from_args(args, catalog_path)
+
+    selected_names = [source["source_name"] for source in selected or []]
+    assert selected_names[:4] == [
+        "vertical-market",
+        "wechat-risk-articles",
+        "secondhand-market",
+        "crowd-platform",
+    ]
+    assert selected_names.count("telegram-public-big") == 1
+    assert summary["source_quota_warnings"] == []
+    assert summary["selected_source_quota_counts"]["vertical_or_technical"] == 1
+    assert summary["selected_source_quota_counts"]["public_account_or_article"] == 1
+    assert summary["selected_source_quota_counts"]["secondhand_market"] == 1
+    assert summary["selected_source_quota_counts"]["crowdsourcing_platform"] == 1
+
+
+def test_quota_balanced_source_slice_preserves_broad_class_diversity_after_quota_fill():
+    sources = [
+        {
+            "source_name": "telegram-a",
+            "source_type": "IM",
+            "source_class": "im_or_group",
+            "source_url": "https://telegram.example/a.json",
+            "search_query": "接码",
+        },
+        {
+            "source_name": "telegram-b",
+            "source_type": "IM",
+            "source_class": "im_or_group",
+            "source_url": "https://telegram.example/b.json",
+            "search_query": "群控",
+        },
+        {
+            "source_name": "forum-a",
+            "source_type": "Forum",
+            "source_url": "https://forum.example/a.json",
+            "search_query": "接码",
+        },
+        {
+            "source_name": "vertical-tool-a",
+            "source_type": "Vertical",
+            "source_url": "https://vertical.example/a.json",
+            "search_query": "automation",
+        },
+    ]
+
+    selected = quota_balanced_source_slice(
+        sources,
+        max_sources=3,
+        minimum_quotas={"vertical_or_technical": 1},
+    )
+
+    selected_names = {source["source_name"] for source in selected}
+    assert len(selected) == 3
+    assert "vertical-tool-a" in selected_names
+    assert "forum-a" in selected_names
+    assert {"telegram-a", "telegram-b"} & selected_names
 
 
 def test_batch_source_collect_runtime_aggregates_multi_platform_sources(monkeypatch, tmp_path):
