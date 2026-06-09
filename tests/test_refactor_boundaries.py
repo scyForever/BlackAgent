@@ -766,6 +766,75 @@ def test_clue_promotion_promotes_shared_invite_code_multi_source():
     assert actionable[0]["promotion_reason"] == "contact_account_cross_source_or_two_observations"
 
 
+def test_clue_promotion_archives_bulk_template_contacts_as_candidate_pool():
+    stage = CluePromotionStage()
+    bulk_traces = [f"bulk-{index}" for index in range(10)]
+    bulk_sources = [f"source-{index}" for index in range(10)]
+    contact_clues = [
+        {
+            "clue_id": f"bulk-contact-{index}",
+            "clue_type": "shared_contact_48h",
+            "key": f"Telegram:bulk{index:02d}",
+            "risk_category": "工具交易",
+            "evidence_trace_ids": [f"bulk-{index}", f"detail-{index}"],
+            "source_names": [f"source-{index}", f"detail-source-{index}"],
+            "entity_values": [f"Telegram:bulk{index:02d}"],
+            "confidence": 0.8 - index * 0.01,
+        }
+        for index in range(5)
+    ]
+    domain_clues = [
+        {
+            "clue_id": f"bulk-domain-{index}",
+            "clue_type": "shared_domain_multi_source",
+            "key": f"bulk{index:02d}.example",
+            "risk_category": "工具交易",
+            "evidence_trace_ids": [f"bulk-{index}", f"detail-{index}"],
+            "source_names": [f"source-{index}", f"detail-source-{index}"],
+            "entity_values": [f"bulk{index:02d}.example"],
+            "confidence": 0.79 - index * 0.01,
+        }
+        for index in range(5)
+    ]
+
+    actionable = stage.run_batch(
+        [
+            {
+                "clue_id": "bulk-template",
+                "clue_type": "high_frequency_template",
+                "key": "群控脚本接码上车联系落地第1条",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": bulk_traces,
+                "source_names": bulk_sources,
+                "entity_values": ["群控脚本接码上车联系落地第1条"],
+                "confidence": 0.95,
+            },
+            *contact_clues,
+            *domain_clues,
+        ],
+        context={
+            "entities": [
+                *[
+                    {"source_trace_id": trace, "entity_type": "contact"}
+                    for trace in [*bulk_traces[:5], *[f"detail-{index}" for index in range(5)]]
+                ],
+                *[
+                    {"source_trace_id": trace, "entity_type": "domain"}
+                    for trace in [*bulk_traces[:5], *[f"detail-{index}" for index in range(5)]]
+                ],
+            ]
+        },
+    )
+
+    actionable_ids = {item["clue_id"] for item in actionable}
+    archived_by_id = {item["clue_id"]: item for item in stage.archived_weak_clues}
+
+    assert actionable_ids == {"bulk-contact-0", "bulk-domain-0"}
+    assert archived_by_id["bulk-template"]["archive_reason"] == "template_pattern_kept_in_candidate_pool_requires_key_entity_support"
+    assert archived_by_id["bulk-contact-1"]["archive_reason"] == "bulk_template_shared_contact_48h_represented_by_top_evidence"
+    assert archived_by_id["bulk-domain-1"]["archive_reason"] == "bulk_template_shared_domain_multi_source_represented_by_top_evidence"
+
+
 def test_clue_promotion_prefers_specific_graph_clue_over_same_chain_shared_contact():
     stage = CluePromotionStage()
     actionable = stage.run_batch(

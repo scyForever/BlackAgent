@@ -38,6 +38,9 @@ from src.classifier.nlp_rule_matcher import review_bucket_for_classification
 from src.evaluation.llm_ablation import LLMValueGate, write_latest_llm_value_report
 
 
+NON_RISK_SECONDARY_LABELS = {"低相关", "防御语境", "研究讨论", "正常业务白噪声", "待研判"}
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate BlackAgent pipeline on gold JSONL records.")
     parser.add_argument("--gold", required=True, help="JSONL with content_text plus expected_risk_categories/expected_entities.")
@@ -351,7 +354,7 @@ def evaluate_classification(
     positive_record_count = 0
     negative_record_count = 0
     annotated_secondary_records = sum(1 for record in records if _has_secondary_gold_annotation(record))
-    expected_secondary_gold_count = sum(len(expected_secondary_labels(record)) for record in records)
+    expected_secondary_gold_count = sum(len(_formal_expected_secondary_labels(record)) for record in records)
     requested_granularity = str(granularity or "auto").strip().lower()
     if requested_granularity == "auto":
         resolved_granularity = "hierarchical" if expected_secondary_gold_count > 0 else "primary_only"
@@ -363,7 +366,7 @@ def evaluate_classification(
     for record in records:
         trace_id = _trace_id(record)
         expected_primary = predicted_categories(record)
-        expected_secondary = expected_secondary_labels(record)
+        expected_secondary = _formal_expected_secondary_labels(record)
         actual = actual_by_trace.get(trace_id, {})
         actual_primary = predicted_categories(actual)
         actual_secondary = actual_secondary_labels(actual)
@@ -371,7 +374,7 @@ def evaluate_classification(
             actual_secondary = {
                 label
                 for label in actual_secondary
-                if label not in {"低相关", "防御语境", "研究讨论", "正常业务白噪声", "待研判"}
+                if label not in NON_RISK_SECONDARY_LABELS
             }
         if expected_primary:
             positive_record_count += 1
@@ -920,6 +923,13 @@ def expected_secondary_labels(classification: Mapping[str, Any]) -> set[str]:
     if isinstance(raw, list):
         labels.update(_normalize_label(item) for item in raw)
     return {item for item in labels if item not in {"待研判", "未细分", "unknown", "none", "null"}}
+
+
+def _formal_expected_secondary_labels(classification: Mapping[str, Any]) -> set[str]:
+    labels = expected_secondary_labels(classification)
+    if predicted_categories(classification):
+        return labels
+    return {label for label in labels if label not in NON_RISK_SECONDARY_LABELS}
 
 
 def predicted_secondary_labels(classification: Mapping[str, Any]) -> set[str]:

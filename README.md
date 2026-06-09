@@ -249,6 +249,14 @@ python scripts/evaluate_pipeline.py `
   --ablation `
   --output data/eval_llm_ablation.json
 
+python scripts/evaluate_pipeline.py `
+  --gold tests/evaluation/llm_required_cases.jsonl `
+  --hard-negative tests/evaluation/context_conflict.jsonl `
+  --ablation `
+  --with-budget `
+  --write-latest-llm-value data/latest_llm_value_report.json `
+  --output data/eval_llm_hard_ablation.json
+
 python scripts/build_heldout_eval.py `
   --limit 60 `
   --per-category 12 `
@@ -296,6 +304,15 @@ python scripts/generate_source_smoke_report.py `
 python scripts/run_live_source_smoke.py `
   --output data/source_live_smoke_report.json
 
+python scripts/build_acceptance_evidence_pack.py `
+  --acceptance-pack data/collection_phase_multi_source_acceptance_pack.jsonl `
+  --cleaned data/acceptance_direct_final3_cleaned_corpus.jsonl `
+  --classifications data/acceptance_direct_final3_raw_classifications.jsonl `
+  --entities data/acceptance_direct_final3_raw_entities.jsonl `
+  --hydrated data/acceptance_direct_final3_hydrated_pages.jsonl `
+  --output data/collection_phase_multi_source_evidence_pack.jsonl `
+  --report-out data/collection_phase_multi_source_evidence_pack_report.json
+
 python scripts/run_ocr_demo.py `
   --output data/ocr_demo_report.json
 
@@ -340,10 +357,18 @@ split，不能冒充线上泛化。人工版 held-out 只有在 `validate_manual
 看到 `confirmed / corrected` 且 `annotator / review_date / final_risk_categories /
 conflict_handling` 等字段完整时才会输出 `manual_heldout_public_authorized`。
 线索质量需分别查看 `standard_clue_eval` 与 `graph_clue_eval`，人工负载看
-`overall_review_load_eval`。
+`overall_review_load_eval`；source smoke 使用 IM、论坛/社媒、垂直平台、
+公众号/文章四个 `smoke_group`，其中公众号/文章仍保留在全局
+`social_or_forum` source class 中。
 `--ablation` 会保留 `fast/off`、`high_recall/off`、`high_recall/mock`，
 并额外输出 `fast/off`、`balanced/mock`、`high_recall/real_or_configured_fallback`
 的 LLM value matrix；真实网关未配置时高召回场景会标注 `fallback` 而不是静默省略。
+小型 hard ablation 固定使用 `tests/evaluation/llm_required_cases.jsonl` 的 50 条
+LLM-required 正样本和 `tests/evaluation/context_conflict.jsonl` 的 50 条冲突负样本；
+credentialless/offline 环境只能声称 value gate 离线证明，不能冒充真实 provider 证明。
+真实 LLM 价值证明需要配置真实网关凭据并追加 `--ablation-include-real`，否则
+`high_recall/real_or_configured_fallback` 必须显示 `provider_status=fallback` 和
+`fallback_reason`。
 报告包含 `classification_f1_delta / entity_f1_delta / clue_*_delta / llm_calls_delta /
 tokens_per_f1_gain / tokens_per_extra_valid_clue / latency_ms_per_f1_gain /
 latency_ms_per_extra_valid_clue`，用于判断 LLM record enrich 是否值得启用；

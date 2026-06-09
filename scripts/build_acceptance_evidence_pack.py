@@ -23,6 +23,7 @@ from src.cleaner.text_filter import (
     shannon_entropy,
     stable_dedup_group_id,
 )
+from src.collector.source_metadata import source_class_for_record, source_quota_groups_for_record
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -89,6 +90,7 @@ def build_evidence_pack(
     review_status_counter: Counter[str] = Counter()
     cleaning_source_counter: Counter[str] = Counter()
     source_evidence_counter: Counter[str] = Counter()
+    source_evidence_by_category: defaultdict[str, Counter[str]] = defaultdict(Counter)
     for row in acceptance_rows:
         trace_id = _trace_id(row)
         hydrated_row = hydrated_by_trace.get(trace_id) or hydrated_by_url.get(str(row.get("source_url") or ""))
@@ -136,6 +138,7 @@ def build_evidence_pack(
         cleaning_source_counter[cleaning_card.get("source") or "unknown"] += 1
         source_evidence = _source_evidence_card(source_evidence_row, cleaning_drop_by_trace.get(trace_id))
         _count_source_evidence(source_evidence, counter=source_evidence_counter)
+        _count_source_evidence(source_evidence, counter=source_evidence_by_category[_acceptance_category(source_evidence_row)])
         evidence_rows.append(
             {
                 "trace_id": trace_id,
@@ -172,6 +175,10 @@ def build_evidence_pack(
         "output": str(output),
         "completeness_counts": dict(completeness_counter),
         "source_evidence_counts": dict(source_evidence_counter),
+        "source_evidence_counts_by_category": {
+            category: dict(counter)
+            for category, counter in sorted(source_evidence_by_category.items())
+        },
         "review_status_counts": dict(review_status_counter),
         "cleaning_source_counts": dict(cleaning_source_counter),
         "claim_boundary": "evidence_pack_joins_available_artifacts_missing_clues_are_not_claimed",
@@ -487,6 +494,12 @@ def _acceptance_category(row: dict[str, Any]) -> str:
         value = str(row.get(key) or "").strip()
         if value:
             return value
+    quota_groups = set(source_quota_groups_for_record(row))
+    if "public_account_or_article" in quota_groups:
+        return "public_account_or_article"
+    source_class = source_class_for_record(row)
+    if source_class and source_class != "other_authorized":
+        return source_class
     return ""
 
 

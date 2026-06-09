@@ -174,7 +174,71 @@ def _archive_superseded_generic_clues(actionable: Iterable[Mapping[str, Any]]) -
             archived.append(downgraded)
             continue
         kept.append(clue)
+    kept, bulk_archived = _archive_bulk_template_supported_noise(kept)
+    archived.extend(bulk_archived)
     return kept, archived
+
+
+def _archive_bulk_template_supported_noise(actionable: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    bulk_templates = [
+        clue
+        for clue in actionable
+        if _is_bulk_template_clue(clue)
+    ]
+    if not bulk_templates:
+        return actionable, []
+
+    archived: list[dict[str, Any]] = []
+    kept: list[dict[str, Any]] = []
+    bulk_risk_categories = {
+        str(clue.get("risk_category") or "").strip().lower()
+        for clue in bulk_templates
+        if str(clue.get("risk_category") or "").strip()
+    }
+    representative_types = {"shared_contact_48h", "shared_domain_multi_source"}
+    grouped_representatives: dict[str, list[tuple[int, dict[str, Any]]]] = defaultdict(list)
+
+    for index, clue in enumerate(actionable):
+        clue_type = str(clue.get("clue_type") or "").strip().lower()
+        clue_risk = str(clue.get("risk_category") or "").strip().lower()
+        if clue_type in representative_types and (not bulk_risk_categories or clue_risk in bulk_risk_categories):
+            grouped_representatives[clue_type].append((index, clue))
+            continue
+        if _is_template_clue(clue_type) and not _template_has_key_entity_support(clue):
+            archived.append(_archived_copy(clue, "template_pattern_kept_in_candidate_pool_requires_key_entity_support"))
+            continue
+        kept.append(clue)
+
+    selected_ids: set[int] = set()
+    for clue_type, items in grouped_representatives.items():
+        if len(items) <= 1:
+            for _index, clue in items:
+                kept.append(clue)
+            continue
+        selected_index, selected = max(items, key=lambda item: _bulk_representative_rank(item[1], item[0]))
+        selected_ids.add(id(selected))
+        kept.append(selected)
+        for _index, clue in items:
+            if id(clue) in selected_ids:
+                continue
+            archived.append(_archived_copy(clue, f"bulk_template_{clue_type}_represented_by_top_evidence"))
+    return kept, archived
+
+
+def _archived_copy(clue: Mapping[str, Any], reason: str) -> dict[str, Any]:
+    archived = dict(clue)
+    archived["clue_stage"] = "archived_weak"
+    archived["archive_reason"] = reason
+    return archived
+
+
+def _bulk_representative_rank(clue: Mapping[str, Any], index: int) -> tuple[float, int, int, int]:
+    return (
+        float(clue.get("confidence") or clue.get("actionability_score") or clue.get("quality_score") or 0.0),
+        len(_trace_set(clue)),
+        len({str(item) for item in (clue.get("source_names") or []) if str(item).strip()}),
+        -index,
+    )
 
 
 def _actionable_rank(clue: Mapping[str, Any]) -> tuple[float, int, int, str]:
@@ -214,6 +278,42 @@ def _is_contextual_bridge_contact(clue: Mapping[str, Any]) -> bool:
 def _is_specific_graph_clue(clue: Mapping[str, Any]) -> bool:
     clue_type = str(clue.get("clue_type") or "").strip().lower()
     return clue_type in {"entity_graph_account_tool_overlap", "entity_graph_tool_trade_cluster"}
+
+
+def _is_template_clue(clue_type: str) -> bool:
+    return clue_type in {"high_frequency_template", "shared_template_multi_source"} or "template" in clue_type
+
+
+def _is_bulk_template_clue(clue: Mapping[str, Any]) -> bool:
+    clue_type = str(clue.get("clue_type") or "").strip().lower()
+    if not _is_template_clue(clue_type):
+        return False
+    return len(_trace_set(clue)) >= 8
+
+
+def _template_has_key_entity_support(clue: Mapping[str, Any]) -> bool:
+    values = {_normalized_key(item) for item in (clue.get("entity_values") or []) if str(item).strip()}
+    key = _normalized_key(clue.get("key"))
+    values.add(key)
+    return any(
+        _is_direct_contact_key(value)
+        or value.startswith(("http://", "https://"))
+        or "." in value
+        or ":" in value
+        or "@" in value
+        or _looks_like_machine_identifier(value)
+        for value in values
+    )
+
+
+def _looks_like_machine_identifier(value: str) -> bool:
+    if not value:
+        return False
+    if not any(char.isdigit() for char in value):
+        return False
+    ascii_letters = sum(1 for char in value if ("a" <= char <= "z") or ("A" <= char <= "Z"))
+    separators = sum(1 for char in value if char in {"-", "_"})
+    return ascii_letters >= 2 and (separators > 0 or len(value) <= 32)
 
 
 def _normalized_key(value: Any) -> str:

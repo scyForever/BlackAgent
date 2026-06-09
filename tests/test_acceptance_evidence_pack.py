@@ -369,6 +369,94 @@ def test_build_acceptance_evidence_pack_uses_raw_text_when_content_text_missing(
     assert row["source_evidence"]["raw_snippet"] == "full raw fallback body"
 
 
+def test_build_acceptance_evidence_pack_reports_source_evidence_counts_by_category(tmp_path):
+    output_path = tmp_path / "evidence.jsonl"
+    report_path = tmp_path / "report.json"
+
+    hydrated_article_body = "公众号文章 hydrated body " + ("接码风险细节 " * 40)
+    rows = [
+        {
+            "trace_id": "trace-im",
+            "source_trace_id": "trace-im",
+            "source_name": "telegram-public",
+            "source_type": "IM",
+            "source_class": "im_or_group",
+            "source_url": "https://tg.example/channel/1",
+            "content_text": "IM 原文 群控脚本 TG:risk",
+            "capture_snapshot_uri": "s3://snapshots/im.html",
+            "raw_payload_uri": "s3://payloads/im.json",
+        },
+        {
+            "trace_id": "trace-forum",
+            "source_trace_id": "trace-forum",
+            "source_name": "tieba-public",
+            "source_type": "Forum",
+            "acceptance_category": "social_or_forum",
+            "source_url": "https://forum.example/thread/1",
+            "content_text": "论坛原文 私域导流 TG:risk",
+            "raw_payload_uri": "s3://payloads/forum.json",
+        },
+        {
+            "trace_id": "trace-vertical",
+            "source_trace_id": "trace-vertical",
+            "source_name": "market-public",
+            "source_type": "Vertical",
+            "acceptance_category": "vertical_or_technical",
+            "source_url": "https://market.example/item/1",
+            "content_text": "垂直平台原文 账号批发 接码",
+            "capture_snapshot_uri": "s3://snapshots/vertical.html",
+            "raw_payload_uri": "s3://payloads/vertical.json",
+        },
+        {
+            "trace_id": "trace-article",
+            "source_trace_id": "trace-article",
+            "source_name": "wechat-article",
+            "source_type": "Article",
+            "platform": "wechat_public",
+            "source_quota_group": "public_account_or_article",
+            "source_url": "https://mp.weixin.qq.com/s/article1",
+            "content_text": "搜索摘要：接码风险文章",
+            "raw_payload_uri": "s3://payloads/article-search.json",
+        },
+    ]
+
+    report = build_evidence_pack(
+        rows,
+        classifications=[],
+        entities=[],
+        cleaned=[],
+        clues=[],
+        hydrated=[
+            {
+                "trace_id": "hydrated-article",
+                "hydrated_from_trace_id": "trace-article",
+                "source_url": "https://mp.weixin.qq.com/s/article1",
+                "content_text": hydrated_article_body,
+                "capture_snapshot_uri": "s3://snapshots/article.html",
+                "raw_payload_uri": "s3://payloads/article-hydrated.json",
+            }
+        ],
+        output_path=output_path,
+        report_path=report_path,
+    )
+
+    rows = load_jsonl(output_path)
+
+    assert rows[3]["acceptance_category"] == "public_account_or_article"
+    assert rows[3]["source_evidence"]["raw_text"] == hydrated_article_body
+    assert set(report["source_evidence_counts_by_category"]) == {
+        "im_or_group",
+        "public_account_or_article",
+        "social_or_forum",
+        "vertical_or_technical",
+    }
+    assert report["source_evidence_counts_by_category"]["im_or_group"]["has_raw_text"] == 1
+    assert report["source_evidence_counts_by_category"]["social_or_forum"]["has_raw_payload_uri"] == 1
+    assert report["source_evidence_counts_by_category"]["vertical_or_technical"]["has_capture_snapshot_uri"] == 1
+    assert report["source_evidence_counts_by_category"]["public_account_or_article"]["has_hydrated_body"] == 1
+    assert report["source_evidence_counts_by_category"]["public_account_or_article"]["has_capture_snapshot_uri"] == 1
+
+
 def test_build_acceptance_evidence_pack_cli_accepts_cleaning_drop_artifact(tmp_path):
     acceptance_path = tmp_path / "acceptance.jsonl"
     drops_path = tmp_path / "cleaning_drops.jsonl"

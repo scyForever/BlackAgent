@@ -1182,11 +1182,21 @@ def test_evidence_chain_renderer_outputs_reviewable_rows():
     assert rows[0].extracted_entities == ["tg:core01"]
 
 
-def test_source_smoke_report_covers_three_required_source_classes():
+def test_source_smoke_report_covers_four_required_smoke_groups_without_changing_source_classes():
     report = build_report(load_sources("config/intel_sources.public.yaml"), network_enabled=False)
 
     assert report["status"] == "completed"
+    assert report["required_smoke_groups"] == [
+        "im_or_group",
+        "public_account_or_article",
+        "social_or_forum",
+        "vertical_or_technical",
+    ]
+    assert set(report["covered_smoke_groups"]) == set(report["required_smoke_groups"])
     assert set(report["covered_source_classes"]) == {"im_or_group", "social_or_forum", "vertical_or_technical"}
+    assert {item["smoke_group"] for item in report["per_smoke_group_evidence"]} == set(report["required_smoke_groups"])
+    assert report["source_evidence_by_group"]["public_account_or_article"][0]["source_class"] == "social_or_forum"
+    assert report["source_evidence_by_group"]["public_account_or_article"][0]["url"]
     assert all("legal_basis" in row and row["run_type"] == "dry_run_catalog_smoke" for row in report["sources"])
     assert all("authorization_statement" in row for row in report["sources"])
 
@@ -1221,11 +1231,18 @@ def test_live_source_smoke_attempts_until_each_class_has_min_records(monkeypatch
 
     assert report["status"] == "completed"
     assert set(report["live_attempted_source_classes"]) == {"im_or_group", "social_or_forum", "vertical_or_technical"}
-    assert len(calls) >= 3
+    assert set(report["live_attempted_smoke_groups"]) == {
+        "im_or_group",
+        "public_account_or_article",
+        "social_or_forum",
+        "vertical_or_technical",
+    }
+    assert len(calls) >= 4
     assert "telegram_group_public_timeline" in calls
+    assert "wechat_public_account_article_search" in calls
     assert all(
         item["target_met"] or item["collected_count"] == item["configured_source_count"]
-        for item in report["per_class_evidence"]
+        for item in report["per_smoke_group_evidence"]
     )
     assert all(row["live_smoke_attempted"] for row in report["sources"])
 
@@ -1235,9 +1252,25 @@ def test_authorized_live_source_smoke_collects_loopback_feed():
 
     assert report["status"] == "completed"
     assert report["run_type"] == "live_authorized_loopback_collection_smoke"
-    assert report["smoke_scope"] == "three_required_source_classes"
+    assert report["smoke_scope"] == "four_required_source_evidence_groups"
     assert report["authorization_enforced"] is True
+    assert report["required_smoke_groups"] == [
+        "im_or_group",
+        "public_account_or_article",
+        "social_or_forum",
+        "vertical_or_technical",
+    ]
+    assert set(report["covered_smoke_groups"]) == set(report["required_smoke_groups"])
     assert set(report["covered_source_classes"]) == {"im_or_group", "social_or_forum", "vertical_or_technical"}
+    assert set(report["source_evidence_by_group"]) == set(report["required_smoke_groups"])
+    for group, rows in report["source_evidence_by_group"].items():
+        assert rows, group
+        assert rows[0]["source_name"]
+        assert rows[0]["url"].startswith(("https://", "http://"))
+        assert rows[0]["raw_body"] or rows[0]["hydrated_body"]
+        assert rows[0]["capture_snapshot_uri"]
+        assert rows[0]["raw_payload_uri"]
+    assert report["source_evidence_by_group"]["public_account_or_article"][0]["source_class"] == "social_or_forum"
     assert all(key in report["sources"][0] for key in ["collected_count", "filtered_count", "duplicate_rate", "high_risk_candidate_count", "failure_reason"])
     assert report["fetched_count"] >= 5
     assert report["high_risk_candidate_count"] >= 3
@@ -1548,6 +1581,8 @@ def test_source_smoke_report_keeps_public_account_article_in_social_class():
 
     assert report["candidate_source_count"] == 1
     assert report["sources"][0]["source_class"] == "social_or_forum"
+    assert report["sources"][0]["smoke_group"] == "public_account_or_article"
+    assert report["source_evidence_by_group"]["public_account_or_article"][0]["source_class"] == "social_or_forum"
 
 
 def test_collect_public_sources_balanced_slice_keeps_non_im_source_groups():
@@ -1584,6 +1619,7 @@ def test_source_quota_groups_include_forum_tieba_and_granular_non_im_types():
     records = [
         {"source_name": "vertical_security_search", "source_type": "Vertical"},
         {"source_name": "tieba_account_trade_search", "source_type": "Forum", "platform": "tieba"},
+        {"source_name": "wechat_public_account_article_search", "source_type": "Article", "platform": "wechat_public"},
         {"source_name": "secondhand_account_trade", "source_type": "Vertical", "platform": "second_hand_market"},
         {"source_name": "crowdsourcing_task_search", "source_type": "Vertical", "platform": "crowdsourcing"},
     ]
@@ -1594,7 +1630,13 @@ def test_source_quota_groups_include_forum_tieba_and_granular_non_im_types():
         for group in source_quota_groups_for_record(record)
     }
 
-    assert {"vertical_or_technical", "social_or_forum", "secondhand_market", "crowdsourcing_platform"} <= groups
+    assert {
+        "vertical_or_technical",
+        "social_or_forum",
+        "public_account_or_article",
+        "secondhand_market",
+        "crowdsourcing_platform",
+    } <= groups
 
 
 def test_collect_public_sources_per_source_cap_prevents_single_source_dominance(tmp_path):

@@ -374,6 +374,49 @@ def test_secondary_metrics_ignore_normal_noise_labels_on_hard_negatives():
     assert metrics["secondary"]["f1"] == 1.0
 
 
+def test_secondary_metrics_ignore_expected_normal_noise_labels_on_negative_gold():
+    records = [
+        {
+            "trace_id": "positive",
+            "expected_primary_risk": "工具交易",
+            "expected_secondary_labels": ["群控脚本"],
+        },
+        {
+            "trace_id": "negative-low-relevance",
+            "expected_risk_categories": [],
+            "expected_secondary_labels": ["低相关"],
+        },
+        {
+            "trace_id": "negative-defense",
+            "expected_risk_categories": [],
+            "expected_secondary_labels": ["防御语境"],
+        },
+    ]
+    actual = [
+        {
+            "source_trace_id": "positive",
+            "risk_category": "工具交易",
+            "secondary_label": "群控脚本",
+        },
+        {
+            "source_trace_id": "negative-low-relevance",
+            "risk_category": "正常业务白噪声",
+            "secondary_label": "低相关",
+        },
+        {
+            "source_trace_id": "negative-defense",
+            "risk_category": "正常业务白噪声",
+            "secondary_label": "防御语境",
+        },
+    ]
+
+    metrics = evaluate_pipeline.evaluate_classification(records, actual)
+
+    assert metrics["secondary_gold"]["expected_label_count"] == 1
+    assert metrics["secondary"]["fn"] == 0
+    assert metrics["secondary"]["f1"] == 1.0
+
+
 def test_llm_ablation_reports_value_gate_when_mock_adds_no_quality_gain(monkeypatch):
     monkeypatch.delenv("BLACKAGENT_LLM_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -429,6 +472,46 @@ def test_llm_ablation_value_matrix_labels_high_recall_fallback_and_latency(monke
 
     assert "latency_ms_per_f1_gain" in runtime_report
     assert "latency_ms_per_extra_valid_clue" in runtime_report
+
+
+def test_llm_ablation_uses_hard_llm_required_and_context_conflict_samples(monkeypatch):
+    monkeypatch.delenv("BLACKAGENT_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("BLACKAGENT_LLM_DRY_RUN", "true")
+
+    hard_positive_records = load_jsonl("tests/evaluation/llm_required_cases.jsonl")
+    conflict_negative_records = load_jsonl("tests/evaluation/context_conflict.jsonl")
+
+    report = evaluate_ablation(
+        hard_positive_records,
+        hard_negative_records=conflict_negative_records,
+        with_budget=True,
+    )
+
+    assert len(hard_positive_records) == 50
+    assert len(conflict_negative_records) == 50
+    assert report["mode"] == "llm_ablation"
+    assert report["scenario_consistency"]["same_dataset_fingerprint"] is True
+    assert report["scenario_consistency"]["input_counts"]["classification_records"] == 50
+    assert report["scenario_consistency"]["input_counts"]["hard_negative_records"] == 50
+    assert "llm_value_gate" in report
+    assert "should_enable_record_enrich" in report["llm_value_gate"]
+    assert "reason" in report["llm_value_gate"]
+
+    scenario = report["scenarios"]["high_recall_real_or_configured_fallback"]["ablation_scenario"]
+    assert scenario["requested_llm_mode"] == "real_or_configured_fallback"
+    assert scenario["provider_status"] == "fallback"
+    assert scenario["fallback_reason"]
+    assert scenario["input_counts"]["classification_records"] == 50
+    assert scenario["input_counts"]["hard_negative_records"] == 50
+
+    matrix = {row["scenario"]: row for row in report["llm_value_matrix"]}
+    real_or_fallback = matrix["high_recall_real_or_configured_fallback"]
+    assert real_or_fallback["requested_llm_mode"] == "real_or_configured_fallback"
+    assert real_or_fallback["provider_status"] == "fallback"
+    assert real_or_fallback["fallback_reason"]
+    assert report["llm_value"]["real_or_fallback"]["provider_status"] == "fallback"
+    assert report["llm_value"]["real_or_fallback"]["fallback_reason"]
 
 
 def test_llm_ablation_latest_value_uses_runtime_fallback_status(monkeypatch):
