@@ -341,10 +341,13 @@ split，不能冒充线上泛化。人工版 held-out 只有在 `validate_manual
 conflict_handling` 等字段完整时才会输出 `manual_heldout_public_authorized`。
 线索质量需分别查看 `standard_clue_eval` 与 `graph_clue_eval`，人工负载看
 `overall_review_load_eval`。
-`--ablation` 会对比 `fast/off`、`high_recall/off`、`high_recall/mock`，输出
-`classification_f1_delta / entity_f1_delta / clue_*_delta / llm_calls_delta /
-tokens_per_f1_gain / tokens_per_extra_valid_clue`，用于判断 LLM record enrich
-是否值得启用；默认仍是受控增强，不把 record enrich 当作全量必选链路。
+`--ablation` 会保留 `fast/off`、`high_recall/off`、`high_recall/mock`，
+并额外输出 `fast/off`、`balanced/mock`、`high_recall/real_or_configured_fallback`
+的 LLM value matrix；真实网关未配置时高召回场景会标注 `fallback` 而不是静默省略。
+报告包含 `classification_f1_delta / entity_f1_delta / clue_*_delta / llm_calls_delta /
+tokens_per_f1_gain / tokens_per_extra_valid_clue / latency_ms_per_f1_gain /
+latency_ms_per_extra_valid_clue`，用于判断 LLM record enrich 是否值得启用；
+默认仍是受控增强，不把 record enrich 当作全量必选链路。
 
 默认 `pytest` 已配置为 offline/unit：`pytest.ini` 和 `pyproject.toml` 会排除
 `integration`、`network` marker；需要真实网络或集成验证时显式运行对应 marker。

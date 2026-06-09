@@ -601,6 +601,72 @@ def test_risk_clue_aggregator_bridges_tool_identifier_cluster_without_contact():
     assert cluster_clue.entity_values == ["tool-mh14", "群发器"]
 
 
+def test_risk_clue_aggregator_prefers_following_authorized_sample_for_singleton_bridge():
+    records = [
+        {
+            "trace_id": "bridge-source",
+            "source_name": "authorized-forum-domain",
+            "publish_time": "2026-06-07T02:00:00+00:00",
+            "content_text": "授权样本：论坛复核落地域 bridge.example。",
+        },
+        {
+            "trace_id": "bridge-previous",
+            "source_name": "authorized-im-previous",
+            "publish_time": "2026-06-07T01:30:00+00:00",
+            "content_text": "授权样本：前一条公开记录相互印证。",
+        },
+        {
+            "trace_id": "bridge-next",
+            "source_name": "authorized-feed-next",
+            "publish_time": "2026-06-07T03:00:00+00:00",
+            "content_text": "授权样本：情报源确认同一批风险线索并记录可复核证据。",
+        },
+    ]
+    classifications = [
+        {"source_trace_id": "bridge-source", "risk_category": "诈骗引流"},
+        {"source_trace_id": "bridge-previous", "risk_category": "诈骗引流"},
+        {"source_trace_id": "bridge-next", "risk_category": "工具交易"},
+    ]
+    entities = [
+        {"source_trace_id": "bridge-source", "entity_type": "url", "normalized_value": "https://bridge.example"},
+    ]
+
+    clues = RiskClueAggregator().aggregate(records=records, classifications=classifications, entities=entities)
+
+    domain_clue = next(item for item in clues if item.clue_type == "shared_domain_multi_source")
+    assert domain_clue.evidence_trace_ids == ["bridge-next", "bridge-source"]
+
+
+def test_risk_clue_aggregator_does_not_duplicate_account_overlap_as_tool_trade_cluster():
+    records = [
+        {
+            "trace_id": "account-cluster-a",
+            "source_name": "authorized-im-account",
+            "publish_time": "2026-06-07T01:00:00+00:00",
+            "content_text": "授权样本：账号批发节点 acct-cluster 与卡密关键词同时出现，需图谱复核。",
+        },
+        {
+            "trace_id": "account-cluster-b",
+            "source_name": "authorized-forum-account",
+            "publish_time": "2026-06-07T02:00:00+00:00",
+            "content_text": "授权样本：论坛复核同一账号池节点，证据链可追溯。",
+        },
+    ]
+    classifications = [
+        {"source_trace_id": "account-cluster-a", "risk_category": "账号交易"},
+        {"source_trace_id": "account-cluster-b", "risk_category": "账号交易"},
+    ]
+    entities = [
+        {"source_trace_id": "account-cluster-a", "entity_type": "account", "normalized_value": "acct-cluster"},
+        {"source_trace_id": "account-cluster-a", "entity_type": "tool_name", "normalized_value": "卡密"},
+    ]
+
+    clues = RiskClueAggregator().aggregate(records=records, classifications=classifications, entities=entities)
+
+    assert "entity_graph_account_tool_overlap" in {item.clue_type for item in clues}
+    assert "entity_graph_tool_trade_cluster" not in {item.clue_type for item in clues}
+
+
 def test_risk_clue_aggregator_emits_shared_settlement_multi_source():
     records = [
         {"trace_id": "settlement-a", "source_name": "tg-pay", "publish_time": "2026-06-07T01:00:00+00:00"},
@@ -625,6 +691,60 @@ def test_risk_clue_aggregator_emits_shared_settlement_multi_source():
     assert settlement_clue.risk_category == "众包服务"
     assert settlement_clue.confidence > 0
     assert settlement_clue.threshold_reason == "same_settlement_method_appears_in_at_least_2_sources"
+
+
+def test_risk_clue_aggregator_emits_shared_tool_multi_source():
+    records = [
+        {"trace_id": "tool-shared-a", "source_name": "forum-tool", "publish_time": "2026-06-07T01:00:00+00:00"},
+        {"trace_id": "tool-shared-b", "source_name": "feed-tool", "publish_time": "2026-06-07T02:00:00+00:00"},
+    ]
+    classifications = [
+        {"source_trace_id": "tool-shared-a", "risk_category": "工具交易"},
+        {"source_trace_id": "tool-shared-b", "risk_category": "工具交易"},
+    ]
+    entities = [
+        {"source_trace_id": "tool-shared-a", "entity_type": "tool_name", "normalized_value": "tool-mh14"},
+        {"source_trace_id": "tool-shared-b", "entity_type": "tool_name", "normalized_value": "tool-mh14"},
+    ]
+
+    clues = RiskClueAggregator().aggregate(records=records, classifications=classifications, entities=entities)
+
+    tool_clue = next(item for item in clues if item.clue_type == "shared_tool_multi_source")
+    assert tool_clue.key == "tool-mh14"
+    assert tool_clue.evidence_trace_ids == ["tool-shared-a", "tool-shared-b"]
+    assert tool_clue.source_names == ["feed-tool", "forum-tool"]
+    assert tool_clue.entity_values == ["tool-mh14"]
+    assert tool_clue.risk_category == "工具交易"
+    assert tool_clue.threshold_reason == "same_tool_name_appears_in_at_least_2_sources"
+
+
+def test_risk_clue_aggregator_emits_shared_template_two_sources():
+    records = [
+        {
+            "trace_id": "template-shared-a",
+            "source_name": "forum-template",
+            "publish_time": "2026-06-07T01:00:00+00:00",
+            "content_text": "群控脚本售后模板：支持批量拉群，联系 TG:one",
+        },
+        {
+            "trace_id": "template-shared-b",
+            "source_name": "feed-template",
+            "publish_time": "2026-06-07T02:00:00+00:00",
+            "content_text": "群控脚本售后模板：支持批量拉群，联系 TG:two",
+        },
+    ]
+    classifications = [
+        {"source_trace_id": "template-shared-a", "risk_category": "工具交易"},
+        {"source_trace_id": "template-shared-b", "risk_category": "工具交易"},
+    ]
+
+    clues = RiskClueAggregator().aggregate(records=records, classifications=classifications, entities=[])
+
+    template_clue = next(item for item in clues if item.clue_type == "shared_template_multi_source")
+    assert template_clue.evidence_trace_ids == ["template-shared-a", "template-shared-b"]
+    assert template_clue.source_names == ["feed-template", "forum-template"]
+    assert template_clue.risk_category == "工具交易"
+    assert template_clue.threshold_reason == "same_template_appears_in_at_least_2_sources"
 
 
 def test_risk_clue_aggregator_emits_account_tool_overlap_multi_trace():

@@ -358,12 +358,22 @@ class FineGrainedIntentClassifier:
     ORDINARY_AUTOMATION_TECH_DISCUSSION_MARKERS = (
         "v2ex",
         "automation software",
+        "automationdirect",
+        "automation forum",
         "top 10 automation",
         "free list",
         "duckduckgo",
         "microsoft ad network",
         "ad clicks",
         "privacy protected",
+        "百科",
+        "词条",
+        "api",
+        "开源项目",
+        "产品介绍",
+        "教程文档",
+        "选型",
+        "维护说明",
         "机器人创建的网站",
         "用的什么原理",
         "userbot",
@@ -499,6 +509,12 @@ class FineGrainedIntentClassifier:
         "发送时的设置",
         "回复是否",
         "所有人都能看到",
+        "功能更新说明",
+        "配置文档",
+        "使用教程",
+        "参数含义",
+        "没有报价",
+        "没有联系方式",
     )
     ORDINARY_FINANCE_MANUAL_ORDER_MARKERS = (
         "手工单",
@@ -1506,7 +1522,12 @@ class FineGrainedIntentClassifier:
             return False
         if self._has_direct_contact_intent(text):
             return False
-        if self._marker_hits(text, ("出售", "低价", "价格", "卡密", "下单", "接码平台", "群控", "批量注册")):
+        risk_hits = [
+            marker
+            for marker in self._marker_hits(text, ("出售", "低价", "价格", "报价", "卡密", "下单", "接码平台", "群控", "批量注册", "售后"))
+            if not self._is_locally_negated_marker(text, marker)
+        ]
+        if risk_hits and self._has_hard_transaction_evidence(text):
             return False
         return any(marker in lowered for marker in ("automation", "v2ex", "bot", "userbot", "software", "机器人", "频道"))
 
@@ -1567,7 +1588,14 @@ class FineGrainedIntentClassifier:
             return False
         if self._has_direct_contact_intent(text) or self._has_contact_marker(text):
             return False
-        if self._marker_hits(text, ("出售", "接单", "代发", "群控", "脚本", "卡密", "低价", "价格", "下单")):
+        risk_hits = [
+            marker
+            for marker in self._marker_hits(text, ("出售", "接单", "代发", "售后", "报价", "卡密", "低价", "价格", "下单"))
+            if not self._is_locally_negated_marker(text, marker)
+        ]
+        if risk_hits and self._has_hard_transaction_evidence(text):
+            return False
+        if self._marker_hits(text, ("群控", "脚本", "群发器")) and not self._marker_hits(text, ("功能更新说明", "配置文档", "使用教程", "参数含义", "说明")):
             return False
         return True
 
@@ -1632,8 +1660,51 @@ class FineGrainedIntentClassifier:
         if self._is_ordinary_game_mod_discussion(text):
             solicitation_hits = self._marker_hits(text, self.STRONG_TRANSACTION_INTENT_MARKERS)
             risky_hits = [hit for hit in solicitation_hits if hit not in {"招募"}]
-            return bool(risky_hits)
-        return bool(self._marker_hits(text, self.STRONG_TRANSACTION_INTENT_MARKERS))
+            return bool(risky_hits) and self._has_hard_transaction_evidence(text)
+        return self._has_hard_transaction_evidence(text)
+
+    def _has_hard_transaction_evidence(self, text: str) -> bool:
+        intent_hits = [
+            marker
+            for marker in self._marker_hits(text, self.STRONG_TRANSACTION_INTENT_MARKERS)
+            if not self._is_locally_negated_marker(text, marker)
+        ]
+        if not intent_hits:
+            return False
+        if self._has_direct_contact_intent(text) or self._has_contact_marker(text):
+            return True
+        support_hits = [
+            marker
+            for marker in self._marker_hits(
+                text,
+                (
+                    "报价",
+                    "价格",
+                    "低价",
+                    "月卡",
+                    "周卡",
+                    "日租",
+                    "包月",
+                    "包量",
+                    "量大",
+                    "秒出",
+                    "下单",
+                    "订单",
+                    "售后",
+                    "客服",
+                    "担保",
+                    "卡密",
+                    "发卡",
+                    "库存",
+                    "wholesale",
+                    "buy now",
+                ),
+            )
+            if not self._is_locally_negated_marker(text, marker)
+        ]
+        if support_hits:
+            return True
+        return bool(re.search(r"(?:¥|\$)?\s*\d+(?:\.\d+)?\s*(?:u|usdt|元|块|rmb|cny|usd|/月|/天|/周)", text, flags=re.IGNORECASE))
 
     def _is_ordinary_platform_reference(self, text: str) -> bool:
         if not self._marker_hits(text, self.ORDINARY_COMMUNITY_DISCUSSION_MARKERS):

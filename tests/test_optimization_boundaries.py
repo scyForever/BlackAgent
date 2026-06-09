@@ -1000,6 +1000,103 @@ def test_classifier_demotes_public_automation_tech_rows_to_low_relevance():
     assert automation_ad.review_required is False
 
 
+def test_classifier_demotes_encyclopedia_and_plain_automation_contexts_to_low_relevance():
+    classifier = FineGrainedIntentClassifier()
+
+    encyclopedia = classifier.classify(
+        {
+            "trace_id": "hard-negative-encyclopedia-bot",
+            "source_name": "wiki_public_article",
+            "source_type": "Article",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "百科词条：Telegram bot 是一种自动化程序，本文介绍历史、架构、API 设计、"
+                "频道管理功能和常见开源项目，不提供账号、价格、下单或售后联系方式。"
+            ),
+            "matched_keywords": ["bot", "automation"],
+            "matched_themes": ["工具交易"],
+        }
+    )
+    automation_product = classifier.classify(
+        {
+            "trace_id": "hard-negative-automation-product",
+            "source_name": "automationdirect_public_catalog",
+            "source_type": "Vertical",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "AutomationDirect 工业自动化产品介绍：PLC、传感器、控制器和教程文档，"
+                "用于工厂自动化选型和维护说明，没有黑灰产交易意图。"
+            ),
+            "matched_keywords": ["automation", "software"],
+            "matched_themes": ["工具交易"],
+        }
+    )
+
+    assert encyclopedia.risk_category == "正常业务白噪声"
+    assert encyclopedia.secondary_label == "低相关"
+    assert encyclopedia.review_required is False
+    assert automation_product.risk_category == "正常业务白噪声"
+    assert automation_product.secondary_label == "低相关"
+    assert automation_product.review_required is False
+
+
+def test_classifier_requires_transaction_or_service_evidence_for_tool_tutorials():
+    classifier = FineGrainedIntentClassifier()
+
+    plain_tutorial = classifier.classify(
+        {
+            "trace_id": "hard-negative-group-send-tutorial",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Forum",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "群发脚本功能更新说明：修复发送问题，新增配置文档和使用教程，"
+                "说明群发器参数含义；没有报价、下单、售后或联系方式。"
+            ),
+            "matched_keywords": ["群发", "脚本"],
+            "matched_themes": ["工具交易"],
+        }
+    )
+    commercial_tool = classifier.classify(
+        {
+            "trace_id": "positive-group-send-commercial-tool",
+            "source_name": "telegram_public_delivery:risk_tool",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "群发器脚本长期出售，支持批量拉群和自动私信，月卡 399，"
+                "下单后提供售后配置，联系 TG:risktool。"
+            ),
+            "matched_keywords": ["群发", "脚本", "下单"],
+            "matched_themes": ["工具交易"],
+        }
+    )
+    sale_word_without_service_evidence = classifier.classify(
+        {
+            "trace_id": "hard-negative-sale-word-without-service-evidence",
+            "source_name": "tieba_group_send_tutorial",
+            "source_type": "Forum",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "群发器脚本长期出售这个词经常被教程帖讨论，本文只说明功能更新、"
+                "配置文档和参数含义，没有报价、下单、售后或联系方式。"
+            ),
+            "matched_keywords": ["群发", "脚本", "出售"],
+            "matched_themes": ["工具交易"],
+        }
+    )
+
+    assert plain_tutorial.risk_category == "正常业务白噪声"
+    assert plain_tutorial.secondary_label == "低相关"
+    assert plain_tutorial.review_required is False
+    assert sale_word_without_service_evidence.risk_category == "正常业务白噪声"
+    assert sale_word_without_service_evidence.secondary_label == "低相关"
+    assert sale_word_without_service_evidence.review_required is False
+    assert commercial_tool.risk_category == "工具交易"
+    assert commercial_tool.secondary_label == "群控脚本"
+    assert commercial_tool.review_bucket == "explicit_risk"
+
+
 def test_classifier_routes_public_group_send_plugins_to_tool_workflow():
     classifier = FineGrainedIntentClassifier()
 

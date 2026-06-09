@@ -75,15 +75,23 @@ def llm_value_report_from_ablation(
         "clue_precision_delta": float(value.get("clue_precision_delta") or 0.0),
         "clue_recall_delta": float(value.get("clue_recall_delta") or 0.0),
         "llm_calls_delta": float(value.get("llm_calls_delta") or 0.0),
+        "p95_latency_ms_delta": float(value.get("p95_latency_ms_delta") or 0.0),
         "tokens_per_f1_gain": value.get("tokens_per_f1_gain"),
         "tokens_per_extra_valid_clue": value.get("tokens_per_extra_valid_clue"),
+        "latency_ms_per_f1_gain": value.get("latency_ms_per_f1_gain"),
+        "latency_ms_per_extra_valid_clue": value.get("latency_ms_per_extra_valid_clue"),
         "gate_reason": str(value.get("gate_reason") or gate.get("reason") or "llm_value_gate_report"),
         "should_enable_record_enrich": bool(should_enable),
         "record_enrich_policy": record_policy,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    if "real" in value:
-        report["provider_specific"] = {"real": value["real"]}
+    provider_specific = {
+        key: value[key]
+        for key in ("balanced_mock", "real_or_fallback", "real")
+        if key in value
+    }
+    if provider_specific:
+        report["provider_specific"] = provider_specific
     return report
 
 

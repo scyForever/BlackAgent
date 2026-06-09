@@ -98,6 +98,26 @@ def mirror_url(source_url: str) -> str:
     return f"http://r.jina.ai/http://{normalized_url.removeprefix('https://').removeprefix('http://')}"
 
 
+def hydration_attempts(source_url: str) -> list[dict[str, Any]]:
+    parsed = urlsplit(source_url)
+    attempts = [
+        {
+            "mode": "mirror",
+            "snapshot_url": mirror_url(source_url),
+            "allowed_domains": ("r.jina.ai",),
+        }
+    ]
+    if parsed.netloc:
+        attempts.append(
+            {
+                "mode": "direct",
+                "snapshot_url": source_url,
+                "allowed_domains": (parsed.netloc,),
+            }
+        )
+    return attempts
+
+
 def load_candidates(
     db_path: Path,
     allowed_sources: set[str],
@@ -256,7 +276,6 @@ def main() -> int:
 
     for row in candidates:
         source_url = str(row.get("source_url"))
-        snapshot_url = mirror_url(source_url)
         prefetch_skip_reason = prefetch_tail_skip_reason(row)
         if prefetch_skip_reason:
             updated_row = dict(row)
@@ -267,33 +286,45 @@ def main() -> int:
             skipped.append({"source_name": row.get("source_name"), "source_url": source_url, "reason": prefetch_skip_reason})
             continue
         try:
-            collector = HTTPFeedCollector(
-                HTTPFeedConfig(
-                    source_url=snapshot_url,
-                    source_name=str(row.get("source_name") or "hydrated_page"),
-                    source_type=str(row.get("source_type") or "Social"),
-                    legal_basis=str(row.get("legal_basis") or "PUBLIC_COMPLIANT_DATA"),
-                    feed_format="html",
-                    allowed_domains=("r.jina.ai",),
-                    include_keywords=tuple(str(item) for item in (row.get("matched_keywords") or []) if str(item).strip()),
-                    exclude_keywords=tuple(str(item) for item in (row.get("excluded_keywords") or []) if str(item).strip()),
-                    include_themes=tuple(str(item) for item in (row.get("matched_themes") or []) if str(item).strip()),
-                    exclude_themes=tuple(str(item) for item in (row.get("excluded_themes") or []) if str(item).strip()),
-                    search_query=str(row.get("search_query") or "").strip() or None,
-                    query_theme=str(row.get("query_theme") or "").strip() or None,
-                    query_term=str(row.get("query_term") or "").strip() or None,
-                    query_variant_index=int(row.get("query_variant_index")) if row.get("query_variant_index") is not None else None,
-                    min_keyword_hits=1,
-                    timeout_seconds=args.timeout_seconds,
-                    rate_limit_per_minute=args.rate_limit_per_minute,
-                    retry_attempts=args.retry_attempts,
-                    retry_backoff_seconds=args.retry_backoff_seconds,
-                    retry_backoff_multiplier=args.retry_backoff_multiplier,
-                    network_enabled=True,
-                )
-            )
-            fetched = [model_dump(item) for item in collector.collect()]
+            fetched: list[dict[str, Any]] = []
+            snapshot_url = ""
+            attempt_errors: list[str] = []
+            for attempt in hydration_attempts(source_url):
+                snapshot_url = str(attempt["snapshot_url"])
+                try:
+                    collector = HTTPFeedCollector(
+                        HTTPFeedConfig(
+                            source_url=snapshot_url,
+                            source_name=str(row.get("source_name") or "hydrated_page"),
+                            source_type=str(row.get("source_type") or "Social"),
+                            legal_basis=str(row.get("legal_basis") or "PUBLIC_COMPLIANT_DATA"),
+                            feed_format="html",
+                            allowed_domains=tuple(attempt["allowed_domains"]),
+                            include_keywords=tuple(str(item) for item in (row.get("matched_keywords") or []) if str(item).strip()),
+                            exclude_keywords=tuple(str(item) for item in (row.get("excluded_keywords") or []) if str(item).strip()),
+                            include_themes=tuple(str(item) for item in (row.get("matched_themes") or []) if str(item).strip()),
+                            exclude_themes=tuple(str(item) for item in (row.get("excluded_themes") or []) if str(item).strip()),
+                            search_query=str(row.get("search_query") or "").strip() or None,
+                            query_theme=str(row.get("query_theme") or "").strip() or None,
+                            query_term=str(row.get("query_term") or "").strip() or None,
+                            query_variant_index=int(row.get("query_variant_index")) if row.get("query_variant_index") is not None else None,
+                            min_keyword_hits=1,
+                            timeout_seconds=args.timeout_seconds,
+                            rate_limit_per_minute=args.rate_limit_per_minute,
+                            retry_attempts=args.retry_attempts,
+                            retry_backoff_seconds=args.retry_backoff_seconds,
+                            retry_backoff_multiplier=args.retry_backoff_multiplier,
+                            network_enabled=True,
+                        )
+                    )
+                    fetched = [model_dump(item) for item in collector.collect()]
+                    if fetched:
+                        break
+                except Exception as exc:
+                    attempt_errors.append(f"{attempt['mode']}:{exc}")
             if not fetched:
+                if attempt_errors:
+                    raise RuntimeError("; ".join(attempt_errors))
                 continue
             skip_reason = targeted_tail_skip_reason(row, fetched[0])
             if skip_reason:

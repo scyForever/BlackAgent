@@ -766,6 +766,378 @@ def test_clue_promotion_promotes_shared_invite_code_multi_source():
     assert actionable[0]["promotion_reason"] == "contact_account_cross_source_or_two_observations"
 
 
+def test_clue_promotion_prefers_specific_graph_clue_over_same_chain_shared_contact():
+    stage = CluePromotionStage()
+    actionable = stage.run_batch(
+        [
+            {
+                "clue_id": "shared-contact",
+                "clue_type": "shared_contact_48h",
+                "key": "acct-mh-01",
+                "risk_category": "账号交易",
+                "evidence_trace_ids": ["t1", "t2"],
+                "source_names": ["forum-a", "feed-b"],
+                "entity_values": ["acct-mh-01"],
+                "confidence": 0.82,
+            },
+            {
+                "clue_id": "graph-overlap",
+                "clue_type": "entity_graph_account_tool_overlap",
+                "key": "acct-mh-01",
+                "risk_category": "账号交易",
+                "evidence_trace_ids": ["t1", "t2"],
+                "source_names": ["forum-a", "feed-b"],
+                "entity_values": ["acct-mh-01", "卡密"],
+                "confidence": 0.86,
+            },
+        ],
+        context={
+            "entities": [
+                {"source_trace_id": "t1", "entity_type": "account"},
+                {"source_trace_id": "t1", "entity_type": "tool_name"},
+                {"source_trace_id": "t2", "entity_type": "account"},
+            ]
+        },
+    )
+
+    assert [item["clue_id"] for item in actionable] == ["graph-overlap"]
+    assert stage.archived_weak_clues[0]["clue_id"] == "shared-contact"
+    assert stage.archived_weak_clues[0]["archive_reason"] == "superseded_by_more_specific_graph_clue"
+
+
+def test_clue_promotion_keeps_direct_contact_even_when_graph_cluster_exists():
+    stage = CluePromotionStage()
+    actionable = stage.run_batch(
+        [
+            {
+                "clue_id": "shared-contact",
+                "clue_type": "shared_contact_48h",
+                "key": "Telegram:mhcore01",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": ["t1", "t2"],
+                "source_names": ["forum-a", "feed-b"],
+                "entity_values": ["Telegram:mhcore01"],
+                "confidence": 0.82,
+            },
+            {
+                "clue_id": "graph-cluster",
+                "clue_type": "entity_graph_tool_trade_cluster",
+                "key": "Telegram:mhcore01",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": ["t1", "t2"],
+                "source_names": ["forum-a", "feed-b"],
+                "entity_values": ["Telegram:mhcore01", "群控", "脚本"],
+                "confidence": 0.86,
+            },
+        ],
+        context={
+            "entities": [
+                {"source_trace_id": "t1", "entity_type": "contact"},
+                {"source_trace_id": "t1", "entity_type": "tool_name"},
+                {"source_trace_id": "t2", "entity_type": "contact"},
+            ],
+            "records": [
+                {"trace_id": "t1", "content_text": "授权样本：Telegram:mhcore01 与群控工具售卖节点有关。"},
+                {"trace_id": "t2", "content_text": "授权样本：论坛复核同一群控联系人。"},
+            ],
+        },
+    )
+
+    assert {item["clue_id"] for item in actionable} == {"shared-contact", "graph-cluster"}
+
+
+def test_clue_promotion_archives_generic_shared_tool_names_without_specific_identifier():
+    stage = CluePromotionStage()
+    actionable = stage.run_batch(
+        [
+            {
+                "clue_id": "generic-tool",
+                "clue_type": "shared_tool_multi_source",
+                "key": "脚本",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": ["t1", "t2"],
+                "source_names": ["forum-a", "feed-b"],
+                "entity_values": ["脚本"],
+                "confidence": 0.8,
+            },
+            {
+                "clue_id": "specific-tool",
+                "clue_type": "shared_tool_multi_source",
+                "key": "tool-mh14",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": ["t3", "t4"],
+                "source_names": ["forum-c", "feed-d"],
+                "entity_values": ["tool-mh14"],
+                "confidence": 0.8,
+            },
+        ],
+        context={
+            "entities": [
+                {"source_trace_id": "t1", "entity_type": "tool_name"},
+                {"source_trace_id": "t2", "entity_type": "tool_name"},
+                {"source_trace_id": "t3", "entity_type": "tool_name"},
+                {"source_trace_id": "t4", "entity_type": "tool_name"},
+            ]
+        },
+    )
+
+    assert [item["clue_id"] for item in actionable] == ["specific-tool"]
+    assert stage.archived_weak_clues[0]["clue_id"] == "generic-tool"
+    assert stage.archived_weak_clues[0]["archive_reason"] == "generic_shared_tool_name_requires_specific_identifier"
+
+
+def test_clue_promotion_rejects_normal_noise_shared_tool_even_with_two_sources():
+    stage = CluePromotionStage()
+    actionable = stage.run_batch(
+        [
+            {
+                "clue_id": "normal-tool",
+                "clue_type": "shared_tool_multi_source",
+                "key": "automationdirect-plc",
+                "risk_category": "normal_noise",
+                "evidence_trace_ids": ["doc-a", "forum-b"],
+                "source_names": ["automationdirect-docs", "automation-forum"],
+                "entity_values": ["automationdirect-plc"],
+                "confidence": 0.88,
+            }
+        ],
+        context={
+            "entities": [
+                {"source_trace_id": "doc-a", "entity_type": "tool_name"},
+                {"source_trace_id": "forum-b", "entity_type": "tool_name"},
+            ]
+        },
+    )
+
+    assert actionable == []
+    assert stage.archived_weak_clues[0]["archive_reason"] == "shared_tool_rejected_risk_category"
+
+
+def test_clue_promotion_archives_generic_settlement_and_generic_tool_clusters():
+    stage = CluePromotionStage()
+    actionable = stage.run_batch(
+        [
+            {
+                "clue_id": "generic-settlement",
+                "clue_type": "shared_settlement_multi_source",
+                "key": "跑分",
+                "risk_category": "诈骗引流",
+                "evidence_trace_ids": ["t1", "t2"],
+                "source_names": ["forum-a", "feed-b"],
+                "entity_values": ["跑分"],
+                "confidence": 0.8,
+                "weak_reason": "single_identifier_with_authorized_cross_source_corroboration",
+            },
+            {
+                "clue_id": "generic-tool-cluster",
+                "clue_type": "entity_graph_tool_trade_cluster",
+                "key": "卡密",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": ["t3", "t4"],
+                "source_names": ["forum-c", "feed-d"],
+                "entity_values": ["卡密"],
+                "confidence": 0.8,
+            },
+            {
+                "clue_id": "specific-settlement",
+                "clue_type": "shared_settlement_multi_source",
+                "key": "escrow-mh16",
+                "risk_category": "众包服务",
+                "evidence_trace_ids": ["t5", "t6"],
+                "source_names": ["forum-e", "feed-f"],
+                "entity_values": ["escrow-mh16"],
+                "confidence": 0.8,
+            },
+            {
+                "clue_id": "contextual-usdt",
+                "clue_type": "shared_settlement_multi_source",
+                "key": "USDT",
+                "risk_category": "诈骗引流",
+                "evidence_trace_ids": ["t7", "t8"],
+                "source_names": ["forum-g", "feed-h"],
+                "entity_values": ["USDT"],
+                "confidence": 0.8,
+                "weak_reason": "single_identifier_with_authorized_cross_source_corroboration",
+            },
+        ],
+        context={
+            "entities": [
+                {"source_trace_id": "t1", "entity_type": "settlement"},
+                {"source_trace_id": "t2", "entity_type": "settlement"},
+                {"source_trace_id": "t3", "entity_type": "tool_name"},
+                {"source_trace_id": "t4", "entity_type": "tool_name"},
+                {"source_trace_id": "t5", "entity_type": "settlement"},
+                {"source_trace_id": "t6", "entity_type": "settlement"},
+                {"source_trace_id": "t7", "entity_type": "settlement"},
+                {"source_trace_id": "t8", "entity_type": "settlement"},
+            ]
+        },
+    )
+
+    assert {item["clue_id"] for item in actionable} == {"specific-settlement", "contextual-usdt"}
+    assert {item["archive_reason"] for item in stage.archived_weak_clues} == {
+        "generic_settlement_requires_contextual_identifier",
+        "generic_tool_trade_cluster_requires_specific_identifier",
+    }
+
+
+def test_clue_promotion_archives_contextual_contact_when_same_chain_domain_exists():
+    stage = CluePromotionStage()
+    actionable = stage.run_batch(
+        [
+            {
+                "clue_id": "domain",
+                "clue_type": "shared_domain_multi_source",
+                "key": "lead.example",
+                "risk_category": "诈骗引流",
+                "evidence_trace_ids": ["t1", "t2"],
+                "source_names": ["forum-a", "feed-b"],
+                "entity_values": ["lead.example"],
+                "confidence": 0.86,
+            },
+            {
+                "clue_id": "contextual-contact",
+                "clue_type": "shared_contact_48h",
+                "key": "WeChat:mhlead17",
+                "risk_category": "诈骗引流",
+                "evidence_trace_ids": ["t1", "t2"],
+                "source_names": ["forum-a", "feed-b"],
+                "entity_values": ["WeChat:mhlead17"],
+                "confidence": 0.82,
+                "weak_reason": "single_identifier_with_authorized_cross_source_corroboration",
+            },
+        ],
+        context={
+            "entities": [
+                {"source_trace_id": "t1", "entity_type": "domain"},
+                {"source_trace_id": "t2", "entity_type": "contact"},
+            ]
+        },
+    )
+
+    assert [item["clue_id"] for item in actionable] == ["domain"]
+    assert stage.archived_weak_clues[0]["archive_reason"] == "superseded_by_same_chain_domain_clue"
+
+
+def test_clue_promotion_archives_contextual_contact_when_same_chain_tool_cluster_exists():
+    stage = CluePromotionStage()
+    actionable = stage.run_batch(
+        [
+            {
+                "clue_id": "contextual-contact",
+                "clue_type": "shared_contact_48h",
+                "key": "Telegram:mhgraph01",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": ["t1", "t2"],
+                "source_names": ["feed-a", "im-b"],
+                "entity_values": ["Telegram:mhgraph01"],
+                "confidence": 0.82,
+                "weak_reason": "single_identifier_with_authorized_cross_source_corroboration",
+            },
+            {
+                "clue_id": "tool-cluster",
+                "clue_type": "entity_graph_tool_trade_cluster",
+                "key": "Telegram:mhgraph01",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": ["t1", "t2"],
+                "source_names": ["feed-a", "im-b"],
+                "entity_values": ["Telegram:mhgraph01", "群控", "脚本"],
+                "confidence": 0.86,
+            },
+        ],
+        context={
+            "entities": [
+                {"source_trace_id": "t1", "entity_type": "contact"},
+                {"source_trace_id": "t1", "entity_type": "tool_name"},
+                {"source_trace_id": "t2", "entity_type": "contact"},
+            ],
+            "records": [
+                {"trace_id": "t1", "content_text": "授权样本：Telegram:mhgraph01 与群控脚本售卖节点有关。"},
+                {"trace_id": "t2", "content_text": "授权样本：私域广告与前后两条授权记录相互印证。"},
+            ],
+        },
+    )
+
+    assert [item["clue_id"] for item in actionable] == ["tool-cluster"]
+    assert stage.archived_weak_clues[0]["archive_reason"] == "superseded_by_same_chain_tool_cluster"
+
+
+def test_clue_promotion_requires_explicit_trade_text_for_direct_contact_tool_cluster():
+    stage = CluePromotionStage()
+    actionable = stage.run_batch(
+        [
+            {
+                "clue_id": "weak-contact-cluster",
+                "clue_type": "entity_graph_tool_trade_cluster",
+                "key": "Telegram:mhcloud18",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": ["weak-a", "weak-b"],
+                "source_names": ["feed-a", "im-b"],
+                "entity_values": ["Telegram:mhcloud18", "脚本", "云控"],
+                "confidence": 0.86,
+            },
+            {
+                "clue_id": "explicit-contact-cluster",
+                "clue_type": "entity_graph_tool_trade_cluster",
+                "key": "Telegram:mhgraph01",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": ["explicit-a", "explicit-b"],
+                "source_names": ["feed-c", "im-d"],
+                "entity_values": ["Telegram:mhgraph01", "群控", "脚本"],
+                "confidence": 0.86,
+            },
+        ],
+        context={
+            "entities": [
+                {"source_trace_id": "weak-a", "entity_type": "contact"},
+                {"source_trace_id": "weak-a", "entity_type": "tool_name"},
+                {"source_trace_id": "explicit-a", "entity_type": "contact"},
+                {"source_trace_id": "explicit-a", "entity_type": "tool_name"},
+            ],
+            "records": [
+                {"trace_id": "weak-a", "content_text": "授权样本：云控脚本节点 Telegram:mhcloud18 在交易帖和授权情报源中同现。"},
+                {"trace_id": "weak-b", "content_text": "授权样本：接码项目贴记录 phonepool-mh19。"},
+                {"trace_id": "explicit-a", "content_text": "授权样本：Telegram:mhgraph01 与群控脚本售卖节点有关。"},
+                {"trace_id": "explicit-b", "content_text": "授权样本：私域广告与前后两条授权记录相互印证。"},
+            ],
+        },
+    )
+
+    assert [item["clue_id"] for item in actionable] == ["explicit-contact-cluster"]
+    assert stage.archived_weak_clues[0]["archive_reason"] == "direct_contact_tool_cluster_requires_explicit_tool_trade_text"
+
+
+def test_clue_promotion_archives_direct_contact_tool_cluster_with_only_one_generic_tool():
+    stage = CluePromotionStage()
+    actionable = stage.run_batch(
+        [
+            {
+                "clue_id": "single-tool-contact-cluster",
+                "clue_type": "entity_graph_tool_trade_cluster",
+                "key": "Telegram:mhfinal24",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": ["t1", "t2"],
+                "source_names": ["feed-a", "im-b"],
+                "entity_values": ["Telegram:mhfinal24", "群控"],
+                "confidence": 0.86,
+            }
+        ],
+        context={
+            "entities": [
+                {"source_trace_id": "t1", "entity_type": "contact"},
+                {"source_trace_id": "t1", "entity_type": "tool_name"},
+            ],
+            "records": [
+                {"trace_id": "t1", "content_text": "授权样本：尾号联系人 Telegram:mhfinal24 复用在群控售后和工具交易线索中。"},
+                {"trace_id": "t2", "content_text": "授权样本：群控脚本演示帖提到 Telegram:mhcore01。"},
+            ],
+        },
+    )
+
+    assert actionable == []
+    assert stage.archived_weak_clues[0]["archive_reason"] == "direct_contact_tool_cluster_requires_specific_tool_support"
+
+
 def test_clue_promotion_accepts_new_configured_rule_without_python_branch(tmp_path):
     import yaml
 

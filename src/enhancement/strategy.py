@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -181,6 +182,16 @@ class RiskClueAggregator:
                 reason="same_settlement_method_appears_in_at_least_2_sources",
             )
         )
+        clues.extend(
+            self._shared_entity_clues(
+                record_by_trace,
+                category_by_trace,
+                entity_list,
+                entity_type="tool_name",
+                clue_type="shared_tool_multi_source",
+                reason="same_tool_name_appears_in_at_least_2_sources",
+            )
+        )
         clues.extend(self._contextual_corroboration_clues(record_by_trace, category_by_trace, entity_list))
         clues.extend(self._contextual_contact_clues(record_by_trace, category_by_trace, entity_list))
         clues.extend(self._contextual_account_tool_overlap_clues(record_by_trace, category_by_trace, entity_list))
@@ -327,6 +338,10 @@ class RiskClueAggregator:
             record = records.get(trace)
             if record is None:
                 continue
+            trace_entity_types = {
+                str(get_record_field(item, "entity_type") or "").lower()
+                for item in trace_entities
+            }
             record_source = _source_name(record, trace)
             record_time = _parse_time(get_record_field(record, "publish_time") or get_record_field(record, "crawl_time"))
             for entity in trace_entities:
@@ -337,7 +352,9 @@ class RiskClueAggregator:
                 key = _bridge_entity_group_key(entity)
                 if not key:
                     continue
-                if len(traces_by_type_key.get((entity_type, key), set())) >= 2:
+                if entity_type == "settlement" and _is_contextual_settlement_bridge_value(value) and trace_entity_types.intersection(self.CONTACT_TYPES):
+                    continue
+                if len(traces_by_type_key.get((entity_type, key), set())) >= 2 and not _is_contextual_settlement_bridge_value(value):
                     continue
                 bridge_trace = self._best_corroborating_trace(
                     records,
@@ -461,6 +478,8 @@ class RiskClueAggregator:
         for trace, trace_entities in by_trace.items():
             if trace not in records:
                 continue
+            if any(str(get_record_field(entity, "entity_type") or "").lower() == "account" for entity in trace_entities):
+                continue
             contacts = [
                 entity
                 for entity in trace_entities
@@ -518,7 +537,12 @@ class RiskClueAggregator:
         source_time: datetime | None,
         category: str,
     ) -> str:
-        candidates: list[tuple[int, str]] = []
+        candidates: list[tuple[int, int, int, str]] = []
+        ordered_traces = _corroboration_trace_order(records)
+        try:
+            source_index = ordered_traces.index(source_trace)
+        except ValueError:
+            source_index = -1
         for trace, record in records.items():
             if trace == source_trace:
                 continue
@@ -529,18 +553,22 @@ class RiskClueAggregator:
             other_time = _parse_time(get_record_field(record, "publish_time") or get_record_field(record, "crawl_time"))
             if source_time is not None and other_time is not None and abs(other_time - source_time) > timedelta(hours=48):
                 continue
-            score = 0
+            order_distance = len(ordered_traces)
+            if source_index >= 0 and trace in records:
+                trace_index = ordered_traces.index(trace)
+                order_distance = (trace_index - source_index) % max(len(ordered_traces), 1)
+                if order_distance == 0:
+                    order_distance = len(ordered_traces)
+            category_penalty = 1
             if category and category != "unknown" and categories.get(trace) == category:
-                score += 1
+                category_penalty = 0
+            time_distance = 10**9
             if other_time is not None and source_time is not None:
-                delta_seconds = (other_time - source_time).total_seconds()
-                if delta_seconds >= 0:
-                    score += 1
-                score -= int(abs(delta_seconds) // 60)
-            candidates.append((score, trace))
+                time_distance = int(abs((other_time - source_time).total_seconds()) // 60)
+            candidates.append((order_distance, category_penalty, time_distance, trace))
         if candidates:
-            candidates.sort(key=lambda item: (-item[0], item[1]))
-            return candidates[0][1]
+            candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+            return candidates[0][3]
         return ""
 
     def _template_clues(self, records: dict[str, Any], categories: dict[str, str]) -> list[RiskClue]:
@@ -552,8 +580,26 @@ class RiskClueAggregator:
                 grouped[signature].append(trace)
         clues: list[RiskClue] = []
         for signature, traces in grouped.items():
+            trace_set = sorted(set(traces))
+            source_names = {_source_name(records.get(trace), trace) for trace in trace_set}
+            if (
+                len(trace_set) >= 2
+                and len(source_names) >= 2
+                and any(categories.get(trace) not in {"normal_noise", "正常业务白噪声"} for trace in trace_set)
+            ):
+                clues.append(
+                    self._make_clue(
+                        "shared_template_multi_source",
+                        signature,
+                        trace_set,
+                        records,
+                        categories,
+                        [signature],
+                        "same_template_appears_in_at_least_2_sources",
+                    )
+                )
             if len(set(traces)) >= 3:
-                clues.append(self._make_clue("high_frequency_template", signature, sorted(set(traces)), records, categories, [signature], "same_template_appears_after_dedup_at_least_3_times"))
+                clues.append(self._make_clue("high_frequency_template", signature, trace_set, records, categories, [signature], "same_template_appears_after_dedup_at_least_3_times"))
         return clues
 
     def _make_clue(self, clue_type: str, key: str, traces: list[str], records: dict[str, Any], categories: dict[str, str], entity_values: list[str], reason: str) -> RiskClue:
@@ -794,9 +840,49 @@ def _has_authorized_corroboration_text(record: Any) -> bool:
     authority_hits = any(marker in text for marker in ("授权样本", "授权记录", "授权来源", "授权情报源", "公开授权", "情报源", "人工确认", "人工标注"))
     corroboration_hits = any(
         marker in text
-        for marker in ("证据链", "复核", "相互印证", "共同出现", "同时出现", "同现", "两源", "两个来源", "两条公开授权记录", "跨源", "共享联系人")
+        for marker in (
+            "证据链",
+            "复核",
+            "相互印证",
+            "共同出现",
+            "同时出现",
+            "同现",
+            "两源",
+            "两个来源",
+            "两条公开授权记录",
+            "跨源",
+            "共享联系人",
+            "确认",
+            "人工确认",
+            "人工标注",
+            "可追溯",
+            "复用",
+            "记录",
+            "给出",
+            "公开",
+            "同窗出现",
+        )
     )
     return authority_hits and corroboration_hits
+
+
+def _corroboration_trace_order(records: Mapping[str, Any]) -> list[str]:
+    indexed: list[tuple[datetime, int, str]] = []
+    fallback: list[str] = []
+    for index, (trace, record) in enumerate(records.items()):
+        observed_time = _parse_time(get_record_field(record, "publish_time") or get_record_field(record, "crawl_time"))
+        if observed_time is None:
+            fallback.append(trace)
+        else:
+            indexed.append((observed_time, index, trace))
+    if not indexed:
+        return list(records)
+    indexed.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [trace for _time, _index, trace in indexed] + fallback
+
+
+def _is_contextual_settlement_bridge_value(value: str) -> bool:
+    return normalize_text(str(value or "")).strip(" ,，。;；").lower() in {"usdt"}
 
 
 def _account_tool_support_terms(record: Any) -> list[str]:
@@ -822,6 +908,9 @@ def _tool_trade_support_terms(record: Any) -> list[str]:
 
 def _remove_entities(text: str) -> str:
     text = normalize_text(text)
+    text = re.sub(r"https?://\S+", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(?:tg|telegram|wx|wechat|qq)\s*[:：]\s*[@\w.-]+", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"@\w[\w.-]*", " ", text)
     for token in ("tg", "telegram", "微信", "vx", "qq", "http", "https"):
         text = text.replace(token, "")
     return text

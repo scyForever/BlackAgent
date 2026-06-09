@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -93,6 +94,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-entity-f1", type=float, default=None, help="Fail if entity F1 is below this threshold.")
     parser.add_argument("--max-hard-negative-fpr", type=float, default=None, help="Fail if hard-negative false-positive rate is above this threshold.")
     parser.add_argument("--max-llm-calls-per-1000", type=float, default=None, help="Fail if profile LLM calls per 1000 records exceed this threshold.")
+    parser.add_argument("--min-clue-recall", type=float, default=None, help="Fail if clue recall is below this threshold.")
+    parser.add_argument("--min-object-clue-recall", type=float, default=None, help="Fail if object-level clue recall is below this threshold.")
     parser.add_argument("--max-clue-overgeneration-ratio", type=float, default=None, help="Fail if actual clue count greatly exceeds expected count.")
     parser.add_argument("--max-review-load-per-100-records", type=float, default=None, help="Fail if actionable clue review load is above this threshold.")
     parser.add_argument("--max-classification-review-rate", type=float, default=None, help="Fail if classification review_required rate is above this threshold.")
@@ -302,6 +305,18 @@ def quality_gate_failures(report: Mapping[str, Any], args: argparse.Namespace) -
         failures.append(f"hard_negative_fpr_above_threshold:{report['false_positive_rate']}>{args.max_hard_negative_fpr}")
     if args.max_llm_calls_per_1000 is not None and float(report["llm_calls_per_1000_records"]) > args.max_llm_calls_per_1000:
         failures.append(f"llm_calls_per_1000_above_threshold:{report['llm_calls_per_1000_records']}>{args.max_llm_calls_per_1000}")
+    if getattr(args, "min_clue_recall", None) is not None:
+        recall = ((report.get("clue") or {}).get("overall") or {}).get("recall")
+        if recall is None:
+            failures.append("clue_recall_not_applicable:clue_gold_required")
+        elif float(recall) < args.min_clue_recall:
+            failures.append(f"clue_recall_below_threshold:{recall}<{args.min_clue_recall}")
+    if getattr(args, "min_object_clue_recall", None) is not None:
+        recall = ((((report.get("clue") or {}).get("object_clue_eval") or {}).get("overall") or {}).get("recall"))
+        if recall is None:
+            failures.append("object_clue_recall_not_applicable:object_clue_gold_required")
+        elif float(recall) < args.min_object_clue_recall:
+            failures.append(f"object_clue_recall_below_threshold:{recall}<{args.min_object_clue_recall}")
     if getattr(args, "max_clue_overgeneration_ratio", None) is not None and float(report["clue"]["clue_overgeneration_ratio"]) > args.max_clue_overgeneration_ratio:
         failures.append(f"clue_overgeneration_ratio_above_threshold:{report['clue']['clue_overgeneration_ratio']}>{args.max_clue_overgeneration_ratio}")
     if getattr(args, "max_review_load_per_100_records", None) is not None and float(report["clue"]["review_load_per_100_records"]) > args.max_review_load_per_100_records:
@@ -352,6 +367,12 @@ def evaluate_classification(
         actual = actual_by_trace.get(trace_id, {})
         actual_primary = predicted_categories(actual)
         actual_secondary = actual_secondary_labels(actual)
+        if not expected_primary:
+            actual_secondary = {
+                label
+                for label in actual_secondary
+                if label not in {"低相关", "防御语境", "研究讨论", "正常业务白噪声", "待研判"}
+            }
         if expected_primary:
             positive_record_count += 1
             primary_tp += len(expected_primary & actual_primary)
@@ -566,7 +587,7 @@ def _expected_clue_gold(records: list[dict[str, Any]], *, layer: str) -> tuple[i
     expected_types = {
         clue_type
         for record in records
-        for clue_type in _expected_clue_types(record)
+        for clue_type in _expected_clue_types(record, include_expected_clues=True)
         if _clue_type_in_layer(clue_type, layer=layer)
     }
     expected_count_values = [
@@ -575,8 +596,8 @@ def _expected_clue_gold(records: list[dict[str, Any]], *, layer: str) -> tuple[i
         if record.get("expected_clue_count") is not None
         and (
             layer == "overall"
-            or any(_clue_type_in_layer(clue_type, layer=layer) for clue_type in _expected_clue_types(record))
-            or (not _expected_clue_types(record) and layer == "standard")
+            or any(_clue_type_in_layer(clue_type, layer=layer) for clue_type in _expected_clue_types(record, include_expected_clues=True))
+            or (not _expected_clue_types(record, include_expected_clues=True) and layer == "standard")
         )
     ]
     expected_count = max(expected_count_values) if expected_count_values else 0
@@ -1082,62 +1103,285 @@ def evaluate_ablation(
     with_budget: bool = True,
     include_real: bool = False,
 ) -> dict[str, Any]:
+    dataset_fingerprint = _ablation_dataset_fingerprint(
+        records,
+        entity_records=entity_records,
+        clue_records=clue_records,
+        hard_negative_records=hard_negative_records,
+    )
+    input_counts = _ablation_input_counts(
+        records,
+        entity_records=entity_records,
+        clue_records=clue_records,
+        hard_negative_records=hard_negative_records,
+    )
+
+    def run_scenario(
+        name: str,
+        *,
+        profile: str,
+        requested_llm_mode: str,
+        effective_llm_mode: str,
+        provider_status: str,
+        fallback_reason: str | None = None,
+        real_requested: bool = False,
+        real_gateway_configured: bool = False,
+    ) -> dict[str, Any]:
+        report = evaluate(
+            deepcopy(records),
+            entity_records=deepcopy(entity_records),
+            clue_records=deepcopy(clue_records),
+            hard_negative_records=deepcopy(hard_negative_records),
+            profile=profile,
+            llm_mode=effective_llm_mode,
+            with_budget=with_budget,
+        )
+        marker = {
+            "name": name,
+            "profile": profile,
+            "requested_llm_mode": requested_llm_mode,
+            "effective_llm_mode": effective_llm_mode,
+            "provider_status": provider_status,
+            "fallback_reason": fallback_reason,
+            "real_requested": real_requested,
+            "real_gateway_configured": real_gateway_configured,
+            "dataset_fingerprint": dataset_fingerprint,
+            "input_counts": input_counts,
+        }
+        if requested_llm_mode == "real_or_configured_fallback" and provider_status == "real":
+            marker.update(_real_scenario_runtime_status(report))
+        report["ablation_scenario"] = marker
+        report["dataset_fingerprint"] = dataset_fingerprint
+        return report
+
+    real_or_fallback = _real_or_fallback_ablation_choice(include_real=include_real)
     scenarios = {
-        "fast_off": evaluate(
-            deepcopy(records),
-            entity_records=deepcopy(entity_records),
-            clue_records=deepcopy(clue_records),
-            hard_negative_records=deepcopy(hard_negative_records),
+        "fast_off": run_scenario(
+            "fast_off",
             profile="fast",
-            llm_mode="off",
-            with_budget=with_budget,
+            requested_llm_mode="off",
+            effective_llm_mode="off",
+            provider_status="off",
         ),
-        "high_recall_off": evaluate(
-            deepcopy(records),
-            entity_records=deepcopy(entity_records),
-            clue_records=deepcopy(clue_records),
-            hard_negative_records=deepcopy(hard_negative_records),
-            profile="high_recall",
-            llm_mode="off",
-            with_budget=with_budget,
+        "balanced_mock": run_scenario(
+            "balanced_mock",
+            profile="balanced",
+            requested_llm_mode="mock",
+            effective_llm_mode="mock",
+            provider_status="mock",
         ),
-        "high_recall_mock": evaluate(
-            deepcopy(records),
-            entity_records=deepcopy(entity_records),
-            clue_records=deepcopy(clue_records),
-            hard_negative_records=deepcopy(hard_negative_records),
+        "high_recall_off": run_scenario(
+            "high_recall_off",
             profile="high_recall",
-            llm_mode="mock",
-            with_budget=with_budget,
+            requested_llm_mode="off",
+            effective_llm_mode="off",
+            provider_status="off",
+        ),
+        "high_recall_mock": run_scenario(
+            "high_recall_mock",
+            profile="high_recall",
+            requested_llm_mode="mock",
+            effective_llm_mode="mock",
+            provider_status="mock",
+        ),
+        "high_recall_real_or_configured_fallback": run_scenario(
+            "high_recall_real_or_configured_fallback",
+            profile="high_recall",
+            requested_llm_mode="real_or_configured_fallback",
+            effective_llm_mode=real_or_fallback["effective_llm_mode"],
+            provider_status=real_or_fallback["provider_status"],
+            fallback_reason=real_or_fallback.get("fallback_reason"),
+            real_requested=bool(real_or_fallback["real_requested"]),
+            real_gateway_configured=bool(real_or_fallback["real_gateway_configured"]),
         ),
     }
+    if include_real:
+        scenarios["high_recall_real"] = scenarios["high_recall_real_or_configured_fallback"]
     base = scenarios["high_recall_off"]
     llm = scenarios["high_recall_mock"]
     comparison = _llm_value_delta(base, llm)
+    comparison["balanced_mock"] = _llm_value_delta(scenarios["fast_off"], scenarios["balanced_mock"])
+    comparison["real_or_fallback"] = _llm_value_delta(base, scenarios["high_recall_real_or_configured_fallback"])
+    real_or_fallback_marker = scenarios["high_recall_real_or_configured_fallback"].get("ablation_scenario") or {}
+    comparison["real_or_fallback"]["provider_status"] = real_or_fallback_marker.get("provider_status") or real_or_fallback["provider_status"]
+    comparison["real_or_fallback"]["fallback_reason"] = real_or_fallback_marker.get("fallback_reason") or real_or_fallback.get("fallback_reason")
     if include_real:
-        scenarios["high_recall_real"] = evaluate(
-            deepcopy(records),
-            entity_records=deepcopy(entity_records),
-            clue_records=deepcopy(clue_records),
-            hard_negative_records=deepcopy(hard_negative_records),
-            profile="high_recall",
-            llm_mode="real",
-            with_budget=with_budget,
-        )
-        comparison["real"] = _llm_value_delta(base, scenarios["high_recall_real"])
+        comparison["real"] = comparison["real_or_fallback"]
+    matrix_scenarios = [
+        "fast_off",
+        "balanced_mock",
+        "high_recall_real_or_configured_fallback",
+    ]
+    scenario_fingerprints = {
+        str((report.get("ablation_scenario") or {}).get("dataset_fingerprint") or "")
+        for name, report in scenarios.items()
+        if name != "high_recall_real"
+    }
     value_gate = LLMValueGate()
     return {
         "status": "completed",
         "mode": "llm_ablation",
         "runtime_value_gate_applied": False,
         "llm_value_gate_mode": "disabled_for_ablation_measurement",
+        "dataset_fingerprint": dataset_fingerprint,
+        "scenario_consistency": {
+            "dataset_fingerprint": dataset_fingerprint,
+            "same_dataset_fingerprint": scenario_fingerprints == {dataset_fingerprint},
+            "input_counts": input_counts,
+        },
         "scenarios": scenarios,
+        "llm_value_matrix": _llm_value_matrix(matrix_scenarios, scenarios, baseline_name="fast_off"),
         "llm_value": comparison,
         "llm_value_gate": {
             "should_enable_record_enrich": value_gate.should_enable_record_enrich("high_recall", comparison),
             "reason": comparison["gate_reason"],
         },
     }
+
+
+def _ablation_input_counts(
+    records: list[dict[str, Any]],
+    *,
+    entity_records: list[dict[str, Any]] | None,
+    clue_records: list[dict[str, Any]] | None,
+    hard_negative_records: list[dict[str, Any]] | None,
+) -> dict[str, int]:
+    return {
+        "classification_records": len(records),
+        "entity_records": len(entity_records or records),
+        "clue_records": len(clue_records or []),
+        "hard_negative_records": len(hard_negative_records or []),
+    }
+
+
+def _ablation_dataset_fingerprint(
+    records: list[dict[str, Any]],
+    *,
+    entity_records: list[dict[str, Any]] | None,
+    clue_records: list[dict[str, Any]] | None,
+    hard_negative_records: list[dict[str, Any]] | None,
+) -> str:
+    payload = {
+        "classification_records": records,
+        "entity_records": entity_records if entity_records is not None else records,
+        "clue_records": clue_records or [],
+        "hard_negative_records": hard_negative_records or [],
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def _real_or_fallback_ablation_choice(*, include_real: bool) -> dict[str, Any]:
+    config = LLMGatewayConfig.from_env()
+    real_gateway_configured = bool(config.api_key) and not config.dry_run and not config.mock
+    if real_gateway_configured:
+        return {
+            "effective_llm_mode": "real",
+            "provider_status": "real",
+            "fallback_reason": None,
+            "real_requested": include_real,
+            "real_gateway_configured": True,
+        }
+    if config.mock:
+        fallback_reason = "real_gateway_mock_mode_configured"
+    elif config.dry_run:
+        fallback_reason = "real_gateway_dry_run_or_missing_credentials"
+    elif not config.api_key:
+        fallback_reason = "real_gateway_missing_api_key"
+    else:
+        fallback_reason = "real_gateway_unavailable"
+    if include_real:
+        fallback_reason = f"real_requested_{fallback_reason}"
+    return {
+        "effective_llm_mode": "mock",
+        "provider_status": "fallback",
+        "fallback_reason": fallback_reason,
+        "real_requested": include_real,
+        "real_gateway_configured": False,
+    }
+
+
+def _real_scenario_runtime_status(report: Mapping[str, Any]) -> dict[str, Any]:
+    summary = report.get("pipeline_summary") if isinstance(report.get("pipeline_summary"), Mapping) else {}
+    traces = summary.get("llm_call_traces") if isinstance(summary.get("llm_call_traces"), list) else []
+    if not traces:
+        return {
+            "provider_status": "fallback",
+            "fallback_reason": "real_gateway_configured_but_no_llm_calls_attempted",
+        }
+    network_attempted = any(bool(item.get("network_attempted")) for item in traces if isinstance(item, Mapping))
+    successful_network = any(
+        bool(item.get("network_attempted")) and bool(item.get("llm_ok"))
+        for item in traces
+        if isinstance(item, Mapping)
+    )
+    if successful_network:
+        return {}
+    errors = sorted(
+        {
+            str(item.get("error") or "").strip()
+            for item in traces
+            if isinstance(item, Mapping) and str(item.get("error") or "").strip()
+        }
+    )
+    if network_attempted:
+        reason = "real_gateway_network_failed"
+        if errors:
+            reason = f"{reason}:{','.join(errors[:3])}"
+    else:
+        reason = "real_gateway_configured_but_used_local_fallback"
+        if errors:
+            reason = f"{reason}:{','.join(errors[:3])}"
+    return {
+        "provider_status": "fallback",
+        "fallback_reason": reason,
+    }
+
+
+def _llm_value_matrix(
+    scenario_names: Iterable[str],
+    scenarios: Mapping[str, Mapping[str, Any]],
+    *,
+    baseline_name: str,
+) -> list[dict[str, Any]]:
+    baseline = scenarios[baseline_name]
+    rows: list[dict[str, Any]] = []
+    for name in scenario_names:
+        report = scenarios[name]
+        marker = report.get("ablation_scenario") if isinstance(report.get("ablation_scenario"), Mapping) else {}
+        dimensions = report.get("profile_comparison_dimensions") if isinstance(report.get("profile_comparison_dimensions"), Mapping) else {}
+        row = {
+            "scenario": name,
+            "profile": marker.get("profile") or report.get("profile"),
+            "requested_llm_mode": marker.get("requested_llm_mode") or report.get("llm_mode"),
+            "effective_llm_mode": marker.get("effective_llm_mode") or report.get("llm_mode"),
+            "provider_status": marker.get("provider_status") or report.get("llm_mode"),
+            "fallback_reason": marker.get("fallback_reason"),
+            "dataset_fingerprint": marker.get("dataset_fingerprint") or report.get("dataset_fingerprint"),
+            "quality": {
+                "primary_classification_f1": report.get("primary_classification_f1"),
+                "secondary_classification_f1": report.get("secondary_classification_f1"),
+                "hierarchical_classification_f1": report.get("hierarchical_classification_f1"),
+                "entity_f1": report.get("entity_f1"),
+                "clue_recall": report.get("clue_recall"),
+                "clue_f1": report.get("clue_f1"),
+                "false_positive_rate": report.get("false_positive_rate"),
+            },
+            "cost": {
+                "llm_calls": dimensions.get("llm_calls"),
+                "llm_calls_per_1000_records": report.get("llm_calls_per_1000_records"),
+                "estimated_tokens": dimensions.get("estimated_tokens"),
+                "estimated_tokens_per_valid_clue": report.get("estimated_tokens_per_valid_clue"),
+            },
+            "latency": {
+                "p50_latency_ms": report.get("p50_latency_ms"),
+                "p95_latency_ms": dimensions.get("p95_latency_ms") or report.get("p95_latency_ms"),
+            },
+        }
+        if name != baseline_name:
+            row[f"delta_vs_{baseline_name}"] = _llm_value_delta(baseline, report)
+        rows.append(row)
+    return rows
 
 
 def evaluate_profile_curve(
@@ -1295,7 +1539,14 @@ def _llm_value_delta(base: Mapping[str, Any], llm: Mapping[str, Any]) -> dict[st
     clue_precision_delta = round(_numeric_metric(llm.get("clue_f1")) - _numeric_metric(base.get("clue_f1")), 4)
     clue_recall_delta = round(_numeric_metric(llm.get("clue_recall")) - _numeric_metric(base.get("clue_recall")), 4)
     llm_calls_delta = round(_numeric_metric(llm.get("llm_calls_per_1000_records")) - _numeric_metric(base.get("llm_calls_per_1000_records")), 4)
-    token_delta = float(llm.get("profile_comparison_dimensions", {}).get("estimated_tokens") or 0) - float(base.get("profile_comparison_dimensions", {}).get("estimated_tokens") or 0)
+    llm_dimensions = llm.get("profile_comparison_dimensions") if isinstance(llm.get("profile_comparison_dimensions"), Mapping) else {}
+    base_dimensions = base.get("profile_comparison_dimensions") if isinstance(base.get("profile_comparison_dimensions"), Mapping) else {}
+    token_delta = float(llm_dimensions.get("estimated_tokens") or 0) - float(base_dimensions.get("estimated_tokens") or 0)
+    latency_delta = round(
+        _numeric_metric(llm_dimensions.get("p95_latency_ms") or llm.get("p95_latency_ms"))
+        - _numeric_metric(base_dimensions.get("p95_latency_ms") or base.get("p95_latency_ms")),
+        4,
+    )
     f1_gain = max(classification_delta, entity_delta, clue_precision_delta, 0.0)
     extra_valid_clues = max(float(llm.get("clue", {}).get("overall", {}).get("tp") or 0) - float(base.get("clue", {}).get("overall", {}).get("tp") or 0), 0.0)
     if f1_gain <= 0.0 and extra_valid_clues <= 0.0:
@@ -1309,8 +1560,11 @@ def _llm_value_delta(base: Mapping[str, Any], llm: Mapping[str, Any]) -> dict[st
         "clue_precision_delta": clue_precision_delta,
         "clue_recall_delta": clue_recall_delta,
         "llm_calls_delta": llm_calls_delta,
+        "p95_latency_ms_delta": latency_delta,
         "tokens_per_f1_gain": None if f1_gain <= 0 else round(token_delta / f1_gain, 4),
         "tokens_per_extra_valid_clue": None if extra_valid_clues <= 0 else round(token_delta / extra_valid_clues, 4),
+        "latency_ms_per_f1_gain": None if f1_gain <= 0 else round(latency_delta / f1_gain, 4),
+        "latency_ms_per_extra_valid_clue": None if extra_valid_clues <= 0 else round(latency_delta / extra_valid_clues, 4),
         "gate_reason": gate_reason,
     }
 

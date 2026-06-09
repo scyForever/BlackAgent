@@ -2,7 +2,7 @@ from argparse import Namespace
 
 from scripts import evaluate_pipeline
 from scripts.evaluate_pipeline import evaluate, evaluate_ablation, evaluate_clues, evaluate_profile_curve, load_jsonl, quality_gate_failures
-from src.evaluation.llm_ablation import LLMValueGate
+from src.evaluation.llm_ablation import LLMValueGate, llm_value_report_from_ablation
 
 
 def test_evaluate_pipeline_configures_stdout_utf8(monkeypatch):
@@ -34,9 +34,9 @@ def test_evaluate_pipeline_reports_classification_entity_and_clue_metrics():
     assert "classification" in report
     assert "entity" in report
     assert "clue" in report
-    assert report["hard_negative_record_count"] >= 100
+    assert report["hard_negative_record_count"] >= 112
     assert report["hard_negative"]["tn"] >= 70
-    assert report["false_positive_rate"] <= 0.3
+    assert report["false_positive_rate"] <= 0.1
     assert report["clue"]["actual_clue_count"] >= 1
     assert "shared_contact_48h" in report["clue"]["actual_clue_types"]
     assert "entity_graph_tool_trade_cluster" in report["clue"]["actual_clue_types"]
@@ -142,6 +142,34 @@ def test_evaluate_clues_scores_expected_clue_objects_evidence_chains_and_reviewa
     assert metrics["object_clue_eval"]["evidence_chain_recall"] == 1.0
     assert metrics["object_clue_eval"]["evidence_reviewability_rate"] == 1.0
     assert metrics["duplicate_clue_rate"] > 0
+
+
+def test_evaluate_clues_uses_expected_clue_objects_for_top_level_type_gold():
+    records = [
+        {
+            "source_trace_id": "trace-a",
+            "expected_clues": [
+                {
+                    "clue_type": "shared_tool_multi_source",
+                    "key": "tool-a",
+                    "expected_evidence_trace_ids": ["trace-a", "trace-b"],
+                }
+            ],
+        }
+    ]
+    actual = [
+        {
+            "clue_type": "shared_template_multi_source",
+            "key": "tool-a",
+            "evidence_trace_ids": ["trace-a", "trace-b"],
+        }
+    ]
+
+    metrics = evaluate_clues(records, actual)
+
+    assert metrics["expected_clue_types"] == ["shared_tool_multi_source"]
+    assert metrics["actual_clue_types"] == ["shared_template_multi_source"]
+    assert metrics["overall"]["f1"] < 1.0
 
 
 def test_evaluate_clues_prefers_matching_evidence_when_type_and_key_tie():
@@ -259,14 +287,16 @@ def test_manual_heldout_pipeline_generates_reviewable_object_clues():
         load_jsonl("tests/evaluation/manual_heldout_classification.jsonl"),
         entity_records=load_jsonl("tests/evaluation/manual_heldout_classification.jsonl"),
         clue_records=load_jsonl("tests/evaluation/manual_heldout_clues.jsonl"),
-        profile="fast",
+        profile="high_recall",
     )
 
     object_eval = report["clue"]["object_clue_eval"]
-    assert object_eval["overall"]["f1"] > 0.0
-    assert object_eval["evidence_chain_precision"] > 0.0
-    assert object_eval["evidence_chain_recall"] > 0.0
-    assert object_eval["evidence_reviewability_rate"] > 0.0
+    assert object_eval["overall"]["recall"] >= 0.95
+    assert object_eval["overall"]["f1"] >= 0.95
+    assert object_eval["matched_clue_count"] >= 23
+    assert object_eval["evidence_chain_precision"] >= 0.95
+    assert object_eval["evidence_chain_recall"] >= 0.95
+    assert object_eval["evidence_reviewability_rate"] == 1.0
 
 
 def test_evaluate_pipeline_quality_gate_failures_are_explicit():
@@ -279,6 +309,8 @@ def test_evaluate_pipeline_quality_gate_failures_are_explicit():
         "false_positive_rate": 0.25,
         "llm_calls_per_1000_records": 99.0,
         "clue": {
+            "overall": {"recall": 0.45},
+            "object_clue_eval": {"overall": {"recall": 0.5}},
             "clue_overgeneration_ratio": 3.0,
             "review_load_per_100_records": 4.5,
         },
@@ -291,22 +323,62 @@ def test_evaluate_pipeline_quality_gate_failures_are_explicit():
         min_entity_f1=0.7,
         max_hard_negative_fpr=0.1,
         max_llm_calls_per_1000=10.0,
+        min_clue_recall=0.8,
+        min_object_clue_recall=0.95,
         max_clue_overgeneration_ratio=2.0,
         max_review_load_per_100_records=3.0,
+        max_classification_review_rate=None,
     )
 
     failures = quality_gate_failures(report, args)
 
-    assert len(failures) == 9
+    assert len(failures) == 11
     assert failures[0].startswith("classification_f1_below_threshold")
     assert any(item.startswith("primary_classification_f1_below_threshold") for item in failures)
     assert any(item.startswith("secondary_classification_f1_below_threshold") for item in failures)
     assert any(item.startswith("hierarchical_classification_f1_below_threshold") for item in failures)
+    assert any(item.startswith("clue_recall_below_threshold") for item in failures)
+    assert any(item.startswith("object_clue_recall_below_threshold") for item in failures)
     assert any(item.startswith("clue_overgeneration_ratio_above_threshold") for item in failures)
     assert any(item.startswith("review_load_per_100_records_above_threshold") for item in failures)
 
 
-def test_llm_ablation_reports_value_gate_when_mock_adds_no_quality_gain():
+def test_secondary_metrics_ignore_normal_noise_labels_on_hard_negatives():
+    records = [
+        {
+            "trace_id": "positive",
+            "expected_primary_risk": "工具交易",
+            "expected_secondary_labels": ["群控脚本"],
+        },
+        {
+            "trace_id": "hard-negative",
+            "expected_risk_categories": [],
+        },
+    ]
+    actual = [
+        {
+            "source_trace_id": "positive",
+            "risk_category": "工具交易",
+            "secondary_label": "群控脚本",
+        },
+        {
+            "source_trace_id": "hard-negative",
+            "risk_category": "正常业务白噪声",
+            "secondary_label": "低相关",
+        },
+    ]
+
+    metrics = evaluate_pipeline.evaluate_classification(records, actual)
+
+    assert metrics["secondary"]["fp"] == 0
+    assert metrics["secondary"]["f1"] == 1.0
+
+
+def test_llm_ablation_reports_value_gate_when_mock_adds_no_quality_gain(monkeypatch):
+    monkeypatch.delenv("BLACKAGENT_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("BLACKAGENT_LLM_DRY_RUN", "true")
+
     report = evaluate_ablation(
         load_jsonl("tests/evaluation/gold_classification.jsonl"),
         entity_records=load_jsonl("tests/evaluation/gold_entities.jsonl"),
@@ -319,6 +391,82 @@ def test_llm_ablation_reports_value_gate_when_mock_adds_no_quality_gain():
     assert {"fast_off", "high_recall_off", "high_recall_mock"} <= set(report["scenarios"])
     assert "llm_calls_delta" in report["llm_value"]
     assert LLMValueGate().should_enable_record_enrich("high_recall", report["llm_value"]) is report["llm_value_gate"]["should_enable_record_enrich"]
+
+
+def test_llm_ablation_value_matrix_labels_high_recall_fallback_and_latency(monkeypatch):
+    monkeypatch.delenv("BLACKAGENT_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("BLACKAGENT_LLM_DRY_RUN", "true")
+
+    report = evaluate_ablation(
+        load_jsonl("tests/evaluation/gold_classification.jsonl"),
+        entity_records=load_jsonl("tests/evaluation/gold_entities.jsonl"),
+        clue_records=load_jsonl("tests/evaluation/gold_clues.jsonl"),
+        hard_negative_records=load_jsonl("tests/evaluation/hard_negative.jsonl"),
+        with_budget=True,
+    )
+
+    assert {"fast_off", "balanced_mock", "high_recall_real_or_configured_fallback"} <= set(report["scenarios"])
+    assert report["scenario_consistency"]["same_dataset_fingerprint"] is True
+
+    matrix = {row["scenario"]: row for row in report["llm_value_matrix"]}
+    assert {"fast_off", "balanced_mock", "high_recall_real_or_configured_fallback"} <= set(matrix)
+    assert {row["dataset_fingerprint"] for row in matrix.values()} == {report["dataset_fingerprint"]}
+    assert matrix["fast_off"]["profile"] == "fast"
+    assert matrix["fast_off"]["effective_llm_mode"] == "off"
+    assert matrix["balanced_mock"]["profile"] == "balanced"
+    assert matrix["balanced_mock"]["effective_llm_mode"] == "mock"
+    assert matrix["high_recall_real_or_configured_fallback"]["profile"] == "high_recall"
+    assert matrix["high_recall_real_or_configured_fallback"]["requested_llm_mode"] == "real_or_configured_fallback"
+    assert matrix["high_recall_real_or_configured_fallback"]["provider_status"] == "fallback"
+    assert matrix["high_recall_real_or_configured_fallback"]["fallback_reason"]
+    assert "latency_ms_per_f1_gain" in matrix["balanced_mock"]["delta_vs_fast_off"]
+    assert "latency_ms_per_extra_valid_clue" in matrix["balanced_mock"]["delta_vs_fast_off"]
+    assert "latency_ms_per_f1_gain" in report["llm_value"]
+    assert "latency_ms_per_extra_valid_clue" in report["llm_value"]
+
+    runtime_report = llm_value_report_from_ablation(report)
+
+    assert "latency_ms_per_f1_gain" in runtime_report
+    assert "latency_ms_per_extra_valid_clue" in runtime_report
+
+
+def test_llm_ablation_latest_value_uses_runtime_fallback_status(monkeypatch):
+    monkeypatch.setattr(
+        evaluate_pipeline,
+        "_real_or_fallback_ablation_choice",
+        lambda *, include_real: {
+            "effective_llm_mode": "mock",
+            "provider_status": "real",
+            "fallback_reason": None,
+            "real_requested": include_real,
+            "real_gateway_configured": True,
+        },
+    )
+    monkeypatch.setattr(
+        evaluate_pipeline,
+        "_real_scenario_runtime_status",
+        lambda report: {
+            "provider_status": "fallback",
+            "fallback_reason": "real_gateway_configured_but_used_local_fallback",
+        },
+    )
+
+    report = evaluate_ablation(
+        load_jsonl("tests/evaluation/gold_classification.jsonl"),
+        entity_records=load_jsonl("tests/evaluation/gold_entities.jsonl"),
+        clue_records=load_jsonl("tests/evaluation/gold_clues.jsonl"),
+        hard_negative_records=load_jsonl("tests/evaluation/hard_negative.jsonl"),
+        with_budget=True,
+    )
+    runtime_report = llm_value_report_from_ablation(report)
+
+    real_or_fallback = report["llm_value"]["real_or_fallback"]
+    assert report["scenarios"]["high_recall_real_or_configured_fallback"]["ablation_scenario"]["provider_status"] == "fallback"
+    assert real_or_fallback["provider_status"] == "fallback"
+    assert real_or_fallback["fallback_reason"] == "real_gateway_configured_but_used_local_fallback"
+    assert runtime_report["provider_specific"]["real_or_fallback"]["provider_status"] == "fallback"
+    assert runtime_report["provider_specific"]["real_or_fallback"]["fallback_reason"] == "real_gateway_configured_but_used_local_fallback"
 
 
 def test_profile_curve_reports_quality_cost_and_latency_for_all_profiles():

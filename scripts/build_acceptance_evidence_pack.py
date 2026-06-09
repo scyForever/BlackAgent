@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter, defaultdict
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -35,6 +36,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--classifications", default="data/classification_extraction_phase_classifications.jsonl")
     parser.add_argument("--entities", default="data/classification_extraction_phase_entities.jsonl")
     parser.add_argument("--clues", default="", help="Optional candidate-clue JSONL; falls back to no linked clues.")
+    parser.add_argument("--hydrated", default="", help="Optional hydrated target-page JSONL used to replace snippet-only source evidence.")
+    parser.add_argument("--cleaning-drops", default="", help="Optional cleaning drop JSONL keyed by trace_id/source_trace_id.")
+    parser.add_argument("--dropped", default="", help="Optional dropped-row JSONL keyed by trace_id/source_trace_id.")
     parser.add_argument("--output", default="data/collection_phase_multi_source_evidence_pack.jsonl")
     parser.add_argument("--report-out", default="data/collection_phase_multi_source_evidence_pack_report.json")
     return parser.parse_args()
@@ -67,25 +71,34 @@ def build_evidence_pack(
     classifications: list[dict[str, Any]],
     entities: list[dict[str, Any]],
     clues: list[dict[str, Any]] | None = None,
+    hydrated: list[dict[str, Any]] | None = None,
+    cleaning_drops: list[dict[str, Any]] | None = None,
+    dropped: list[dict[str, Any]] | None = None,
     output_path: str | Path,
     report_path: str | Path,
 ) -> dict[str, Any]:
     cleaned_by_trace = _latest_by_trace(cleaned or [])
+    cleaning_drop_by_trace = _latest_by_trace([*_dict_rows(cleaning_drops or []), *_dict_rows(dropped or [])])
     classification_by_trace = _latest_by_trace(classifications)
     entities_by_trace = _group_by_trace(entities)
     clues_by_trace = _clues_by_evidence_trace(clues or [])
+    hydrated_by_trace, hydrated_by_url = _hydrated_indexes(hydrated or [])
 
     evidence_rows: list[dict[str, Any]] = []
     completeness_counter: Counter[str] = Counter()
     review_status_counter: Counter[str] = Counter()
     cleaning_source_counter: Counter[str] = Counter()
+    source_evidence_counter: Counter[str] = Counter()
     for row in acceptance_rows:
         trace_id = _trace_id(row)
+        hydrated_row = hydrated_by_trace.get(trace_id) or hydrated_by_url.get(str(row.get("source_url") or ""))
+        source_evidence_row = _source_evidence_row(row, hydrated_row)
         cleaned_row = cleaned_by_trace.get(trace_id) or {}
         inline_cleaned_row = _inline_cleaned_row(trace_id, row) if not cleaned_row.get("clean_text") else {}
         classification = classification_by_trace.get(trace_id) or {}
         row_entities = entities_by_trace.get(trace_id) or []
         row_clues = clues_by_trace.get(trace_id) or []
+        raw_snippet = _raw_snippet(row)
         clean_text = str(
             cleaned_row.get("clean_text")
             or inline_cleaned_row.get("clean_text")
@@ -94,7 +107,6 @@ def build_evidence_pack(
             or row.get("content_text")
             or ""
         )
-        raw_snippet = str(row.get("content_text") or row.get("raw_text") or "")[:500]
         review_status = "linked_to_cross_source_clue" if row_clues else "no_cross_source_clue_yet"
         cross_source_clue_chain = [_clue_card(item) for item in row_clues]
         clue_chain = cross_source_clue_chain or [
@@ -122,6 +134,8 @@ def build_evidence_pack(
         review_status_counter[review_status] += 1
         cleaning_card = _cleaning_card(cleaned_row or inline_cleaned_row)
         cleaning_source_counter[cleaning_card.get("source") or "unknown"] += 1
+        source_evidence = _source_evidence_card(source_evidence_row, cleaning_drop_by_trace.get(trace_id))
+        _count_source_evidence(source_evidence, counter=source_evidence_counter)
         evidence_rows.append(
             {
                 "trace_id": trace_id,
@@ -131,6 +145,7 @@ def build_evidence_pack(
                 "source_access_type": row.get("source_access_type"),
                 "acceptance_category": _acceptance_category(row),
                 "raw_snippet": raw_snippet,
+                "source_evidence": source_evidence,
                 "clean_text": clean_text,
                 "cleaning": cleaning_card,
                 "classification": _classification_card(classification),
@@ -156,6 +171,7 @@ def build_evidence_pack(
         "record_count": len(evidence_rows),
         "output": str(output),
         "completeness_counts": dict(completeness_counter),
+        "source_evidence_counts": dict(source_evidence_counter),
         "review_status_counts": dict(review_status_counter),
         "cleaning_source_counts": dict(cleaning_source_counter),
         "claim_boundary": "evidence_pack_joins_available_artifacts_missing_clues_are_not_claimed",
@@ -175,6 +191,49 @@ def _latest_by_trace(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return by_trace
 
 
+def _hydrated_indexes(rows: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    by_original_trace: dict[str, dict[str, Any]] = {}
+    by_url: dict[str, dict[str, Any]] = {}
+    for row in _dict_rows(rows):
+        original_trace_id = str(row.get("hydrated_from_trace_id") or "").strip()
+        if original_trace_id:
+            by_original_trace[original_trace_id] = row
+        source_url = str(row.get("source_url") or "").strip()
+        if source_url:
+            by_url[source_url] = row
+    return by_original_trace, by_url
+
+
+def _source_evidence_row(row: dict[str, Any], hydrated_row: dict[str, Any] | None) -> dict[str, Any]:
+    if not hydrated_row:
+        return dict(row)
+    merged = dict(row)
+    raw_snippet = _raw_snippet(row)
+    for key in (
+        "content_text",
+        "raw_text",
+        "crawl_time",
+        "publish_time",
+        "capture_snapshot_uri",
+        "raw_payload_uri",
+        "ocr_text",
+        "ocr_confidence",
+        "content_modality",
+        "image_path",
+        "screenshot_path",
+        "attachments",
+    ):
+        if hydrated_row.get(key) is not None and str(hydrated_row.get(key)) != "":
+            merged[key] = hydrated_row.get(key)
+    merged["raw_snippet"] = raw_snippet
+    merged["source_url"] = row.get("source_url") or hydrated_row.get("source_url")
+    if hydrated_row.get("trace_id"):
+        merged["hydrated_trace_id"] = hydrated_row.get("trace_id")
+    if hydrated_row.get("hydrated_from_trace_id"):
+        merged["hydrated_from_trace_id"] = hydrated_row.get("hydrated_from_trace_id")
+    return merged
+
+
 def _group_by_trace(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -182,6 +241,18 @@ def _group_by_trace(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]
         if trace_id:
             grouped[trace_id].append(row)
     return dict(grouped)
+
+
+def _dict_rows(rows: Iterable[Any]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        if isinstance(row, dict):
+            normalized.append(dict(row))
+        elif hasattr(row, "model_dump"):
+            normalized.append(dict(row.model_dump()))
+        elif is_dataclass(row):
+            normalized.append(dict(asdict(row)))
+    return normalized
 
 
 def _clues_by_evidence_trace(clues: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -196,6 +267,87 @@ def _clues_by_evidence_trace(clues: list[dict[str, Any]]) -> dict[str, list[dict
 
 def _trace_id(row: dict[str, Any]) -> str:
     return str(row.get("source_trace_id") or row.get("trace_id") or row.get("hash_id") or "").strip()
+
+
+def _raw_snippet(row: dict[str, Any]) -> str:
+    if row.get("raw_snippet") is not None:
+        return str(row.get("raw_snippet"))
+    return str(row.get("content_text") or row.get("raw_text") or "")[:500]
+
+
+def _source_evidence_card(row: dict[str, Any], cleaning_drop: dict[str, Any] | None = None) -> dict[str, Any]:
+    card: dict[str, Any] = {}
+    raw_text = _first_text(row, ("content_text", "raw_text"))
+    if raw_text is not None:
+        card["raw_text"] = raw_text
+
+    raw_snippet = _raw_snippet(row)
+    if raw_snippet:
+        card["raw_snippet"] = raw_snippet
+
+    for key in (
+        "crawl_time",
+        "publish_time",
+        "source_url",
+        "capture_snapshot_uri",
+        "raw_payload_uri",
+        "hydrated_trace_id",
+        "hydrated_from_trace_id",
+    ):
+        if key in row and row.get(key) is not None:
+            card[key] = row.get(key)
+
+    ocr = {
+        key: row.get(key)
+        for key in ("ocr_text", "ocr_confidence", "content_modality")
+        if key in row and row.get(key) is not None
+    }
+    if ocr:
+        card["ocr"] = ocr
+
+    media = {
+        key: row.get(key)
+        for key in ("image_path", "screenshot_path", "attachments")
+        if key in row and row.get(key) is not None
+    }
+    if media:
+        card["media"] = media
+
+    if cleaning_drop:
+        card["cleaning_drop"] = dict(cleaning_drop)
+    return card
+
+
+def _count_source_evidence(card: dict[str, Any], *, counter: Counter[str]) -> None:
+    if card:
+        counter["has_source_evidence"] += 1
+    raw_text = str(card.get("raw_text") or "")
+    raw_snippet = str(card.get("raw_snippet") or "")
+    if raw_text:
+        counter["has_raw_text"] += 1
+    if raw_snippet:
+        counter["has_raw_snippet"] += 1
+    if raw_text and raw_snippet and raw_text.strip() != raw_snippet.strip():
+        counter["raw_text_differs_from_raw_snippet"] += 1
+    if card.get("hydrated_trace_id") or card.get("hydrated_from_trace_id"):
+        counter["has_hydrated_body"] += 1
+    for key in ("source_url", "crawl_time", "publish_time", "capture_snapshot_uri", "raw_payload_uri"):
+        if card.get(key):
+            counter[f"has_{key}"] += 1
+    if card.get("ocr"):
+        counter["has_ocr"] += 1
+    if card.get("media"):
+        counter["has_media"] += 1
+    if card.get("cleaning_drop"):
+        counter["has_cleaning_drop"] += 1
+
+
+def _first_text(row: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = row.get(key)
+        if value is not None and str(value) != "":
+            return str(value)
+    return None
 
 
 def _classification_card(row: dict[str, Any]) -> dict[str, Any]:
@@ -351,6 +503,9 @@ def main() -> int:
         classifications=load_jsonl(args.classifications),
         entities=load_jsonl(args.entities),
         clues=load_jsonl(args.clues) if args.clues else [],
+        hydrated=load_jsonl(args.hydrated) if args.hydrated else [],
+        cleaning_drops=load_jsonl(args.cleaning_drops) if args.cleaning_drops else [],
+        dropped=load_jsonl(args.dropped) if args.dropped else [],
         output_path=args.output,
         report_path=args.report_out,
     )

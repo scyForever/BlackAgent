@@ -28,6 +28,15 @@ clue_generation_rules:
         - min_sources: 2
       pass_reason: tool_slang_has_transaction_or_cross_source_support
       fail_reason: tool_slang_requires_contact_price_url_or_cross_source_support
+    shared_tool_multi_source:
+      match_clue_types: [shared_tool_multi_source]
+      require_all:
+        - min_sources: 2
+        - any_entity_type: [tool_name]
+      reject_risk_categories: [normal_noise, 正常业务白噪声]
+      reject_reason: shared_tool_rejected_risk_category
+      pass_reason: tool_name_cross_source_non_defensive
+      fail_reason: shared_tool_requires_two_sources_and_tool_entity
     shared_settlement_multi_source:
       match_clue_types: [shared_settlement_multi_source]
       require_any:
@@ -43,6 +52,13 @@ clue_generation_rules:
       reject_risk_categories: [normal_noise, 正常业务白噪声]
       pass_reason: template_repeated_three_times_non_defensive
       fail_reason: template_requires_three_non_defensive_repetitions
+    shared_template_multi_source:
+      match_clue_types: [shared_template_multi_source]
+      require_all:
+        - min_sources: 2
+      reject_risk_categories: [normal_noise, 正常业务白噪声]
+      pass_reason: template_cross_source_non_defensive
+      fail_reason: shared_template_requires_two_sources_non_defensive
   shared_contact_48h:
     min_observations: 2
     window_hours: 48
@@ -60,3 +76,12 @@ clue_generation_rules:
   tool_slang:
     promotion:
       require_any_entity: [contact, account, price, url, domain]
+  shared_tool_multi_source:
+    min_sources: 2
+    promotion:
+      require_any_entity: [tool_name]
+      reject_risk_categories: [normal_noise, 正常业务白噪声]
+  shared_template_multi_source:
+    min_sources: 2
+    promotion:
+      reject_risk_categories: [normal_noise, 正常业务白噪声]
