@@ -472,6 +472,17 @@ def evaluate_classification(
             include_secondary=hierarchical_gold_ready,
             limit=10,
         ),
+        "error_buckets": _classification_error_buckets(
+            records,
+            actual_by_trace,
+            include_secondary=hierarchical_gold_ready,
+            limit=10,
+        ),
+        "manual_review_error_analysis": _manual_review_error_analysis(
+            records,
+            actual_by_trace,
+            include_secondary=hierarchical_gold_ready,
+        ),
         "review_load": _classification_review_load(actual_item_list, record_count=len(records)),
         "granularity": resolved_granularity,
         "evaluation_mode": evaluation_mode,
@@ -839,10 +850,10 @@ def _classification_error_examples(
     for record in records:
         trace_id = _trace_id(record)
         expected_primary = predicted_categories(record)
-        expected_secondary = expected_secondary_labels(record)
+        expected_secondary = _formal_expected_secondary_labels(record)
         actual = actual_by_trace.get(trace_id, {})
         actual_primary = predicted_categories(actual)
-        actual_secondary = actual_secondary_labels(actual)
+        actual_secondary = _formal_actual_secondary_labels(actual, expected_primary=expected_primary)
         primary_mismatch = expected_primary != actual_primary
         secondary_mismatch = include_secondary and expected_secondary != actual_secondary
         if not primary_mismatch and not secondary_mismatch:
@@ -869,6 +880,158 @@ def _classification_error_examples(
         if len(errors) >= max(0, int(limit)):
             break
     return errors
+
+
+def _classification_error_buckets(
+    records: list[dict[str, Any]],
+    actual_by_trace: Mapping[str, Mapping[str, Any]],
+    *,
+    include_secondary: bool,
+    limit: int = 10,
+) -> dict[str, Any]:
+    bucket_names = (
+        "false_positive",
+        "false_negative",
+        "primary_confusion",
+        "secondary_confusion",
+        "secondary_missing",
+        "secondary_extra",
+    )
+    buckets: dict[str, dict[str, Any]] = {
+        name: {"count": 0, "examples": []}
+        for name in bucket_names
+    }
+    for record in records:
+        trace_id = _trace_id(record)
+        expected_primary = predicted_categories(record)
+        expected_secondary = _formal_expected_secondary_labels(record)
+        actual = actual_by_trace.get(trace_id, {})
+        actual_primary = predicted_categories(actual)
+        actual_secondary = _formal_actual_secondary_labels(actual, expected_primary=expected_primary)
+        base_example = _classification_error_example_payload(
+            record,
+            actual,
+            expected_primary=expected_primary,
+            actual_primary=actual_primary,
+            expected_secondary=expected_secondary,
+            actual_secondary=actual_secondary,
+        )
+        if not expected_primary and actual_primary:
+            _add_error_bucket_example(buckets, "false_positive", base_example, limit=limit)
+        if expected_primary and not actual_primary:
+            _add_error_bucket_example(buckets, "false_negative", base_example, limit=limit)
+        if expected_primary and actual_primary and expected_primary != actual_primary:
+            _add_error_bucket_example(buckets, "primary_confusion", base_example, limit=limit)
+        if not include_secondary:
+            continue
+        if not expected_primary and actual_primary:
+            continue
+        missing_secondary = expected_secondary - actual_secondary
+        extra_secondary = actual_secondary - expected_secondary
+        if expected_secondary and actual_secondary and expected_secondary != actual_secondary:
+            _add_error_bucket_example(buckets, "secondary_confusion", base_example, limit=limit)
+        elif missing_secondary:
+            example = {**base_example, "missing_secondary": sorted(missing_secondary)}
+            _add_error_bucket_example(buckets, "secondary_missing", example, limit=limit)
+        elif extra_secondary:
+            example = {**base_example, "extra_secondary": sorted(extra_secondary)}
+            _add_error_bucket_example(buckets, "secondary_extra", example, limit=limit)
+    return buckets
+
+
+def _manual_review_error_analysis(
+    records: list[dict[str, Any]],
+    actual_by_trace: Mapping[str, Mapping[str, Any]],
+    *,
+    include_secondary: bool,
+) -> dict[str, Any]:
+    typical_error_counts: Counter[str] = Counter()
+    source_type_counts: Counter[str] = Counter()
+    expected_primary_counts: Counter[str] = Counter()
+    actual_primary_counts: Counter[str] = Counter()
+    expected_secondary_counts: Counter[str] = Counter()
+    actual_secondary_counts: Counter[str] = Counter()
+    review_bucket_counts: Counter[str] = Counter()
+
+    for record in records:
+        review = record.get("human_review") if isinstance(record.get("human_review"), Mapping) else {}
+        typical_error = str(review.get("typical_error") or "unspecified").strip() or "unspecified"
+        typical_error_counts[typical_error] += 1
+        source_type_counts[str(record.get("source_type") or "unknown")] += 1
+        expected_primary = predicted_categories(record)
+        expected_secondary = _formal_expected_secondary_labels(record) if include_secondary else set()
+        actual = actual_by_trace.get(_trace_id(record), {})
+        actual_primary = predicted_categories(actual)
+        actual_secondary = _formal_actual_secondary_labels(actual, expected_primary=expected_primary) if include_secondary else set()
+        for value in expected_primary or {"__negative__"}:
+            expected_primary_counts[value] += 1
+        for value in actual_primary or {"__negative__"}:
+            actual_primary_counts[value] += 1
+        for value in expected_secondary or {"__none__"}:
+            expected_secondary_counts[value] += 1
+        for value in actual_secondary or {"__none__"}:
+            actual_secondary_counts[value] += 1
+        review_bucket_counts[_review_bucket(actual)] += 1
+
+    return {
+        "status": "completed" if records else "no_records",
+        "record_count": len(records),
+        "by_typical_error": _counter_payload(typical_error_counts),
+        "by_source_type": _counter_payload(source_type_counts),
+        "by_expected_primary": _counter_payload(expected_primary_counts),
+        "by_actual_primary": _counter_payload(actual_primary_counts),
+        "by_expected_secondary": _counter_payload(expected_secondary_counts),
+        "by_actual_secondary": _counter_payload(actual_secondary_counts),
+        "by_review_bucket": _counter_payload(review_bucket_counts),
+    }
+
+
+def _classification_error_example_payload(
+    record: Mapping[str, Any],
+    actual: Mapping[str, Any],
+    *,
+    expected_primary: set[str],
+    actual_primary: set[str],
+    expected_secondary: set[str],
+    actual_secondary: set[str],
+) -> dict[str, Any]:
+    review = record.get("human_review") if isinstance(record.get("human_review"), Mapping) else {}
+    return {
+        "source_trace_id": _trace_id(record),
+        "source_name": record.get("source_name"),
+        "source_type": record.get("source_type"),
+        "expected_primary": sorted(expected_primary),
+        "actual_primary": sorted(actual_primary),
+        "expected_secondary": sorted(expected_secondary),
+        "actual_secondary": sorted(actual_secondary),
+        "review_bucket": _review_bucket(actual),
+        "manual_typical_error": review.get("typical_error"),
+        "text_excerpt": _text_excerpt(record),
+    }
+
+
+def _add_error_bucket_example(
+    buckets: dict[str, dict[str, Any]],
+    bucket_name: str,
+    example: Mapping[str, Any],
+    *,
+    limit: int,
+) -> None:
+    bucket = buckets[bucket_name]
+    bucket["count"] += 1
+    if len(bucket["examples"]) < max(0, int(limit)):
+        bucket["examples"].append(dict(example))
+
+
+def _formal_actual_secondary_labels(
+    classification: Mapping[str, Any],
+    *,
+    expected_primary: set[str],
+) -> set[str]:
+    labels = actual_secondary_labels(classification)
+    if not expected_primary:
+        return {label for label in labels if label not in NON_RISK_SECONDARY_LABELS}
+    return {label for label in labels if label not in NON_RISK_SECONDARY_LABELS}
 
 
 def _counter_payload(counter: Counter[str], *, limit: int | None = None) -> list[dict[str, Any]]:

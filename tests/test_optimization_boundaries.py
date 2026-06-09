@@ -1,4 +1,5 @@
 from scripts.build_heldout_eval import build_heldout_records
+from scripts import build_ocr_hardset
 from scripts.build_ocr_hardset import build_records as build_ocr_hardset_records
 from argparse import Namespace
 from collections import Counter
@@ -333,6 +334,252 @@ def test_manual_heldout_typical_errors_handle_tutorial_rebate_and_account_tool_c
     assert account_tool_hybrid.conflict_status == "CONFLICT_REVIEW"
     assert set(account_tool_hybrid.conflict_categories) >= {"账号交易", "工具交易"} - {account_tool_hybrid.risk_category}
     assert {"卡密交易", "接码注册"} <= {item["label"] for item in account_tool_hybrid.candidate_secondary_labels}
+
+
+def test_manual_heldout_calibration_handles_largest_remaining_error_buckets():
+    classifier = FineGrainedIntentClassifier()
+
+    private_domain_article = classifier.classify(
+        {
+            "trace_id": "remaining-fp-private-domain-article",
+            "source_name": "seeding_note_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "私域、公域、全域藏起的流量，足以让普通人理解数字化营销。"
+                "本文介绍什么是私域、公域、全域，以及三个领域代表什么、有何作用。"
+            ),
+            "matched_keywords": ["私域"],
+            "matched_themes": ["诈骗引流"],
+        }
+    )
+    finance_manual_order = classifier.classify(
+        {
+            "trace_id": "remaining-fp-finance-hand-order",
+            "source_name": "x_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "Ai量化相比手工单交易有哪些优势？AI按代码规则执行，"
+                "不会因为贪婪、恐惧、报复、侥幸等情绪频繁砍仓。"
+            ),
+            "matched_keywords": ["手工单"],
+            "matched_themes": ["刷单作弊"],
+        }
+    )
+    defensive_group_control = classifier.classify(
+        {
+            "trace_id": "remaining-fp-defensive-group-control",
+            "source_name": "tech_forum_blackgray_search",
+            "source_type": "Forum",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "ios 设备实现群控必须要越狱吗？最近部门在做黑产识别，"
+                "要求补齐一些识别群控特征的功能，想问问技术实现边界。"
+            ),
+            "matched_keywords": ["群控", "功能"],
+            "matched_themes": ["工具交易"],
+        }
+    )
+    xhs_traffic_tool = classifier.classify(
+        {
+            "trace_id": "remaining-fn-xhs-traffic-tool",
+            "source_name": "tech_forum_blackgray_search",
+            "source_type": "Forum",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "做了一个小工具：小红书加微引导图生成器，运营小红书账号涨粉后"
+                "需要引流到微信，避免直接发送微信号被识别，欢迎使用。"
+            ),
+            "matched_keywords": ["引流", "加微"],
+            "matched_themes": ["诈骗引流"],
+        }
+    )
+    group_sender_tool = classifier.classify(
+        {
+            "trace_id": "remaining-confusion-group-sender-tool",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "速邮群发工具免费版，支持统计、后台定时循环发送和群发模板，欢迎下载。",
+            "matched_keywords": ["群发"],
+            "matched_themes": ["众包任务"],
+        }
+    )
+    account_stock = classifier.classify(
+        {
+            "trace_id": "remaining-confusion-account-stock",
+            "source_name": "telegram_public_delivery:alanghome",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "协议号+直登号同时提供，自助下单，更多号段进机器人查看。"
+                "全球号段日常提供，库存随时变化，所有账号保一手、保首登。"
+            ),
+            "matched_keywords": ["协议号"],
+            "matched_themes": ["工具交易"],
+        }
+    )
+
+    assert private_domain_article.risk_category == "正常业务白噪声"
+    assert finance_manual_order.risk_category == "正常业务白噪声"
+    assert defensive_group_control.risk_category == "正常业务白噪声"
+
+    assert xhs_traffic_tool.risk_category == "诈骗引流"
+    assert xhs_traffic_tool.secondary_label == "私域导流"
+    assert group_sender_tool.risk_category == "工具交易"
+    assert group_sender_tool.secondary_label == "群控脚本"
+    assert account_stock.risk_category == "账号交易"
+    assert account_stock.secondary_label == "账号养号"
+
+
+def test_manual_heldout_calibration_clears_public_homonym_false_positive_clusters():
+    classifier = FineGrainedIntentClassifier()
+
+    ordinary_cases = [
+        {
+            "trace_id": "remaining-fp-ai-finance-hand-order",
+            "source_name": "x_blackgray_search",
+            "source_type": "IM",
+            "content_text": (
+                "AI量化相比手工单交易有哪些优势？AI完全按代码规则执行，"
+                "不会因为贪婪恐惧情绪频繁砍仓、追涨杀跌。"
+            ),
+            "matched_keywords": ["手工单"],
+            "matched_themes": ["刷单作弊"],
+        },
+        {
+            "trace_id": "remaining-fp-subjective-finance-hand-order",
+            "source_name": "x_blackgray_search",
+            "source_type": "IM",
+            "content_text": (
+                "为什么金融交易市场做主观手工单交易能长期稳定盈利的人很少？"
+                "手工单需要大量空仓等待，资金管理和仓位控制永远要做到位。"
+            ),
+            "matched_keywords": ["手工单"],
+            "matched_themes": ["刷单作弊"],
+        },
+        {
+            "trace_id": "remaining-fp-m1-finance-hand-order",
+            "source_name": "x_blackgray_search",
+            "source_type": "IM",
+            "content_text": "今天认识大佬，每天对着M1图刷手工单，今天做了7000多美金，每次0.01-0.05不等。",
+            "matched_keywords": ["手工单"],
+            "matched_themes": ["刷单作弊"],
+        },
+        {
+            "trace_id": "remaining-fp-remote-phone-control",
+            "source_name": "tech_forum_blackgray_search",
+            "source_type": "Forum",
+            "content_text": (
+                "V2EX 问答：有几台安卓手机放家里，开个群控软件与远程桌面软件，"
+                "在其他地方远程到家里操作手机，这需求买迷你 Windows 主机合适吗？"
+            ),
+            "matched_keywords": ["群控", "软件"],
+            "matched_themes": ["工具交易"],
+        },
+        {
+            "trace_id": "remaining-fp-private-domain-reflection",
+            "source_name": "tech_forum_blackgray_search",
+            "source_type": "Forum",
+            "content_text": (
+                "V2EX 分享 2024 年搞过的副业，反思当时知道应该去小红书留下钩子"
+                "转化到私域来，但就是没去实际操作，大家一起学习。"
+            ),
+            "matched_keywords": ["私域"],
+            "matched_themes": ["诈骗引流"],
+        },
+        {
+            "trace_id": "remaining-fp-public-sms-fee",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "content_text": (
+                "群发国际短信被扣费，如何停止继续扣钱？验证时不知道这是群发的国际短信，"
+                "后面话费被扣了，想投诉处理。"
+            ),
+            "matched_keywords": ["群发"],
+            "matched_themes": ["众包任务"],
+        },
+        {
+            "trace_id": "remaining-fp-health-metaphor",
+            "source_name": "x_blackgray_search",
+            "source_type": "IM",
+            "content_text": (
+                "你以为侧躺玩手机是放松，其实是在给身体分期付款。"
+                "30岁前身体替你垫付，30岁后开始连本带利催收，颈椎病和肩周炎不是老了才得。"
+            ),
+            "matched_keywords": ["垫付"],
+            "matched_themes": ["刷单作弊"],
+        },
+        {
+            "trace_id": "remaining-fp-payment-release-notes",
+            "source_name": "x_blackgray_search",
+            "source_type": "IM",
+            "content_text": (
+                "EPUSDT v1.0.0 正式发布，增加补单链上校验，支持校验收款地址、金额、币种、"
+                "确认数以及交易时间，提升订单安全性与商户系统稳定性。"
+            ),
+            "matched_keywords": ["补单"],
+            "matched_themes": ["刷单作弊"],
+        },
+        {
+            "trace_id": "remaining-fp-consumer-sms-autofill",
+            "source_name": "seeding_note_blackgray_search",
+            "source_type": "Social",
+            "content_text": (
+                "别再翻短信找验证码了，三步设置让它直接弹窗。智能手机系统内置验证码自动识别"
+                "与填充功能，登录账号和支付时可一键填入短信验证码。"
+            ),
+            "matched_keywords": ["验证码"],
+            "matched_themes": ["接码"],
+        },
+        {
+            "trace_id": "remaining-fp-community-lagroup-complaint",
+            "source_name": "x_blackgray_search",
+            "source_type": "IM",
+            "content_text": (
+                "有的人为什么喜欢疯狂拉群，因为没有群友它可能都不知道 crypto、美股、A股是啥，"
+                "一个东西能半个月问八百遍。"
+            ),
+            "matched_keywords": ["拉群"],
+            "matched_themes": ["众包任务"],
+        },
+        {
+            "trace_id": "remaining-fp-game-card-order-guide",
+            "source_name": "tieba_task_fraud_search",
+            "source_type": "Social",
+            "content_text": (
+                "如何利用卡单技巧避免游戏价格暴涨。教程贴：点击继续后显示支付错误，"
+                "再切换 steam 钱包，说明已经成功了一半。"
+            ),
+            "matched_keywords": ["卡单"],
+            "matched_themes": ["刷单作弊"],
+        },
+    ]
+
+    for record in ordinary_cases:
+        classification = classifier.classify(record)
+
+        assert classification.risk_category == "正常业务白噪声", record["trace_id"]
+        assert classification.secondary_label == "低相关", record["trace_id"]
+        assert classification.review_required is False, record["trace_id"]
+
+    monetized_private_domain = classifier.classify(
+        {
+            "trace_id": "remaining-guard-private-domain-monetized",
+            "source_name": "x_blackgray_search",
+            "source_type": "IM",
+            "content_text": (
+                "收益拆解：私域转化、精准用户导流，后端卖课程/工具/服务，"
+                "代运营分成，这是月入10w+的主要来源。"
+            ),
+            "matched_keywords": ["导流", "私域"],
+            "matched_themes": ["诈骗引流"],
+        }
+    )
+
+    assert monetized_private_domain.risk_category == "诈骗引流"
+    assert monetized_private_domain.secondary_label == "私域导流"
 
 
 def test_manual_heldout_health_private_domain_public_ad_is_normal_noise():
@@ -752,6 +999,171 @@ def test_manual_heldout_game_tanking_pull_guide_is_normal_noise():
 
     assert classification.risk_category == "正常业务白噪声"
     assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_manual_heldout_game_service_sms_verification_is_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "heldout-battlenet-sms-verification",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "战网短信验证问题解答及更改方法。将收到的短信验证码填入，点击验证密码确认绑定。"
+                "哪些情况需要输入短信验证码：当您无法登录战网通行证，申请服务就需要输入短信验证码帮助修复账号。"
+            ),
+            "matched_keywords": ["验证码", "短信验证码"],
+            "matched_themes": ["接码"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_manual_heldout_brand_private_domain_article_is_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "heldout-brand-private-domain-article",
+            "source_name": "seeding_note_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "全渠道导流闭环：毛戈平 378 家专柜如何成为私域流量池。"
+                "文章详细拆解品牌通过线下专柜与线上私域的全渠道闭环玩法，实现品牌增长。"
+            ),
+            "matched_keywords": ["导流", "私域"],
+            "matched_themes": ["诈骗引流"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_manual_heldout_account_inventory_self_service_is_account_cultivation():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "heldout-account-stock-self-service",
+            "source_name": "telegram_public_delivery:alanghome",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "大部分号码文件会同时提供协议号session+json和直登号Tdata格式，自助下单取号。"
+                "以下为部分号段展示，全球号段日常提供，库存情况随时变化。"
+                "自助取号机器人 @alangtg_bot，客服咨询，所有账号保一手、保首登，发号即下架。"
+            ),
+            "matched_keywords": ["协议号"],
+            "matched_themes": ["工具交易"],
+        }
+    )
+
+    assert classification.risk_category == "账号交易"
+    assert classification.secondary_label == "账号养号"
+    assert "工具交易" not in classification.conflict_categories
+
+
+def test_manual_heldout_account_autosale_aftercare_is_account_cultivation():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "heldout-account-autosale-aftercare",
+            "source_name": "telegram_public_delivery:alanghome",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "请仔细阅读售后相关内容，在可以接受的基础上再进行购买，避免纠纷。"
+                "保首登即为保第一次登录，死号是无法登录的。阿浪的自动售号机器人自带筛活功能，"
+                "从下订单开始自动筛查号码状态并按死号数量退款至账户余额。"
+            ),
+            "matched_keywords": [],
+            "matched_themes": [],
+        }
+    )
+
+    assert classification.risk_category == "账号交易"
+    assert classification.secondary_label == "账号养号"
+
+
+def test_manual_heldout_game_automation_vehicle_import_is_low_relevance():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "heldout-game-automation-vehicle-import",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "automation导出的车能重新导入吗？车辆文件压缩包里面有一个格式叫.car的文件，"
+                "打开游戏在车辆编辑器里选择文件夹导入。"
+            ),
+            "matched_keywords": [],
+            "matched_themes": [],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_manual_heldout_v2ex_group_control_robot_is_tool_workflow():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "heldout-v2ex-group-control-robot",
+            "source_name": "tech_forum_blackgray_search",
+            "source_type": "Forum",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "个人微信号群控机器人 - V2EX。Vbot 基于微信 web API 实现机器人，扫码加好友，"
+                "验证输入后即可自动加为好友并且拉入 vbot 群。可加 Q 群 492548647 了解开放时间。"
+            ),
+            "matched_keywords": ["群控", "机器人"],
+            "matched_themes": ["工具交易"],
+        }
+    )
+
+    assert classification.risk_category == "工具交易"
+    assert classification.secondary_label == "群控脚本"
+
+
+def test_manual_heldout_ordinary_community_group_invite_is_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "heldout-community-group-invite",
+            "source_name": "x_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "五月假期嗨皮！想进小圈群聊的扣1，我逐个拉群。群里主打小圈交流、学习成长、找同好，大家文明发言。",
+            "matched_keywords": ["拉群"],
+            "matched_themes": ["诈骗引流", "众包任务"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_manual_heldout_polymarket_ref_bot_rebate_auto_resolves():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "heldout-polymarket-ref-bot-rebate",
+            "source_name": "x_blackgray_search",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "Polymarket 上的自动化套利策略被营销号包装，官方入口+ref码和 PolyCop_BOT 跟单机器人，"
+                "目的是拉人注册、用他们的 bot、赚返佣。"
+            ),
+            "matched_keywords": ["返佣", "拉人"],
+            "matched_themes": ["刷单作弊", "众包任务"],
+        }
+    )
+
+    assert classification.risk_category == "诈骗引流"
+    assert classification.secondary_label == "返利引流"
     assert classification.review_required is False
 
 
@@ -1247,6 +1659,25 @@ def test_live_source_smoke_attempts_until_each_class_has_min_records(monkeypatch
     assert all(row["live_smoke_attempted"] for row in report["sources"])
 
 
+def test_live_source_smoke_marks_zero_record_live_attempts_incomplete(monkeypatch):
+    def fake_collect(source, *, max_records=5, timeout_seconds=10.0):
+        return {
+            "collected_count": 0,
+            "filtered_count": 0,
+            "duplicate_rate": None,
+            "high_risk_candidate_count": 0,
+            "failure_reason": "login_required",
+            "live_smoke_attempted": True,
+        }
+
+    monkeypatch.setattr("scripts.generate_source_smoke_report._collect_live_metrics", fake_collect)
+
+    report = build_report(load_sources("config/intel_sources.public.yaml"), network_enabled=True)
+
+    assert report["status"] == "incomplete_live_evidence"
+    assert any(not item["target_met"] and item["collected_count"] == 0 for item in report["per_smoke_group_evidence"])
+
+
 def test_authorized_live_source_smoke_collects_loopback_feed():
     report = run_live_source_smoke()
 
@@ -1263,6 +1694,12 @@ def test_authorized_live_source_smoke_collects_loopback_feed():
     assert set(report["covered_smoke_groups"]) == set(report["required_smoke_groups"])
     assert set(report["covered_source_classes"]) == {"im_or_group", "social_or_forum", "vertical_or_technical"}
     assert set(report["source_evidence_by_group"]) == set(report["required_smoke_groups"])
+    assert {group: len(rows) for group, rows in report["source_evidence_by_group"].items()} == {
+        "im_or_group": 3,
+        "public_account_or_article": 3,
+        "social_or_forum": 3,
+        "vertical_or_technical": 3,
+    }
     for group, rows in report["source_evidence_by_group"].items():
         assert rows, group
         assert rows[0]["source_name"]
@@ -1270,6 +1707,13 @@ def test_authorized_live_source_smoke_collects_loopback_feed():
         assert rows[0]["raw_body"] or rows[0]["hydrated_body"]
         assert rows[0]["capture_snapshot_uri"]
         assert rows[0]["raw_payload_uri"]
+        for row in rows:
+            assert row["source_url"]
+            assert row["crawl_time"]
+            assert row["cleaning_reason"] == "retained_after_authorized_keyword_filter"
+            assert row["entity_source_snippets"]
+            assert all(item["source_snippet"] for item in row["entity_source_snippets"])
+            assert all(item["entity_type"] != "source_text" for item in row["entity_source_snippets"])
     assert report["source_evidence_by_group"]["public_account_or_article"][0]["source_class"] == "social_or_forum"
     assert all(key in report["sources"][0] for key in ["collected_count", "filtered_count", "duplicate_rate", "high_risk_candidate_count", "failure_reason"])
     assert report["fetched_count"] >= 5
@@ -1497,6 +1941,10 @@ def test_ocr_hardset_builder_creates_labeled_image_text_rows(tmp_path):
     }
     assert {"contact", "tool_name", "invite_code"} <= entity_types
     assert any(entity["entity_type"] == "url" for record in records for entity in record["expected_entities"])
+    assert {record["image_kind"] for record in records} == {"chat", "poster", "qr", "screenshot"}
+    report = build_ocr_hardset.build_report(records, output_path=tmp_path / "ocr.jsonl")
+    assert report["image_kind_coverage"]["complete"] is True
+    assert report["image_kind_coverage"]["missing_kinds"] == []
 
 
 def test_collection_source_class_prefers_structured_vertical_type_over_name_text():

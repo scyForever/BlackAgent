@@ -26,6 +26,7 @@ from src.cleaner.text_filter import normalize_text
 from src.collector import HTTPFeedCollector, HTTPFeedConfig
 from src.collector.base_collector import model_dump
 from src.collector.source_metadata import source_quota_groups_for_record
+from src.enhancement.text_intelligence import AdvancedEntityExtractor
 from src.pipeline import IntelligencePipeline
 
 
@@ -52,7 +53,7 @@ SOURCE_CLASS_SCENARIOS = (
             },
             {
                 "source_url": "https://t.me/authorized_live_smoke/3",
-                "full_text": "普通安全研究讨论，不含交易招募",
+                "full_text": "群控安全研究讨论，参考 https://safety.example.test/im-guide，不含交易招募",
                 "capture_snapshot_uri": "loopback://snapshots/im-feed/message-3.json",
                 "raw_payload_uri": "loopback://payloads/im-feed/message-3.json",
             },
@@ -80,7 +81,7 @@ SOURCE_CLASS_SCENARIOS = (
             },
             {
                 "source_url": "https://forum.example.test/thread/authorized-live-smoke-3",
-                "full_text": "平台公告：反诈安全通告与防护建议",
+                "full_text": "平台公告：私域风险反诈安全通告，参考 https://safety.example.test/forum-guide",
                 "capture_snapshot_uri": "loopback://snapshots/forum-feed/thread-3.html",
                 "raw_payload_uri": "loopback://payloads/forum-feed/thread-3.json",
             },
@@ -108,7 +109,7 @@ SOURCE_CLASS_SCENARIOS = (
             },
             {
                 "source_url": "https://market.example.test/item/authorized-live-smoke-3",
-                "full_text": "站点帮助文档：合规账号安全设置",
+                "full_text": "站点帮助文档：合规账号安全设置，参考 https://safety.example.test/account-guide",
                 "capture_snapshot_uri": "loopback://snapshots/vertical-feed/item-3.html",
                 "raw_payload_uri": "loopback://payloads/vertical-feed/item-3.json",
             },
@@ -143,7 +144,7 @@ SOURCE_CLASS_SCENARIOS = (
             },
             {
                 "source_url": "https://mp.weixin.qq.com/s/authorized-live-smoke-benign-article",
-                "full_article_body": "公众号文章：反诈宣传提醒，不提供交易方式。",
+                "full_article_body": "公众号文章：接码风险反诈宣传提醒，参考 https://safety.example.test/article-guide，不提供交易方式。",
                 "capture_snapshot_uri": "loopback://snapshots/public-account-article-feed/article-3.html",
                 "raw_payload_uri": "loopback://payloads/public-account-article-feed/article-3.json",
             },
@@ -367,6 +368,7 @@ def _source_report(
 def _source_evidence_from_record(record: dict[str, Any], *, scenario: dict[str, Any]) -> dict[str, Any]:
     raw_body = str(record.get("content_text") or record.get("raw_text") or record.get("full_text") or "")
     hydrated_body = str(record.get("full_article_body") or record.get("hydrated_body") or "")
+    evidence_text = hydrated_body or raw_body
     url = str(record.get("source_url") or scenario.get("source_url") or "")
     if not url:
         url = str(_extract_first_url(raw_body) or record.get("raw_payload_uri") or "")
@@ -392,8 +394,11 @@ def _source_evidence_from_record(record: dict[str, Any], *, scenario: dict[str, 
         "hydrated_body": hydrated_body,
         "raw_body": raw_body,
         "raw_snippet": raw_body[:500] or hydrated_body[:500],
+        "crawl_time": str(record.get("crawl_time") or record.get("publish_time") or ""),
         "capture_snapshot_uri": str(record.get("capture_snapshot_uri") or ""),
         "raw_payload_uri": str(record.get("raw_payload_uri") or ""),
+        "cleaning_reason": str(record.get("cleaning_reason") or "retained_after_authorized_keyword_filter"),
+        "entity_source_snippets": _entity_source_snippets(record, evidence_text),
     }
 
 
@@ -442,6 +447,39 @@ def _extract_first_url(text: str) -> str:
         if token.startswith(("http://", "https://")):
             return token.rstrip("，。,.")
     return ""
+
+
+def _entity_source_snippets(record: dict[str, Any], text: str) -> list[dict[str, Any]]:
+    if not text:
+        return []
+    extraction_record = {**record, "content_text": text}
+    rows: list[dict[str, Any]] = []
+    for entity in AdvancedEntityExtractor().extract(extraction_record)[:5]:
+        data = entity.model_dump() if hasattr(entity, "model_dump") else dict(entity)
+        start = _safe_int(data.get("start_offset"))
+        end = _safe_int(data.get("end_offset"))
+        if start is None or end is None or start < 0 or end <= start or start >= len(text):
+            snippet = text[:240]
+        else:
+            snippet = text[max(0, start - 40) : min(len(text), end + 40)]
+        rows.append(
+            {
+                "entity_type": data.get("entity_type"),
+                "raw_value": data.get("entity_value"),
+                "normalized_value": data.get("normalized_value"),
+                "source_snippet": snippet,
+            }
+        )
+    if rows:
+        return rows
+    return []
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _project_path(path: str | Path) -> Path:

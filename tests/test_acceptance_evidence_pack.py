@@ -45,6 +45,8 @@ def test_build_acceptance_evidence_pack_joins_classification_entities_and_clues(
                 "entity_type": "contact",
                 "normalized_value": "Telegram:risk01",
                 "confidence": 1.0,
+                "start": 12,
+                "end": 21,
             }
         ],
         entities_path,
@@ -82,6 +84,8 @@ def test_build_acceptance_evidence_pack_joins_classification_entities_and_clues(
     assert rows[0]["clean_text"] == "群控脚本引流 联系 TG:risk01"
     assert rows[0]["classification"]["risk_category"] == "工具交易"
     assert rows[0]["entities"][0]["normalized_value"] == "Telegram:risk01"
+    assert rows[0]["entities"][0]["source_snippet"] == "原始帖：群控脚本引流，联系 TG:risk01"
+    assert rows[0]["entities"][0]["source_url"] is None
     assert rows[0]["clue_chain"][0]["clue_id"] == "clue-1"
     assert rows[0]["review_chain"]["status"] == "linked_to_cross_source_clue"
     assert rows[0]["evidence_completeness"]["has_raw_snippet"] is True
@@ -236,6 +240,15 @@ def test_build_acceptance_evidence_pack_preserves_full_source_evidence_and_clean
                 "attachments": [
                     {"kind": "image", "uri": "s3://bucket/attachments/trace-full-1.png"},
                 ],
+                "image_evidence": [
+                    {
+                        "image_kind": "poster",
+                        "original_image_uri": "s3://bucket/images/trace-full.png",
+                        "image_sha256": "abc123",
+                        "ocr_text": "OCR extracted risk text",
+                        "ocr_engine_provider": "tesseract",
+                    }
+                ],
             }
         ],
         classifications=[],
@@ -279,6 +292,15 @@ def test_build_acceptance_evidence_pack_preserves_full_source_evidence_and_clean
                 {"kind": "image", "uri": "s3://bucket/attachments/trace-full-1.png"},
             ],
         },
+        "image_evidence": [
+            {
+                "image_kind": "poster",
+                "original_image_uri": "s3://bucket/images/trace-full.png",
+                "image_sha256": "abc123",
+                "ocr_text": "OCR extracted risk text",
+                "ocr_engine_provider": "tesseract",
+            }
+        ],
         "cleaning_drop": {
             "source_trace_id": "trace-full",
             "reason": "duplicate",

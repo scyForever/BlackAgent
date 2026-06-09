@@ -826,6 +826,84 @@ def test_classification_review_load_reports_review_buckets():
     }
 
 
+def test_classification_error_buckets_split_false_positive_false_negative_and_secondary_confusion():
+    from scripts.evaluate_pipeline import evaluate_classification
+
+    records = [
+        {
+            "trace_id": "fp",
+            "content_text": "普通验证码自动填充文章",
+            "expected_risk_categories": [],
+            "expected_secondary_labels": ["低相关"],
+            "human_review": {"typical_error": "false_positive"},
+            "source_type": "Social",
+        },
+        {
+            "trace_id": "fn",
+            "content_text": "群控脚本 接码平台 联系 TG:risk",
+            "expected_risk_categories": ["工具交易"],
+            "expected_secondary_labels": ["群控脚本"],
+            "human_review": {"typical_error": "seed_missing"},
+            "source_type": "IM",
+        },
+        {
+            "trace_id": "secondary-confusion",
+            "content_text": "交易所返佣开户链接",
+            "expected_risk_categories": ["诈骗引流"],
+            "expected_secondary_labels": ["返利引流"],
+            "human_review": {"typical_error": "category_confusion"},
+            "source_type": "Social",
+        },
+        {
+            "trace_id": "secondary-extra",
+            "content_text": "账号出售",
+            "expected_risk_categories": ["账号交易"],
+            "expected_secondary_labels": [],
+            "human_review": {"typical_error": "secondary_missing"},
+            "source_type": "Forum",
+        },
+    ]
+    actual = [
+        {"source_trace_id": "fp", "risk_category": "诈骗引流", "secondary_label": "私域导流"},
+        {"source_trace_id": "fn", "risk_category": "正常业务白噪声", "secondary_label": "低相关"},
+        {"source_trace_id": "secondary-confusion", "risk_category": "诈骗引流", "secondary_label": "私域导流"},
+        {"source_trace_id": "secondary-extra", "risk_category": "账号交易", "secondary_label": "实名账号买卖"},
+    ]
+
+    metrics = evaluate_classification(records, actual)
+    buckets = metrics["error_buckets"]
+    manual = metrics["manual_review_error_analysis"]
+
+    assert buckets["false_positive"]["count"] == 1
+    assert buckets["false_negative"]["count"] == 1
+    assert buckets["secondary_confusion"]["count"] == 1
+    assert buckets["secondary_extra"]["count"] == 1
+    assert buckets["secondary_missing"]["count"] == 1
+    assert buckets["primary_confusion"]["count"] == 0
+    assert buckets["false_positive"]["examples"][0]["source_trace_id"] == "fp"
+    assert buckets["secondary_confusion"]["examples"][0]["expected_secondary"] == ["返利引流"]
+    assert manual["by_typical_error"][0]["value"] == "false_positive"
+    assert manual["by_source_type"][0]["value"] in {"Social", "IM", "Forum"}
+
+
+def test_typical_errors_use_formal_secondary_labels_for_negative_gold():
+    from scripts.evaluate_pipeline import evaluate_classification
+
+    metrics = evaluate_classification(
+        [
+            {
+                "trace_id": "negative-low-relevance",
+                "content_text": "普通验证码教程",
+                "expected_risk_categories": [],
+                "expected_secondary_labels": ["低相关"],
+            }
+        ],
+        [{"source_trace_id": "negative-low-relevance", "risk_category": "正常业务白噪声", "secondary_label": "低相关"}],
+    )
+
+    assert metrics["typical_errors"] == []
+
+
 def test_classification_review_load_recomputes_stale_review_bucket_for_manual_review_noise():
     from scripts.evaluate_pipeline import evaluate_classification
 
@@ -847,6 +925,41 @@ def test_classification_review_load_recomputes_stale_review_bucket_for_manual_re
 
     assert buckets == {"human_review_required": 1}
     assert final_buckets == {"human_review_required": 1}
+
+
+def test_quality_gate_failures_include_classification_review_rate():
+    report = {
+        "classification_f1": 1.0,
+        "primary_classification_f1": 1.0,
+        "secondary_classification_f1": 1.0,
+        "hierarchical_classification_f1": 1.0,
+        "entity_f1": 1.0,
+        "false_positive_rate": 0.0,
+        "llm_calls_per_1000_records": 0.0,
+        "classification_review_rate": 0.25,
+        "clue": {
+            "overall": {"recall": 1.0},
+            "object_clue_eval": {"overall": {"recall": 1.0}},
+            "clue_overgeneration_ratio": 1.0,
+            "review_load_per_100_records": 0.0,
+        },
+    }
+    args = Namespace(
+        min_classification_f1=None,
+        min_primary_classification_f1=None,
+        min_secondary_classification_f1=None,
+        min_hierarchical_classification_f1=None,
+        min_entity_f1=None,
+        max_hard_negative_fpr=None,
+        max_llm_calls_per_1000=None,
+        min_clue_recall=None,
+        min_object_clue_recall=None,
+        max_clue_overgeneration_ratio=None,
+        max_review_load_per_100_records=None,
+        max_classification_review_rate=0.2,
+    )
+
+    assert quality_gate_failures(report, args) == ["classification_review_rate_above_threshold:0.25>0.2"]
 
 
 def test_difficult_evaluation_sets_exist_and_can_be_loaded():

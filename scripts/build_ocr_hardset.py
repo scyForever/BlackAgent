@@ -25,6 +25,8 @@ from src.ocr import BitmapGlyphOCREngine, OCRImageTextAdapter, TesseractCliOCREn
 
 DEFAULT_OCR_ENGINE_PROVIDER = "bitmap_glyph"
 OCR_ENGINE_CHOICES = ("bitmap_glyph", "tesseract", "bitmap_glyph,tesseract")
+REQUIRED_IMAGE_KINDS = ("chat", "poster", "qr", "screenshot")
+IMAGE_KIND_SEQUENCE = ("chat", "poster", "qr", "screenshot")
 
 
 SEED_CASES = (
@@ -44,7 +46,7 @@ SEED_CASES = (
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build BlackAgent OCR/image-text hard set.")
     parser.add_argument("--output", default="tests/evaluation/ocr_image_text_hardset.jsonl")
-    parser.add_argument("--image-dir", default="data/ocr_hardset_images")
+    parser.add_argument("--image-dir", default="tests/evaluation/ocr_hardset_images")
     parser.add_argument("--report", default="data/ocr_hardset_report.json")
     parser.add_argument(
         "--manifest",
@@ -67,7 +69,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def build_records(
     *,
     count: int = 20,
-    image_dir: str | Path = "data/ocr_hardset_images",
+    image_dir: str | Path = "tests/evaluation/ocr_hardset_images",
     ocr_engine: str = DEFAULT_OCR_ENGINE_PROVIDER,
     tesseract_executable: str = "tesseract",
     tesseract_language: str = "chi_sim+eng",
@@ -85,9 +87,10 @@ def build_records(
     for index in range(max(1, int(count))):
         seed = SEED_CASES[index % len(SEED_CASES)]
         variant = index // len(SEED_CASES) + 1
+        image_kind = IMAGE_KIND_SEQUENCE[index % len(IMAGE_KIND_SEQUENCE)]
         text = str(seed["text"])
         image_path = render_demo_pbm(text, target_dir / f"ocr_hard_{index + 1:03d}.pbm")
-        caption = f"{seed['caption']} 变体{variant} 暗号 code:{index + 1:03d}"
+        caption = f"{image_kind}样本：{seed['caption']} 变体{variant} 暗号 code:{index + 1:03d}"
         raw_record = {
             "trace_id": f"ocr-hard-{index + 1:03d}",
             "source_name": "local-authorized-ocr-hardset",
@@ -95,26 +98,15 @@ def build_records(
             "legal_basis": "INTERNAL_AUTHORIZED_SOURCE",
             "caption": caption,
             "image_path": str(image_path),
+            "image_kind": image_kind,
         }
-        ocr = adapter.extract(raw_record)
+        materialized = _relativize_generated_image_paths(adapter.materialize_record(raw_record))
         manual_labels = _manual_labels(text=text, caption=caption)
         records.append(
             {
-                **raw_record,
-                "source_trace_id": raw_record["trace_id"],
-                "content_text": ocr.text,
-                "ocr_text": ocr.text,
-                "content_modality": ocr.content_modality,
-                "ocr_status": ocr.status,
-                "ocr_sources": ocr.sources,
-                "ocr_errors": ocr.errors,
+                **materialized,
+                "source_trace_id": materialized["trace_id"],
                 "ocr_engine_provider": engine_provider,
-                "ocr_engine_outputs": ocr.engine_outputs,
-                "ocr_engine_latencies_ms": ocr.engine_latencies_ms,
-                "ocr_engine_costs": ocr.engine_costs,
-                "ocr_confidence": ocr.ocr_confidence,
-                "ocr_engine_confidences": ocr.ocr_engine_confidences,
-                "ocr_confidence_details": ocr.ocr_confidence_details,
                 "expected_image_text": text,
                 "expected_risk_categories": [seed["risk"]],
                 "expected_secondary_labels": [seed["secondary"]],
@@ -201,6 +193,7 @@ def build_report(
         "ocr_status_counts": _counts(record.get("ocr_status") for record in records),
         "ocr_engine_provider_counts": _counts(record.get("ocr_engine_provider") for record in records),
         "ocr_quality_metrics": _ocr_quality_metrics(records),
+        "image_kind_coverage": _image_kind_coverage(records),
         "ocr_engine_comparison": {
             "configured_engines": _configured_engine_providers(records),
             "unavailable_engines": _unavailable_engine_summaries(records),
@@ -299,6 +292,18 @@ def _counts(values: Iterable[Any]) -> dict[str, int]:
         key = str(value or "unknown")
         counts[key] = counts.get(key, 0) + 1
     return counts
+
+
+def _image_kind_coverage(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    present = sorted({str(record.get("image_kind") or "").strip() for record in records if str(record.get("image_kind") or "").strip()})
+    required = sorted(REQUIRED_IMAGE_KINDS)
+    missing = [kind for kind in required if kind not in set(present)]
+    return {
+        "required_kinds": required,
+        "present_kinds": present,
+        "missing_kinds": missing,
+        "complete": not missing,
+    }
 
 
 def _configured_engine_providers(records: Iterable[dict[str, Any]]) -> list[str]:
@@ -686,6 +691,28 @@ def _display_path(path: str | Path) -> str:
     if target.is_relative_to(PROJECT_ROOT):
         return str(target.relative_to(PROJECT_ROOT))
     return str(target)
+
+
+def _relativize_generated_image_paths(record: dict[str, Any]) -> dict[str, Any]:
+    for field_name in ("image_path", "screenshot_path", "file_path"):
+        if record.get(field_name):
+            record[field_name] = _portable_path(record[field_name])
+    evidence_items = record.get("image_evidence")
+    if isinstance(evidence_items, list):
+        for evidence in evidence_items:
+            if not isinstance(evidence, dict):
+                continue
+            for field_name in ("image_path", "original_image_uri"):
+                if evidence.get(field_name):
+                    evidence[field_name] = _portable_path(evidence[field_name])
+    return record
+
+
+def _portable_path(value: Any) -> str:
+    target = _project_path(str(value))
+    if target.is_relative_to(PROJECT_ROOT):
+        return str(target.relative_to(PROJECT_ROOT))
+    return str(value)
 
 
 def _project_path(path: str | Path) -> Path:

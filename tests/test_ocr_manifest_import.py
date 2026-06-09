@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
+from pathlib import Path
 
 from scripts import build_ocr_hardset
-from src.ocr import TesseractCliOCREngine, render_demo_pbm
+from src.ocr import BitmapGlyphOCREngine, OCRImageTextAdapter, TesseractCliOCREngine, render_demo_pbm
 
 
 def test_ocr_hardset_imports_authorized_manifest_rows(tmp_path, monkeypatch):
@@ -60,6 +62,87 @@ def test_ocr_hardset_imports_authorized_manifest_rows(tmp_path, monkeypatch):
     assert saved_report["run_type"] == "build_ocr_manifest_hardset"
     assert saved_report["record_count"] == 1
     assert saved_report["claim_boundary"]
+
+
+def test_ocr_materialized_record_binds_original_image_hash_and_source_metadata(tmp_path):
+    image_path = render_demo_pbm("TG:OCR013", tmp_path / "chat.pbm")
+    adapter = build_ocr_hardset.OCRImageTextAdapter(engine=build_ocr_hardset.BitmapGlyphOCREngine())
+
+    record = adapter.materialize_record(
+        {
+            "trace_id": "image-bind-1",
+            "source_name": "authorized-chat-image",
+            "source_type": "Image",
+            "source_url": "https://evidence.example/chat/1",
+            "crawl_time": "2026-06-09T08:00:00+08:00",
+            "raw_payload_uri": "s3://payloads/chat-1.json",
+            "capture_snapshot_uri": "s3://snapshots/chat-1.png",
+            "image_path": str(image_path),
+            "image_kind": "chat",
+        }
+    )
+
+    evidence = record["image_evidence"][0]
+    assert evidence["image_kind"] == "chat"
+    assert evidence["image_path"] == str(image_path)
+    assert evidence["original_image_uri"] == str(image_path)
+    assert evidence["image_sha256"]
+    assert evidence["ocr_text"] == "TG:OCR013"
+    assert evidence["ocr_engine_provider"] == "image_path"
+    assert evidence["ocr_confidence"] == 1.0
+    assert evidence["source_url"] == "https://evidence.example/chat/1"
+    assert evidence["crawl_time"] == "2026-06-09T08:00:00+08:00"
+    assert evidence["raw_payload_uri"] == "s3://payloads/chat-1.json"
+    assert evidence["capture_snapshot_uri"] == "s3://snapshots/chat-1.png"
+
+
+def test_generated_ocr_hardset_rows_bind_original_image_evidence(tmp_path):
+    records = build_ocr_hardset.build_records(count=4, image_dir=tmp_path)
+
+    assert len(records) == 4
+    for record in records:
+        evidence = record["image_evidence"][0]
+        assert evidence["image_kind"] in {"chat", "poster", "qr", "screenshot"}
+        assert evidence["image_path"] == record["image_path"]
+        assert evidence["original_image_uri"] == record["image_path"]
+        assert evidence["image_sha256"]
+        assert evidence["ocr_text"] == record["expected_image_text"]
+        assert evidence["ocr_engine_provider"] == "bitmap_glyph"
+
+
+def test_ocr_image_evidence_binds_each_image_to_its_engine_text(tmp_path):
+    first_image = render_demo_pbm("TG:OCR101", tmp_path / "first.pbm")
+    second_image = render_demo_pbm("TG:OCR102", tmp_path / "second.pbm")
+    adapter = OCRImageTextAdapter(engine=BitmapGlyphOCREngine())
+
+    record = adapter.materialize_record(
+        {
+            "trace_id": "multi-image-bind",
+            "caption": "caption context should stay in aggregate text only",
+            "images": [
+                {"image_path": str(first_image), "image_kind": "chat"},
+                {"image_path": str(second_image), "image_kind": "poster"},
+            ],
+        }
+    )
+
+    assert "caption context" in record["ocr_text"]
+    assert "TG:OCR101" in record["ocr_text"]
+    assert "TG:OCR102" in record["ocr_text"]
+    assert record["image_evidence"][0]["ocr_text"] == "TG:OCR101"
+    assert record["image_evidence"][1]["ocr_text"] == "TG:OCR102"
+
+
+def test_generated_ocr_hardset_uses_repo_relative_image_paths():
+    image_dir = Path("tests/evaluation/.tmp_ocr_portability")
+    try:
+        records = build_ocr_hardset.build_records(count=1, image_dir=image_dir)
+        evidence = records[0]["image_evidence"][0]
+        assert not Path(records[0]["image_path"]).is_absolute()
+        assert not Path(evidence["image_path"]).is_absolute()
+        assert evidence["original_image_uri"] == evidence["image_path"]
+    finally:
+        shutil.rmtree(image_dir, ignore_errors=True)
 
 
 def test_tesseract_engine_passes_custom_tessdata_prefix(tmp_path, monkeypatch):
@@ -127,6 +210,39 @@ def test_ocr_report_records_engine_provider_and_expectation_quality_metrics(tmp_
         "TesseractCliOCREngine": "not_configured",
         "cloud_ocr_callable": "not_configured",
     }
+
+
+def test_ocr_manifest_report_tracks_required_image_kind_coverage(tmp_path):
+    records = build_ocr_hardset.build_records_from_manifest(
+        _write_manifest(
+            tmp_path / "manifest.jsonl",
+            [
+                {
+                    "trace_id": "shot-screenshot",
+                    "image_path": str(render_demo_pbm("TG:OCR014", tmp_path / "screenshot.pbm")),
+                    "image_kind": "screenshot",
+                    "expected_image_text": "TG:OCR014",
+                },
+                {
+                    "trace_id": "shot-poster",
+                    "image_path": str(render_demo_pbm("TG:OCR015", tmp_path / "poster.pbm")),
+                    "image_kind": "poster",
+                    "expected_image_text": "TG:OCR015",
+                },
+            ],
+        )
+    )
+
+    report = build_ocr_hardset.build_report(
+        records,
+        output_path=tmp_path / "out.jsonl",
+        manifest_path=tmp_path / "manifest.jsonl",
+    )
+
+    assert report["image_kind_coverage"]["required_kinds"] == ["chat", "poster", "qr", "screenshot"]
+    assert report["image_kind_coverage"]["present_kinds"] == ["poster", "screenshot"]
+    assert report["image_kind_coverage"]["missing_kinds"] == ["chat", "qr"]
+    assert report["image_kind_coverage"]["complete"] is False
 
 
 def test_ocr_report_records_per_engine_quality_latency_failure_and_cost_metrics(tmp_path):

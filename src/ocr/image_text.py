@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import hashlib
 from pathlib import Path
 import time
 from typing import Any, Callable, Iterable, Mapping
@@ -140,6 +141,7 @@ class OCRImageTextAdapter:
         data["ocr_confidence"] = result.ocr_confidence
         data["ocr_engine_confidences"] = result.ocr_engine_confidences
         data["ocr_confidence_details"] = result.ocr_confidence_details
+        data["image_evidence"] = self._image_evidence(record, result)
         return data
 
     def _image_paths(self, record: Mapping[str, Any] | Any) -> list[str]:
@@ -160,11 +162,90 @@ class OCRImageTextAdapter:
                             paths.append(str(value))
         return paths
 
+    def _image_evidence(self, record: Mapping[str, Any] | Any, result: OCRImageTextResult) -> list[dict[str, Any]]:
+        evidence: list[dict[str, Any]] = []
+        paths = self._image_paths(record)
+        if not paths:
+            return evidence
+        provider = _provider_from_result(result)
+        latency = _first_mapping_value(result.engine_latencies_ms)
+        image_count = len(paths)
+        for index, image_path in enumerate(paths):
+            ocr_text = _ocr_text_for_image(result, image_path=image_path, image_count=image_count)
+            evidence.append(
+                {
+                    "image_kind": str(_get(record, "image_kind") or "unspecified"),
+                    "image_path": image_path,
+                    "original_image_uri": str(_get(record, "original_image_uri") or _get(record, "image_uri") or image_path),
+                    "image_sha256": _sha256_file(image_path),
+                    "ocr_text": ocr_text,
+                    "ocr_engine_provider": provider,
+                    "ocr_confidence": result.ocr_confidence,
+                    "ocr_latency_ms": latency,
+                    "ocr_sources": result.sources,
+                    "source_url": _get(record, "source_url"),
+                    "crawl_time": _get(record, "crawl_time"),
+                    "raw_payload_uri": _get(record, "raw_payload_uri"),
+                    "capture_snapshot_uri": _get(record, "capture_snapshot_uri"),
+                    "image_index": index,
+                }
+            )
+        return evidence
+
 
 def _get(record: Mapping[str, Any] | Any, field: str) -> Any:
     if isinstance(record, Mapping):
         return record.get(field)
     return getattr(record, field, None)
+
+
+def _provider_from_result(result: OCRImageTextResult) -> str:
+    providers = sorted(
+        {
+            str(key).split(":", 1)[0]
+            for key in result.engine_outputs
+            if str(key).strip()
+        }
+    )
+    if providers:
+        return ",".join(providers)
+    source_providers = sorted(
+        str(source).removeprefix("ocr_engine.")
+        for source in result.sources
+        if str(source).startswith("ocr_engine.")
+    )
+    return ",".join(source_providers) if source_providers else "none"
+
+
+def _ocr_text_for_image(result: OCRImageTextResult, *, image_path: str, image_count: int) -> str:
+    outputs = result.engine_outputs
+    if not outputs:
+        return result.text
+    if image_count <= 1:
+        values = list(outputs.values())
+    else:
+        suffix = f":{Path(image_path).name}"
+        values = [text for key, text in outputs.items() if str(key).endswith(suffix)]
+    engine_text = normalize_text(" ".join(str(value or "") for value in values if value))
+    return engine_text or result.text
+
+
+def _first_mapping_value(values: Mapping[str, float]) -> float | None:
+    for value in values.values():
+        return value
+    return None
+
+
+def _sha256_file(path: str | Path) -> str | None:
+    try:
+        target = Path(path)
+        digest = hashlib.sha256()
+        with target.open("rb") as file_obj:
+            for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
 
 
 def _merge_modality(base: str, *, had_upstream_text: bool, had_engine_text: bool) -> str:

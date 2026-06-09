@@ -152,7 +152,7 @@ def build_evidence_pack(
                 "clean_text": clean_text,
                 "cleaning": cleaning_card,
                 "classification": _classification_card(classification),
-                "entities": [_entity_card(item) for item in row_entities],
+                "entities": [_entity_card(item, source_row=row, source_evidence=source_evidence) for item in row_entities],
                 "clue_chain": clue_chain,
                 "review_chain": {
                     "status": review_status,
@@ -320,6 +320,9 @@ def _source_evidence_card(row: dict[str, Any], cleaning_drop: dict[str, Any] | N
     if media:
         card["media"] = media
 
+    if isinstance(row.get("image_evidence"), list):
+        card["image_evidence"] = [dict(item) for item in row["image_evidence"] if isinstance(item, dict)]
+
     if cleaning_drop:
         card["cleaning_drop"] = dict(cleaning_drop)
     return card
@@ -345,6 +348,8 @@ def _count_source_evidence(card: dict[str, Any], *, counter: Counter[str]) -> No
         counter["has_ocr"] += 1
     if card.get("media"):
         counter["has_media"] += 1
+    if card.get("image_evidence"):
+        counter["has_image_evidence"] += 1
     if card.get("cleaning_drop"):
         counter["has_cleaning_drop"] += 1
 
@@ -370,13 +375,61 @@ def _classification_card(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _entity_card(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+def _entity_card(
+    row: dict[str, Any],
+    *,
+    source_row: dict[str, Any] | None = None,
+    source_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source_row = source_row or {}
+    source_evidence = source_evidence or {}
+    card = {
         "entity_type": row.get("entity_type"),
         "normalized_value": row.get("normalized_value") or row.get("entity_value"),
         "confidence": row.get("confidence"),
         "context_relevance": row.get("context_relevance"),
     }
+    snippet = _entity_source_snippet(row, source_row=source_row, source_evidence=source_evidence)
+    if snippet:
+        card["source_snippet"] = snippet
+    for key in ("source_url", "crawl_time", "raw_payload_uri", "capture_snapshot_uri"):
+        card[key] = row.get(key) or source_evidence.get(key) or source_row.get(key)
+    return card
+
+
+def _entity_source_snippet(
+    row: dict[str, Any],
+    *,
+    source_row: dict[str, Any],
+    source_evidence: dict[str, Any],
+) -> str:
+    explicit = str(row.get("source_snippet") or row.get("context") or "").strip()
+    if explicit:
+        return explicit
+    text = str(
+        source_evidence.get("raw_snippet")
+        or source_evidence.get("raw_text")
+        or source_row.get("raw_snippet")
+        or source_row.get("content_text")
+        or source_row.get("raw_text")
+        or ""
+    )
+    if not text:
+        return ""
+    start = _optional_int(row.get("start") or row.get("start_offset"))
+    end = _optional_int(row.get("end") or row.get("end_offset"))
+    if start is None or end is None or start < 0 or end <= start or start >= len(text):
+        return text[:240]
+    left = max(0, start - 40)
+    right = min(len(text), end + 40)
+    return text[left:right]
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _clue_card(row: dict[str, Any]) -> dict[str, Any]:

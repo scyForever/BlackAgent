@@ -174,8 +174,17 @@ def build_report(
     per_class_evidence = _per_class_evidence(rows, min_records_per_class=min_records_per_class)
     per_smoke_group_evidence = _per_smoke_group_evidence(rows, min_records_per_class=min_records_per_class)
     source_evidence_by_group = _source_evidence_by_group(rows)
+    status = "completed" if not missing_smoke_groups else "incomplete"
+    if network_enabled and status == "completed":
+        live_incomplete = [
+            item
+            for item in per_smoke_group_evidence
+            if not item["target_met"] and int(item.get("collected_count") or 0) < int(item.get("configured_source_count") or 0)
+        ]
+        if live_incomplete:
+            status = "incomplete_live_evidence"
     return {
-        "status": "completed" if not missing_smoke_groups else "incomplete",
+        "status": status,
         "source_config": str(source_config),
         "network_enabled": bool(network_enabled),
         "run_type": "live_authorized_smoke" if network_enabled else "dry_run_catalog_smoke",

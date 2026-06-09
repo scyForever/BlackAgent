@@ -57,6 +57,11 @@ def parse_args() -> argparse.Namespace:
         help="300-500 record multi-source balanced acceptance pack JSONL output path",
     )
     parser.add_argument(
+        "--source-evidence-pack-jsonl-out",
+        default="data/collection_phase_source_evidence_pack.jsonl",
+        help="300-500 record IM/article/social/vertical balanced source evidence pack JSONL output path",
+    )
+    parser.add_argument(
         "--acceptance-pack-classifications",
         default="",
         help="Optional classification JSONL; when paired with entities, acceptance pack only samples trace IDs present in both.",
@@ -327,6 +332,13 @@ ACCEPTANCE_PACK_CATEGORIES = (
     "technical_or_forum",
 )
 
+SOURCE_EVIDENCE_PACK_CATEGORIES = (
+    "im_or_group",
+    "public_account_or_article",
+    "social_or_forum",
+    "vertical_or_technical",
+)
+
 
 def build_acceptance_pack_sample(
     rows: list[dict[str, Any]],
@@ -413,6 +425,99 @@ def build_acceptance_pack_sample(
     return summary
 
 
+def build_source_evidence_pack_sample(
+    rows: list[dict[str, Any]],
+    *,
+    min_records: int = 300,
+    max_records: int = 500,
+    include_trace_ids: bool = False,
+    required_trace_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """Build the current optimization pack across IM/article/social/vertical."""
+
+    target_min = max(1, int(min_records))
+    target_max = max(target_min, int(max_records))
+    per_category_target = max(1, target_min // len(SOURCE_EVIDENCE_PACK_CATEGORIES))
+    required_ids = {str(item).strip() for item in (required_trace_ids or set()) if str(item).strip()}
+    filtered_rows = [row for row in rows if not required_ids or _trace_id(row) in required_ids]
+    buckets: dict[str, list[dict[str, Any]]] = {category: [] for category in SOURCE_EVIDENCE_PACK_CATEGORIES}
+    for row in filtered_rows:
+        category = _source_evidence_pack_category(row)
+        if category:
+            buckets[category].append(row)
+
+    available_counts = {category: len(buckets[category]) for category in SOURCE_EVIDENCE_PACK_CATEGORIES}
+    eligible_count = sum(available_counts.values())
+    warnings: list[str] = []
+    if eligible_count < target_min:
+        warnings.append(f"source_evidence_pack_total_below_minimum:available={eligible_count};required={target_min}")
+    for category in SOURCE_EVIDENCE_PACK_CATEGORIES:
+        available_count = available_counts[category]
+        if available_count < per_category_target:
+            warnings.append(f"{category}_insufficient:available={available_count};required={per_category_target}")
+
+    status = "insufficient_records" if warnings else "completed"
+    selected: list[dict[str, Any]] = []
+    selected_by_category: dict[str, int] = {category: 0 for category in SOURCE_EVIDENCE_PACK_CATEGORIES}
+    for category in SOURCE_EVIDENCE_PACK_CATEGORIES:
+        take_count = per_category_target if status == "completed" else min(len(buckets[category]), per_category_target)
+        selected.extend(buckets[category][:take_count])
+        selected_by_category[category] = take_count
+
+    while status != "completed" and len(selected) < target_max:
+        added = False
+        for category in SOURCE_EVIDENCE_PACK_CATEGORIES:
+            offset = selected_by_category[category]
+            if offset >= len(buckets[category]):
+                continue
+            selected.append(buckets[category][offset])
+            selected_by_category[category] += 1
+            added = True
+            if len(selected) >= target_max:
+                break
+        if not added:
+            break
+
+    selected_counts = Counter(_source_evidence_pack_category(row) or "uncategorized" for row in selected)
+    source_counts = Counter(_source_name(row) for row in selected)
+    trace_ids = [_trace_id(row) for row in selected]
+    summary = {
+        "status": status,
+        "pack_version": "source_evidence_pack_v2",
+        "target_record_range": {"min": target_min, "max": target_max},
+        "target_record_count": target_min,
+        "per_category_target": per_category_target,
+        "target_categories": list(SOURCE_EVIDENCE_PACK_CATEGORIES),
+        "raw_record_count": len(rows),
+        "evidence_ready_trace_filter": {
+            "enabled": bool(required_ids),
+            "required_trace_count": len(required_ids),
+            "excluded_without_required_trace": len(rows) - len(filtered_rows),
+        },
+        "eligible_record_count": eligible_count,
+        "selected_count": len(selected),
+        "available_category_counts": [
+            {"category": category, "count": available_counts[category]}
+            for category in SOURCE_EVIDENCE_PACK_CATEGORIES
+        ],
+        "selected_category_counts": [
+            {"category": category, "count": selected_counts.get(category, 0)}
+            for category in SOURCE_EVIDENCE_PACK_CATEGORIES
+        ],
+        "source_counts": [{"source_name": name, "count": count} for name, count in source_counts.most_common(20)],
+        "selected_trace_id_sample": trace_ids[:20],
+        "warnings": warnings,
+        "claim_boundary": (
+            "completed_balanced_im_article_social_vertical_source_evidence_pack"
+            if status == "completed"
+            else "insufficient_records_exported_for_audit_not_balanced_source_evidence_pack"
+        ),
+    }
+    if include_trace_ids:
+        summary["selected_trace_ids"] = trace_ids
+    return summary
+
+
 def acceptance_pack_required_trace_ids(
     *,
     classifications: list[dict[str, Any]],
@@ -442,6 +547,29 @@ def _acceptance_pack_category(row: dict[str, Any]) -> str | None:
     )
     if any(marker in source_text for marker in ("forum", "tieba", "technical", "techforum", "threat_intel")):
         return "technical_or_forum"
+    return None
+
+
+def _source_evidence_pack_category(row: dict[str, Any]) -> str | None:
+    groups = set(source_quota_groups_for_record(row))
+    if "public_account_or_article" in groups or "public_account_article" in groups:
+        return "public_account_or_article"
+    source_class = source_class_for_record(row)
+    if source_class in {"im_or_group", "social_or_forum", "vertical_or_technical"}:
+        return source_class
+
+    source_text = " ".join(
+        str(row.get(field) or "").strip().lower()
+        for field in ("source_type", "type", "platform", "source_name", "name", "source_url", "url")
+    )
+    if any(marker in source_text for marker in ("telegram", "tg", "im", "group", "群组", "群聊")):
+        return "im_or_group"
+    if any(marker in source_text for marker in ("wechat", "public_account", "article", "rss", "公众号", "文章")):
+        return "public_account_or_article"
+    if any(marker in source_text for marker in ("forum", "tieba", "social", "twitter", "x.com", "贴吧", "论坛")):
+        return "social_or_forum"
+    if any(marker in source_text for marker in ("vertical", "technical", "market", "techforum", "垂类", "技术")):
+        return "vertical_or_technical"
     return None
 
 
@@ -632,6 +760,11 @@ def main() -> int:
         if not Path(args.acceptance_pack_jsonl_out).is_absolute()
         else Path(args.acceptance_pack_jsonl_out).resolve()
     )
+    source_evidence_pack_out = (
+        (PROJECT_ROOT / args.source_evidence_pack_jsonl_out).resolve()
+        if not Path(args.source_evidence_pack_jsonl_out).is_absolute()
+        else Path(args.source_evidence_pack_jsonl_out).resolve()
+    )
     acceptance_classifications = _load_jsonl(args.acceptance_pack_classifications) if args.acceptance_pack_classifications else []
     acceptance_entities = _load_jsonl(args.acceptance_pack_entities) if args.acceptance_pack_entities else []
     acceptance_required_trace_ids = acceptance_pack_required_trace_ids(
@@ -735,6 +868,20 @@ def main() -> int:
     ]
     _write_jsonl(acceptance_pack_out, acceptance_pack_rows)
 
+    source_evidence_pack = build_source_evidence_pack_sample(
+        exported_rows,
+        include_trace_ids=True,
+        required_trace_ids=acceptance_required_trace_ids or None,
+    )
+    source_evidence_pack["evidence_ready_inputs"] = dict(acceptance_pack["evidence_ready_inputs"])
+    source_evidence_selected_ids = set(source_evidence_pack.pop("selected_trace_ids", []) or [])
+    source_evidence_pack_rows = [
+        row
+        for row in exported_rows
+        if str(row.get("trace_id") or row.get("source_trace_id") or row.get("hash_id") or "") in source_evidence_selected_ids
+    ]
+    _write_jsonl(source_evidence_pack_out, source_evidence_pack_rows)
+
     manifest = {
         "status": "completed",
         "db_path": str(db_path),
@@ -752,6 +899,7 @@ def main() -> int:
         "quota_balanced_jsonl": str(quota_out),
         "defense_quota_balanced_jsonl": str(defense_quota_out),
         "acceptance_pack_jsonl": str(acceptance_pack_out),
+        "source_evidence_pack_jsonl": str(source_evidence_pack_out),
         "query_term_stage_counts": [{"stage": name, "count": count} for name, count in stage_counts.most_common()],
         "special_signal_counts": [{"signal": name, "count": count} for name, count in signal_counts.most_common()],
         "source_class_counts": [{"source_class": name, "count": count} for name, count in source_class_counts.most_common()],
@@ -760,6 +908,7 @@ def main() -> int:
         "quota_balanced_sample": quota_sample,
         "defense_quota_balanced_sample": defense_quota_sample,
         "multi_source_acceptance_pack": acceptance_pack,
+        "multi_source_evidence_pack": source_evidence_pack,
         "sample_special_signal_rows": samples,
     }
     manifest_out.parent.mkdir(parents=True, exist_ok=True)
