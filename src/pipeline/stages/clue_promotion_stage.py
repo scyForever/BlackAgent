@@ -36,7 +36,7 @@ class CluePromotionStage:
         self.candidate_clues = []
         self.actionable_clues = []
         self.archived_weak_clues = []
-        promoted_by_type: dict[str, dict[str, Any]] = {}
+        promoted_by_identity: dict[tuple[str, str, str], dict[str, Any]] = {}
         overflow_promoted: list[dict[str, Any]] = []
         for raw in items:
             candidate = dict(raw)
@@ -49,12 +49,12 @@ class CluePromotionStage:
                 actionable["clue_stage"] = "actionable"
                 actionable["promotion_reason"] = reason
                 actionable["actionability_score"] = score
-                clue_type = str(actionable.get("clue_type") or "unknown")
-                existing = promoted_by_type.get(clue_type)
+                identity = _clue_identity(actionable)
+                existing = promoted_by_identity.get(identity)
                 if existing is None or _actionable_rank(actionable) > _actionable_rank(existing):
                     if existing is not None:
                         overflow_promoted.append(existing)
-                    promoted_by_type[clue_type] = actionable
+                    promoted_by_identity[identity] = actionable
                 else:
                     overflow_promoted.append(actionable)
             else:
@@ -63,7 +63,7 @@ class CluePromotionStage:
                 archived["archive_reason"] = reason
                 archived["actionability_score"] = score
                 self.archived_weak_clues.append(archived)
-        self.actionable_clues = list(promoted_by_type.values())
+        self.actionable_clues = list(promoted_by_identity.values())
         for clue in overflow_promoted:
             archived = dict(clue)
             archived["clue_stage"] = "archived_weak"
@@ -105,6 +105,14 @@ def _actionable_rank(clue: Mapping[str, Any]) -> tuple[float, int, int, str]:
         len({str(item) for item in (clue.get("evidence_trace_ids") or []) if str(item).strip()}),
         len({str(item) for item in (clue.get("source_names") or []) if str(item).strip()}),
         str(clue.get("key") or ""),
+    )
+
+
+def _clue_identity(clue: Mapping[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(clue.get("clue_type") or "unknown").strip().lower(),
+        str(clue.get("key") or "").strip().lower(),
+        str(clue.get("risk_category") or "").strip().lower(),
     )
 
 

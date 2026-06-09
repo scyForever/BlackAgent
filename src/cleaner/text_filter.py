@@ -428,7 +428,8 @@ def detect_noise_reason(
         return "high_noise_score"
     if any(marker.lower() in lowered for marker in defensive_markers) and risk_score < 0.95:
         return "defensive_context_noise"
-    if any(marker.lower() in lowered for marker in guide_markers) and risk_score < 0.80:
+    human_confirmed_non_tutorial = any(marker in normalized for marker in ("人工确认不是普通教程", "人工确认非普通教程"))
+    if any(marker.lower() in lowered for marker in guide_markers) and risk_score < 0.80 and not human_confirmed_non_tutorial:
         return "generic_guide_noise"
     if len(canonicalize_for_dedup(normalized)) < 4 and risk_score < 0.25:
         return "low_signal_short_text"

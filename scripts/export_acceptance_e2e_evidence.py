@@ -44,6 +44,11 @@ def parse_args() -> argparse.Namespace:
         help="Source catalog used by the acceptance run.",
     )
     parser.add_argument("--command", default=DEFAULT_COMMAND, help="Reproducible command text.")
+    parser.add_argument(
+        "--record-details",
+        default="data/acceptance_real_e2e_record_details.json",
+        help="Optional trace-level record detail artifact used to hydrate evidence cards.",
+    )
     parser.add_argument("--json-out", default="data/acceptance_real_e2e_evidence.json")
     parser.add_argument("--md-out", default="data/acceptance_real_e2e_evidence.md")
     return parser.parse_args()
@@ -56,6 +61,7 @@ def build_evidence(
     smoke_path: str,
     source_catalog: str,
     command: str,
+    record_details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     summary = run.get("execution_summary") if isinstance(run.get("execution_summary"), dict) else {}
     counts = {
@@ -74,7 +80,16 @@ def build_evidence(
     }
     source_classes = sorted({source_class_for_record(item) for item in run.get("selected_sources") or []})
     collection_classes = sorted({source_class_for_record(item) for item in run.get("collection_runs") or []})
-    high_quality_clues = [summarize_clue(item) for item in run.get("high_quality_clues") or []]
+    detail_records, detail_classifications, detail_entities = _reviewability_inputs_from_record_details(record_details)
+    high_quality_clues = [
+        summarize_clue(
+            item,
+            records=detail_records,
+            classifications=detail_classifications,
+            entities=detail_entities,
+        )
+        for item in run.get("high_quality_clues") or []
+    ]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "run_artifact": run_path,
@@ -120,11 +135,24 @@ def build_evidence(
     }
 
 
-def summarize_clue(clue: dict[str, Any]) -> dict[str, Any]:
+def summarize_clue(
+    clue: dict[str, Any],
+    *,
+    records: Iterable[dict[str, Any]] = (),
+    classifications: Iterable[dict[str, Any]] = (),
+    entities: Iterable[dict[str, Any]] = (),
+) -> dict[str, Any]:
     refinement = clue.get("refinement") if isinstance(clue.get("refinement"), dict) else {}
     quality = clue.get("quality") if isinstance(clue.get("quality"), dict) else {}
     evidence_ids = [str(item) for item in clue.get("evidence_trace_ids") or []]
-    reviewability = clue.get("evidence_reviewability") if isinstance(clue.get("evidence_reviewability"), dict) else build_evidence_reviewability(clue)
+    reviewability = clue.get("evidence_reviewability") if isinstance(clue.get("evidence_reviewability"), dict) else None
+    if not reviewability or (not reviewability.get("evidence_cards") and evidence_ids):
+        reviewability = build_evidence_reviewability(
+            clue,
+            classifications=classifications,
+            entities=entities,
+            records=records,
+        )
     return {
         "clue_id": clue.get("clue_id"),
         "clue_type": clue.get("clue_type"),
@@ -148,6 +176,56 @@ def summarize_clue(clue: dict[str, Any]) -> dict[str, Any]:
         "evidence_reviewability": reviewability,
         "suggested_review_action": reviewability.get("suggested_review_action"),
     }
+
+
+def _reviewability_inputs_from_record_details(
+    record_details: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    if not isinstance(record_details, dict):
+        return [], [], []
+    records = [item for item in record_details.get("records") or [] if isinstance(item, dict)]
+    review_records: list[dict[str, Any]] = []
+    classifications: list[dict[str, Any]] = []
+    entities: list[dict[str, Any]] = []
+    for item in records:
+        trace_id = str(item.get("trace_id") or item.get("source_trace_id") or "").strip()
+        if not trace_id:
+            continue
+        review_records.append(
+            {
+                "trace_id": trace_id,
+                "source_trace_id": trace_id,
+                "source_name": item.get("source_name") or item.get("source"),
+                "source_type": item.get("source_type"),
+                "content_text": item.get("summary") or item.get("content_text") or item.get("raw_text") or item.get("text") or "",
+                "clean_text": item.get("clean_text") or item.get("cleaning_visible") or item.get("summary") or "",
+                "publish_time": item.get("publish_time") or item.get("crawl_time") or item.get("created_at"),
+            }
+        )
+        classifications.append(
+            {
+                "trace_id": trace_id,
+                "source_trace_id": trace_id,
+                "risk_category": item.get("risk_category") or item.get("classification_label") or item.get("original_label"),
+                "secondary_label": item.get("secondary_label"),
+                "confidence": item.get("confidence"),
+                "review_required": item.get("review_required"),
+            }
+        )
+        for entity in item.get("entities") or []:
+            if not isinstance(entity, dict):
+                continue
+            entities.append(
+                {
+                    "trace_id": trace_id,
+                    "source_trace_id": trace_id,
+                    "entity_type": entity.get("entity_type") or entity.get("type"),
+                    "normalized_value": entity.get("normalized_value") or entity.get("value"),
+                    "raw_value": entity.get("raw_value") or entity.get("value"),
+                    "confidence": entity.get("confidence"),
+                }
+            )
+    return review_records, classifications, entities
 
 
 def summarize_llm_calls(traces: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -235,12 +313,15 @@ def main() -> int:
     args = parse_args()
     run_path = resolve_project_path(args.run)
     run = json.loads(run_path.read_text(encoding="utf-8"))
+    record_details_path = resolve_project_path(args.record_details)
+    record_details = json.loads(record_details_path.read_text(encoding="utf-8")) if record_details_path.exists() else None
     evidence = build_evidence(
         run,
         run_path=str(Path(args.run)),
         smoke_path=str(Path(args.smoke)),
         source_catalog=str(Path(args.source_catalog)),
         command=args.command,
+        record_details=record_details,
     )
     json_out = resolve_project_path(args.json_out)
     md_out = resolve_project_path(args.md_out)

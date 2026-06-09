@@ -126,6 +126,7 @@ class InvestigationRuntime(InvestigationRuntimeMixin):
                 runtime_context_factory=lambda intent: self.phase_engine.runtime_prompt_context(
                     label=self._runtime_context_label(intent),
                     include_candidates=True,
+                    include_gray=True,
                 ),
                 quality_gate_checker=self._passes_runtime_quality_gate,
                 deadline_checker=self._deadline_exhausted,
@@ -199,6 +200,7 @@ class InvestigationRuntime(InvestigationRuntimeMixin):
                     self.phase_engine.lifecycle_manager.prompt_context(
                         label=edited_risk_type,
                         include_candidates=True,
+                        include_gray=True,
                     )
                 ),
             }

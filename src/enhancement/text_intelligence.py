@@ -355,6 +355,25 @@ class FineGrainedIntentClassifier:
         "解决方案",
         "service",
     )
+    ORDINARY_AUTOMATION_TECH_DISCUSSION_MARKERS = (
+        "v2ex",
+        "automation software",
+        "top 10 automation",
+        "free list",
+        "duckduckgo",
+        "microsoft ad network",
+        "ad clicks",
+        "privacy protected",
+        "机器人创建的网站",
+        "用的什么原理",
+        "userbot",
+        "频道普通订阅者",
+        "历史内容的整理",
+        "创建自己频道",
+        "添加机器人",
+        "云服务",
+        "用户隐私",
+    )
     ORDINARY_PUBLIC_SOURCE_MARKERS = (
         "forum",
         "blog",
@@ -433,6 +452,8 @@ class FineGrainedIntentClassifier:
         "高信誉用户",
     )
     ORDINARY_CONSUMER_VERIFICATION_MARKERS = (
+        "qq",
+        "QQ",
         "手机验证码",
         "验证码自动填充",
         "自动填充",
@@ -447,11 +468,54 @@ class FineGrainedIntentClassifier:
         "短信费用",
         "安全验证机制",
         "验证码收不到",
+        "短信验证码收不到",
+        "验证码正常",
+        "手机号未欠费",
+        "换手机",
+        "接收不到",
+        "登录不上去",
+        "移动手机号",
+        "10086",
+        "没有拦截",
+        "没开拦截",
+        "怎么解决",
         "输不对",
         "被锁定",
+        "原因",
+        "解决办法",
+        "探讨",
         "问题全解决",
         "手机软件",
         "什么值得买",
+    )
+    ORDINARY_GROUP_SEND_DISCUSSION_MARKERS = (
+        "群发的邮件",
+        "群发邮件",
+        "全部回复",
+        "收件人",
+        "办公邮件",
+        "邮件设置",
+        "普通办公",
+        "发送时的设置",
+        "回复是否",
+        "所有人都能看到",
+    )
+    ORDINARY_FINANCE_MANUAL_ORDER_MARKERS = (
+        "手工单",
+        "量化交易",
+        "ai量化",
+        "AI量化",
+        "追涨杀跌",
+        "止损",
+        "仓位",
+        "回撤",
+        "行情",
+        "交易策略",
+        "黄金",
+        "外汇",
+        "ea自动单",
+        "自动执行规则",
+        "情绪零干扰",
     )
     ORDINARY_NEWS_DISCUSSION_MARKERS = (
         "余承东",
@@ -544,6 +608,20 @@ class FineGrainedIntentClassifier:
         "方法",
         "收获",
         "吧友",
+    )
+    ORDINARY_PRIVATE_DOMAIN_CASE_STUDY_MARKERS = (
+        "案例拆解",
+        "体系全拆解",
+        "会员",
+        "复购率",
+        "企业微信",
+        "小程序商城",
+        "营销玩法",
+        "运营范本",
+        "零售行业",
+        "参考价值",
+        "什么值得买",
+        "智能速览",
     )
     ORDINARY_PUBLIC_SCAM_DISCUSSION_MARKERS = (
         "骗局吗",
@@ -651,6 +729,20 @@ class FineGrainedIntentClassifier:
         "同时启动发送",
         "采集群组",
         "账号运行过程中",
+    )
+    PUBLIC_GROUP_SEND_TOOL_MARKERS = (
+        "群发插件",
+        "源代码",
+        "机器人吧",
+        "群发送",
+        "群成员",
+        "群临时会话",
+        "群发无忧",
+        "群发群",
+        "使用方法",
+        "设置页面",
+        "发送内容",
+        "选要发送的群",
     )
     TOOL_DELIVERY_MARKERS = (
         "群发器",
@@ -1085,7 +1177,11 @@ class FineGrainedIntentClassifier:
         defensive_hits = self._marker_hits(text, self.defensive_context_markers)
         if not defensive_hits:
             return False
-        solicitation_hits = self._marker_hits(text, self.solicitation_markers)
+        solicitation_hits = [
+            marker
+            for marker in self._marker_hits(text, self.solicitation_markers)
+            if not self._is_locally_negated_marker(text, marker)
+        ]
         return len(solicitation_hits) == 0 or any(marker in text for marker in ("不提供", "不要参与", "切勿参与"))
 
     def _ordinary_public_information_evidence(
@@ -1170,8 +1266,14 @@ class FineGrainedIntentClassifier:
         if self._is_private_domain_book_discussion(text):
             evidence.extend(["ordinary_context:private_domain_public_book_discussion", *matched_hint])
 
+        if self._is_public_private_domain_case_study(text):
+            evidence.extend(["ordinary_context:private_domain_public_case_study", *matched_hint])
+
         if self._is_ordinary_technical_troubleshooting(text):
             evidence.extend(["ordinary_context:technical_troubleshooting_discussion", *matched_hint])
+
+        if self._is_ordinary_automation_technical_context(text):
+            evidence.extend(["ordinary_context:automation_technical_discussion", *matched_hint])
 
         if self._is_public_scam_discussion(text):
             evidence.extend(["ordinary_context:public_scam_discussion", *matched_hint])
@@ -1182,6 +1284,12 @@ class FineGrainedIntentClassifier:
         if self._is_ordinary_consumer_verification_context(text):
             evidence.extend(["ordinary_context:consumer_verification_article", *matched_hint])
 
+        if self._is_ordinary_group_send_discussion(text):
+            evidence.extend(["ordinary_context:ordinary_group_send_discussion", *matched_hint])
+
+        if self._is_ordinary_finance_manual_order_context(text):
+            evidence.extend(["ordinary_context:finance_manual_order_article", *matched_hint])
+
         if evidence:
             ordinary_hits = self._marker_hits(
                 text,
@@ -1190,10 +1298,14 @@ class FineGrainedIntentClassifier:
                     *self.ORDINARY_HEALTH_PRIVATE_DOMAIN_AD_MARKERS,
                     *self.ORDINARY_PUBLIC_ADDV_DISCUSSION_MARKERS,
                     *self.ORDINARY_PRIVATE_DOMAIN_BOOK_DISCUSSION_MARKERS,
+                    *self.ORDINARY_PRIVATE_DOMAIN_CASE_STUDY_MARKERS,
                     *self.ORDINARY_TECHNICAL_TROUBLESHOOTING_MARKERS,
+                    *self.ORDINARY_AUTOMATION_TECH_DISCUSSION_MARKERS,
                     *self.ORDINARY_PUBLIC_SCAM_DISCUSSION_MARKERS,
                     *self.ORDINARY_GAME_GUIDE_MARKERS,
                     *self.ORDINARY_CONSUMER_VERIFICATION_MARKERS,
+                    *self.ORDINARY_GROUP_SEND_DISCUSSION_MARKERS,
+                    *self.ORDINARY_FINANCE_MANUAL_ORDER_MARKERS,
                 ),
             )
             source_hits = self._marker_hits(source_context, self.ORDINARY_PUBLIC_SOURCE_MARKERS)
@@ -1226,8 +1338,14 @@ class FineGrainedIntentClassifier:
         if self._is_private_domain_book_discussion(text):
             evidence.extend(["ordinary_context:private_domain_public_book_discussion", *matched_hint])
 
+        if self._is_public_private_domain_case_study(text):
+            evidence.extend(["ordinary_context:private_domain_public_case_study", *matched_hint])
+
         if self._is_ordinary_technical_troubleshooting(text):
             evidence.extend(["ordinary_context:technical_troubleshooting_discussion", *matched_hint])
+
+        if self._is_ordinary_automation_technical_context(text):
+            evidence.extend(["ordinary_context:automation_technical_discussion", *matched_hint])
 
         if self._is_public_scam_discussion(text):
             evidence.extend(["ordinary_context:public_scam_discussion", *matched_hint])
@@ -1237,6 +1355,12 @@ class FineGrainedIntentClassifier:
 
         if self._is_ordinary_consumer_verification_context(text):
             evidence.extend(["ordinary_context:consumer_verification_article", *matched_hint])
+
+        if self._is_ordinary_group_send_discussion(text):
+            evidence.extend(["ordinary_context:ordinary_group_send_discussion", *matched_hint])
+
+        if self._is_ordinary_finance_manual_order_context(text):
+            evidence.extend(["ordinary_context:finance_manual_order_article", *matched_hint])
 
         if evidence:
             ordinary_hits = self._marker_hits(
@@ -1249,10 +1373,14 @@ class FineGrainedIntentClassifier:
                     *self.ORDINARY_NEWS_DISCUSSION_MARKERS,
                     *self.ORDINARY_COMMUNITY_DISCUSSION_MARKERS,
                     *self.ORDINARY_PRIVATE_DOMAIN_BOOK_DISCUSSION_MARKERS,
+                    *self.ORDINARY_PRIVATE_DOMAIN_CASE_STUDY_MARKERS,
                     *self.ORDINARY_TECHNICAL_TROUBLESHOOTING_MARKERS,
+                    *self.ORDINARY_AUTOMATION_TECH_DISCUSSION_MARKERS,
                     *self.ORDINARY_PUBLIC_SCAM_DISCUSSION_MARKERS,
                     *self.ORDINARY_GAME_GUIDE_MARKERS,
                     *self.ORDINARY_CONSUMER_VERIFICATION_MARKERS,
+                    *self.ORDINARY_GROUP_SEND_DISCUSSION_MARKERS,
+                    *self.ORDINARY_FINANCE_MANUAL_ORDER_MARKERS,
                 ),
             )
             source_hits = self._marker_hits(source_context, self.ORDINARY_PUBLIC_SOURCE_MARKERS)
@@ -1331,6 +1459,37 @@ class FineGrainedIntentClassifier:
             return False
         return any(marker in text for marker in ("书籍", "读后", "阅读", "普通人能学会吗", "方法", "收获"))
 
+    def _is_public_private_domain_case_study(self, text: str) -> bool:
+        if "私域" not in text:
+            return False
+        hits = self._marker_hits(text, self.ORDINARY_PRIVATE_DOMAIN_CASE_STUDY_MARKERS)
+        if len(hits) < 4:
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        if any(marker in text.lower() for marker in ("t.me/", "tg:", "telegram:", "wx:", "wechat:", "开户链接")):
+            return False
+        if self._marker_hits(
+            text,
+            (
+                "后端卖",
+                "卖课程",
+                "卖工具",
+                "卖服务",
+                "变现",
+                "分成",
+                "矩阵",
+                "接单",
+                "代运营",
+                "精准用户导流",
+                "低价",
+                "价格",
+                "下单",
+            ),
+        ):
+            return False
+        return any(marker in text for marker in ("案例拆解", "运营范本", "参考价值", "零售行业", "什么值得买"))
+
     def _is_ordinary_technical_troubleshooting(self, text: str) -> bool:
         lowered = text.lower()
         hits = self._marker_hits(text, self.ORDINARY_TECHNICAL_TROUBLESHOOTING_MARKERS)
@@ -1339,6 +1498,17 @@ class FineGrainedIntentClassifier:
         if self._has_direct_contact_intent(text):
             return False
         return any(marker in lowered for marker in ("automation license manager", "博途", "siemens", "service"))
+
+    def _is_ordinary_automation_technical_context(self, text: str) -> bool:
+        lowered = text.lower()
+        hits = self._marker_hits(text, self.ORDINARY_AUTOMATION_TECH_DISCUSSION_MARKERS)
+        if len(hits) < 2:
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        if self._marker_hits(text, ("出售", "低价", "价格", "卡密", "下单", "接码平台", "群控", "批量注册")):
+            return False
+        return any(marker in lowered for marker in ("automation", "v2ex", "bot", "userbot", "software", "机器人", "频道"))
 
     def _is_public_scam_discussion(self, text: str) -> bool:
         if not self._marker_hits(text, self.ORDINARY_PUBLIC_SCAM_DISCUSSION_MARKERS):
@@ -1367,7 +1537,51 @@ class FineGrainedIntentClassifier:
             return False
         if any(marker in text for marker in ("接码平台", "虚拟号码", "国外验证码", "API二次开发", "sms-active", "HeroSMS")):
             return False
-        return any(marker in text for marker in ("自动填充", "防偷窥", "云闪付", "安全验证机制", "问题全解决", "手机软件"))
+        return any(
+            marker in text
+            for marker in (
+                "自动填充",
+                "防偷窥",
+                "云闪付",
+                "安全验证机制",
+                "问题全解决",
+                "手机软件",
+                "验证码收不到",
+                "短信验证码收不到",
+                "接收不到",
+                "手机号未欠费",
+                "换手机",
+                "解决办法",
+                "怎么解决",
+                "登录不上去",
+                "没有拦截",
+                "没开拦截",
+            )
+        )
+
+    def _is_ordinary_group_send_discussion(self, text: str) -> bool:
+        if "群发" not in text:
+            return False
+        hits = self._marker_hits(text, self.ORDINARY_GROUP_SEND_DISCUSSION_MARKERS)
+        if len(hits) < 2:
+            return False
+        if self._has_direct_contact_intent(text) or self._has_contact_marker(text):
+            return False
+        if self._marker_hits(text, ("出售", "接单", "代发", "群控", "脚本", "卡密", "低价", "价格", "下单")):
+            return False
+        return True
+
+    def _is_ordinary_finance_manual_order_context(self, text: str) -> bool:
+        if "手工单" not in text:
+            return False
+        hits = self._marker_hits(text, self.ORDINARY_FINANCE_MANUAL_ORDER_MARKERS)
+        if len(hits) < 3:
+            return False
+        if self._has_direct_contact_intent(text) or self._has_contact_marker(text):
+            return False
+        if self._marker_hits(text, ("刷单", "补单", "垫付", "返佣", "日结", "兼职", "上车", "做任务", "卡单")):
+            return False
+        return any(marker in text.lower() for marker in ("量化", "ai", "交易策略", "行情", "追涨杀跌", "止损"))
 
     def _has_blackgray_review_signal(self, text: str) -> bool:
         hits = self._marker_hits(text, self.blackgray_review_markers)
@@ -1468,6 +1682,8 @@ class FineGrainedIntentClassifier:
         return False
 
     def _is_affiliate_rebate_traffic_context(self, text: str) -> bool:
+        if self._has_negated_affiliate_or_contact_reference(text):
+            return False
         rebate_hits = self._marker_hits(text, ("反佣", "返佣", "高返佣", "返佣高", "返利", "高佣", "推广链接", "ref码", "开户链接", "返点"))
         traffic_hits = self._marker_hits(
             text,
@@ -1480,6 +1696,13 @@ class FineGrainedIntentClassifier:
                 "binance",
                 "polymarket",
                 "websea",
+                "bitget",
+                "wallet",
+                "web3",
+                "美股",
+                "现货",
+                "股票",
+                "xstocks",
                 "拉人头",
                 "拉人注册",
                 "开户",
@@ -1498,6 +1721,15 @@ class FineGrainedIntentClassifier:
             ),
         )
         return bool(rebate_hits and traffic_hits) and not self._marker_hits(text, self.AFFILIATE_REBATE_TASK_EXCLUSION_MARKERS)
+
+    def _has_negated_affiliate_or_contact_reference(self, text: str) -> bool:
+        guard_hits = self._marker_hits(text, ("辟谣", "骗局", "请勿", "切勿", "不要", "未给出", "没有给出", "不提供"))
+        if not guard_hits:
+            return False
+        return any(
+            self._is_locally_negated_marker(text, marker)
+            for marker in ("tg", "telegram", "开户链接", "开户", "返佣", "接码", "验证码", "上车")
+        )
 
     def _is_private_domain_traffic_context(self, text: str) -> bool:
         if "私域" not in text:
@@ -1537,8 +1769,18 @@ class FineGrainedIntentClassifier:
     def _is_operational_tool_workflow(self, text: str) -> bool:
         hits = self._marker_hits(text, self.OPERATIONAL_TOOL_WORKFLOW_MARKERS)
         if len(hits) < 3:
-            return False
+            return self._is_public_group_send_tool_context(text)
         return any(marker in text for marker in ("群发", "自动回复", "session", "Sessions", "程序设定"))
+
+    def _is_public_group_send_tool_context(self, text: str) -> bool:
+        if "群发" not in text:
+            return False
+        hits = self._marker_hits(text, self.PUBLIC_GROUP_SEND_TOOL_MARKERS)
+        if len(hits) < 3:
+            return False
+        if self._marker_hits(text, ("群发的邮件", "全部回复", "收件人", "办公邮件")):
+            return False
+        return True
 
     def _apply_operational_tool_workflow_scores(
         self,
@@ -1549,12 +1791,19 @@ class FineGrainedIntentClassifier:
     ) -> None:
         if not self._is_operational_tool_workflow(text):
             return
-        hits = self._marker_hits(text, self.OPERATIONAL_TOOL_WORKFLOW_MARKERS)
+        hits = _ordered_unique(
+            [
+                *self._marker_hits(text, self.OPERATIONAL_TOOL_WORKFLOW_MARKERS),
+                *self._marker_hits(text, self.PUBLIC_GROUP_SEND_TOOL_MARKERS),
+            ]
+        )
         score_map[TOOL_TRADING] = max(score_map.get(TOOL_TRADING, 0), score_map.get(CROWD_SERVICE, 0) + 2, 4)
         evidence_map[TOOL_TRADING].extend(f"tool_workflow:{marker}" for marker in hits[:4])
 
         crowd_evidence = self._normalized_non_theme_evidence(evidence_map.get(CROWD_SERVICE, []))
-        if crowd_evidence and crowd_evidence <= {"群发", "广告", "代发", "群组"}:
+        if crowd_evidence and (
+            crowd_evidence <= {"群发", "广告", "代发", "群组"} or self._is_public_group_send_tool_context(text)
+        ):
             score_map.pop(CROWD_SERVICE, None)
             evidence_map.pop(CROWD_SERVICE, None)
 
@@ -2090,6 +2339,30 @@ class FineGrainedIntentClassifier:
     def _marker_hits(self, text: str, markers: Iterable[str]) -> list[str]:
         lowered_text = text.lower()
         return [marker for marker in markers if marker.lower() in lowered_text]
+
+    def _is_locally_negated_marker(self, text: str, marker: str) -> bool:
+        lowered_text = text.lower()
+        needle = marker.lower()
+        start = lowered_text.find(needle)
+        while start >= 0:
+            window = lowered_text[max(0, start - 12) : start + len(needle) + 8]
+            if any(
+                negation in window
+                for negation in (
+                    "无",
+                    "未",
+                    "没有",
+                    "不提供",
+                    "未给出",
+                    "没有给出",
+                    "请勿",
+                    "切勿",
+                    "不要",
+                )
+            ):
+                return True
+            start = lowered_text.find(needle, start + len(needle))
+        return False
 
     def _matches_any(self, text: str, matched_keyword_set: set[str], keywords: Iterable[str]) -> bool:
         lowered_text = text.lower()

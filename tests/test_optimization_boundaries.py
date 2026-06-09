@@ -235,6 +235,25 @@ def test_review_only_secondary_stays_in_manual_review():
     assert result.review_required is True
 
 
+def test_anti_fraud_warning_with_brushing_terms_is_low_relevance():
+    result = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "anti-fraud-brushing-warning",
+            "source_name": "public_security_news",
+            "source_type": "Article",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "反诈提醒：刷单返佣都是诈骗，切勿垫付，不要相信日结兼职广告。",
+            "matched_keywords": ["刷单", "返佣", "垫付"],
+            "matched_themes": ["刷单作弊"],
+        }
+    )
+
+    assert result.risk_category == "正常业务白噪声"
+    assert result.review_bucket == "low_relevance"
+    assert result.review_required is False
+    assert result.conflict_status == "NEGATIVE_RISK_ASSERTION"
+
+
 def test_conflict_review_calibration_resolves_only_high_evidence_cases():
     resolved = FineGrainedIntentClassifier().classify(
         {
@@ -736,6 +755,312 @@ def test_manual_heldout_game_tanking_pull_guide_is_normal_noise():
     assert classification.review_required is False
 
 
+def test_classifier_demotes_public_scam_news_without_contact_to_defensive_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "hard-negative-running-score-news",
+            "source_name": "public_security_news",
+            "source_type": "News",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "新闻报道某地破获跑分团伙，文中无联系方式。",
+            "matched_keywords": ["跑分"],
+            "matched_themes": ["诈骗引流"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label in {"防御语境", "低相关"}
+    assert classification.review_required is False
+
+
+def test_classifier_treats_negated_contact_and_open_link_as_non_affirmative():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "context-conflict-negated-open-link",
+            "source_name": "context-safety-3",
+            "source_type": "Policy",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "辟谣帖：所谓接码验证码项目是骗局，请勿上车，未给出 TG 或开户链接。",
+            "matched_keywords": ["接码", "验证码", "开户链接"],
+            "matched_themes": ["诈骗引流", "接码"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label in {"防御语境", "低相关"}
+    assert classification.review_required is False
+
+
+def test_classifier_demotes_consumer_sms_verification_complaint_to_low_relevance():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "hard-negative-qq-sms-complaint",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "QQ短信验证码收不到? 手机号未欠费且其他软件验证码正常，"
+                "但唯独QQ收不到短信验证码，换手机尝试也无效，探讨QQ验证码收不到的原因及解决办法。"
+            ),
+            "matched_keywords": ["验证码", "短信验证码"],
+            "matched_themes": ["接码"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_classifier_demotes_ordinary_group_send_mail_discussion_to_low_relevance():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "hard-negative-group-mail-reply",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "群发的邮件回复是所有人都能看到吗？取决于发送时选择的是收件人还是全部回复，"
+                "普通办公邮件设置讨论。"
+            ),
+            "matched_keywords": ["群发"],
+            "matched_themes": ["众包任务"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_classifier_keeps_active_risk_contrasts_for_false_positive_guards():
+    classifier = FineGrainedIntentClassifier()
+
+    sms_trade = classifier.classify(
+        {
+            "trace_id": "contrast-real-sms-trade",
+            "source_name": "telegram_public_delivery:sms",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "接码平台批量注册账号，临时号码接收验证码，联系客服 @smsbot 下单，价格低。",
+            "matched_keywords": ["接码", "验证码"],
+            "matched_themes": ["接码"],
+        }
+    )
+    click_work = classifier.classify(
+        {
+            "trace_id": "contrast-real-click-work",
+            "source_name": "telegram_public_delivery:click",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "刷单补单垫付返佣，日结兼职招募，做任务后返佣，联系 @tasker 上车。",
+            "matched_keywords": ["刷单", "补单", "垫付", "返佣"],
+            "matched_themes": ["刷单作弊"],
+        }
+    )
+    rebate_traffic = classifier.classify(
+        {
+            "trace_id": "contrast-real-rebate-traffic",
+            "source_name": "x_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "开户链接拉人注册吃返佣，交易量越高返点越多，联系 TG:rebate001 领取高佣链接。",
+            "matched_keywords": ["开户链接", "返佣"],
+            "matched_themes": ["诈骗引流"],
+        }
+    )
+    tool_trade = classifier.classify(
+        {
+            "trace_id": "contrast-real-tool-trade",
+            "source_name": "telegram_public_delivery:tool",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "群控脚本卡密出售，云控后台支持群发拉群，低价卡密联系 @toolbot。",
+            "matched_keywords": ["群控", "脚本", "卡密", "群发"],
+            "matched_themes": ["工具交易"],
+        }
+    )
+
+    assert sms_trade.risk_category == "账号交易"
+    assert sms_trade.secondary_label == "接码注册"
+    assert click_work.risk_category == "刷单作弊"
+    assert click_work.secondary_label in {"刷单返佣", "垫付兼职"}
+    assert rebate_traffic.risk_category == "诈骗引流"
+    assert rebate_traffic.secondary_label == "返利引流"
+    assert tool_trade.risk_category == "工具交易"
+    assert tool_trade.secondary_label == "群控脚本"
+
+
+def test_classifier_demotes_public_retail_private_domain_case_study_to_low_relevance():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "heldout-retail-private-domain-case-study",
+            "source_name": "seeding_note_blackgray_search",
+            "source_type": "Social",
+            "source_url": "https://post.smzdm.com/p/azz25vr5/",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "【案例拆解】私域会员超600万,复购率超50%,泡泡玛特私域体系全拆解!_服务软件_什么值得买 "
+                "泡泡玛特围绕企业微信、小程序商城构建私域体系，通过精细化的引流策略、会员机制和多元营销玩法，"
+                "为潮流零售行业提供有参考价值的运营范本。"
+            ),
+            "matched_keywords": ["引流", "私域"],
+            "matched_themes": ["诈骗引流"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_classifier_demotes_meta_sms_login_complaint_to_low_relevance():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "heldout-meta-sms-login-complaint",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "Meta账户手机短信验证码接收不到,怎么解决? 我以前已经注册了账户，"
+                "现在登录需要手机验证码，登录不上去，手机验证码接收不到，"
+                "我是移动手机号，也打过10086问没有拦截，我自己也没开拦截，这是什么原因?"
+            ),
+            "matched_keywords": ["验证码", "短信验证码"],
+            "matched_themes": ["接码"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
+def test_classifier_routes_full_bitget_rebate_ocr_row_to_rebate_traffic():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "heldout-full-bitget-rebate",
+            "source_name": "x_blackgray_search",
+            "source_type": "IM",
+            "source_url": "https://x.com/LeslieLi92210/status/2058834573514211774",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "星期一 上钟上钟 再不认真上班要被领导骂了 @kajiweb3 "
+                "Bitget Wallet 的美股现货反佣从今天正式生效啦 有超高返佣 "
+                "全平台难找一二 是谁还不来和鼠鼠合作? "
+                "我们是支持美股种类最多的 Web3 平台，聚合了HypeLiquid、ONDO、Xstocks等多家优质股票的专业供应商。"
+            ),
+            "matched_keywords": ["返佣"],
+            "matched_themes": ["刷单作弊"],
+        }
+    )
+
+    assert classification.risk_category == "诈骗引流"
+    assert classification.secondary_label == "返利引流"
+    assert "刷单作弊" not in classification.conflict_categories
+
+
+def test_classifier_demotes_public_automation_tech_rows_to_low_relevance():
+    classifier = FineGrainedIntentClassifier()
+
+    v2ex_bot_site = classifier.classify(
+        {
+            "trace_id": "heldout-v2ex-bot-site-discussion",
+            "source_name": "tech_forum_blackgray_search",
+            "source_type": "Forum",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "tg 机器人创建的网站,用的什么原理? - V2EX bot 会邀请 userbot 成为频道普通订阅者,"
+                "服务于历史内容的整理。全系统部署在北美云服务上,重视用户隐私。二、创建自己频道并添加机器人。"
+            ),
+            "matched_keywords": ["tg", "bot"],
+            "matched_themes": ["工具交易"],
+        }
+    )
+    automation_ad = classifier.classify(
+        {
+            "trace_id": "heldout-automation-software-ad",
+            "source_name": "tech_forum_blackgray_search",
+            "source_type": "Forum",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "Top 10 Automation Software - Free List of the Top Products Ad Viewing ads is privacy protected "
+                "by DuckDuckGo. Ad clicks are managed by Microsoft ad network."
+            ),
+            "matched_keywords": ["automation", "software"],
+            "matched_themes": ["工具交易"],
+        }
+    )
+
+    assert v2ex_bot_site.risk_category == "正常业务白噪声"
+    assert v2ex_bot_site.secondary_label == "低相关"
+    assert v2ex_bot_site.review_required is False
+    assert automation_ad.risk_category == "正常业务白噪声"
+    assert automation_ad.secondary_label == "低相关"
+    assert automation_ad.review_required is False
+
+
+def test_classifier_routes_public_group_send_plugins_to_tool_workflow():
+    classifier = FineGrainedIntentClassifier()
+
+    plugin_source_code = classifier.classify(
+        {
+            "trace_id": "heldout-group-send-plugin-source-code",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "契约官方插件系列-群发插件 (包括源代码)【契约机器人吧】 - 选中群发送 可以根据中间的群列表,"
+                "勾选对应的群号 发送消息类型 - 群 在群里发送消息 - 群成员 给群的每个成员发送 群临时会话/消息。"
+            ),
+            "matched_keywords": ["群发"],
+            "matched_themes": ["众包任务"],
+        }
+    )
+    group_sender_tutorial = classifier.classify(
+        {
+            "trace_id": "heldout-group-send-tutorial-tool",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "群发无忧怎么使用?_群发无忧吧_百度贴吧 今天就给大家讲一下群发无忧的使用方法:"
+                "以群发群功能举例,进入群发群设置页面,设置好要发送的内容,开始选要发送的群。"
+            ),
+            "matched_keywords": ["群发"],
+            "matched_themes": ["众包任务"],
+        }
+    )
+
+    assert plugin_source_code.risk_category == "工具交易"
+    assert plugin_source_code.secondary_label == "群控脚本"
+    assert "众包服务" not in plugin_source_code.conflict_categories
+    assert group_sender_tutorial.risk_category == "工具交易"
+    assert group_sender_tutorial.secondary_label == "群控脚本"
+    assert "众包服务" not in group_sender_tutorial.conflict_categories
+
+
+def test_classifier_demotes_finance_ai_manual_order_article_to_low_relevance():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "heldout-ai-quant-manual-order",
+            "source_name": "x_blackgray_search",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "为什么告别手工单,拥抱AI量化交易? 情绪零干扰:AI严格执行规则,杜绝追涨杀跌。"
+                "数据秒杀:AI瞬时分析行情，自动执行交易策略。"
+            ),
+            "matched_keywords": ["手工单"],
+            "matched_themes": ["刷单作弊"],
+        }
+    )
+
+    assert classification.risk_category == "正常业务白噪声"
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+
+
 def test_evidence_chain_renderer_outputs_reviewable_rows():
     clue = RiskClue(
         clue_id="clue-1",
@@ -1033,7 +1358,7 @@ def test_ocr_hardset_builder_creates_labeled_image_text_rows(tmp_path):
     assert all(record["ocr_text"] == record["content_text"] for record in records)
     assert all(record["ocr_status"] == "completed" for record in records)
     assert all(record["ocr_confidence"] == 1.0 for record in records)
-    assert all(record["ocr_engine_confidences"]["image_path"] == 1.0 for record in records)
+    assert all(record["ocr_engine_confidences"]["bitmap_glyph"] == 1.0 for record in records)
     assert all({"contact", "links", "slang", "tool_names"} <= set(record["manual_labels"]) for record in records)
     entity_types = {
         entity["entity_type"]
@@ -1359,7 +1684,30 @@ def test_acceptance_evidence_export_tracks_high_quality_target_and_source_classe
         ],
     }
 
-    evidence = build_evidence(run, run_path="run.json", smoke_path="smoke.txt", source_catalog="sources.yaml", command="cmd")
+    record_details = {
+        "records": [
+            {
+                "trace_id": "d",
+                "source": "vertical",
+                "source_type": "Vertical",
+                "summary": "原始样本：群控脚本 接码联系 TG:risk",
+                "cleaning_visible": "群控脚本 接码联系 TG:risk",
+                "classification_label": "工具交易",
+                "confidence": 0.82,
+                "review_required": True,
+                "entities": [{"type": "contact", "value": "TG:risk"}],
+            }
+        ]
+    }
+
+    evidence = build_evidence(
+        run,
+        run_path="run.json",
+        smoke_path="smoke.txt",
+        source_catalog="sources.yaml",
+        command="cmd",
+        record_details=record_details,
+    )
 
     assert evidence["target"]["high_quality_count_met"] is True
     assert evidence["counts"]["high_quality_count"] == 2
@@ -1369,6 +1717,12 @@ def test_acceptance_evidence_export_tracks_high_quality_target_and_source_classe
     assert evidence["agent_final_output"][0]["suggested_review_action"] == "human_verify_single_source_or_weak_entity_support"
     assert evidence["agent_final_output"][1]["evidence_reviewability"]["source_count"] == 1
     assert evidence["agent_final_output"][1]["evidence_reviewability"]["suggested_review_action"]
+    card = evidence["agent_final_output"][1]["evidence_reviewability"]["evidence_cards"][0]
+    assert card["trace_id"] == "d"
+    assert card["raw_snippet"] == "原始样本：群控脚本 接码联系 TG:risk"
+    assert card["clean_text"] == "群控脚本 接码联系 TG:risk"
+    assert card["classification"]["risk_category"] == "工具交易"
+    assert card["entities"][0]["normalized_value"] == "TG:risk"
 
 
 def test_cross_source_graph_demo_outputs_multi_source_clue():

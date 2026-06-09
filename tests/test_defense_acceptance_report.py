@@ -185,6 +185,30 @@ def test_build_report_aggregates_acceptance_sections_and_test_results(tmp_path):
                         "evidence_reviewability": {
                             "suggested_review_action": "human_verify_cross_source_trace",
                             "review_action_reasons": ["verify_original_trace"],
+                            "evidence_cards": [
+                                {
+                                    "trace_id": "risk",
+                                    "source_name": "forum",
+                                    "source_type": "Forum",
+                                    "publish_time": "2026-06-07T08:00:00+00:00",
+                                    "raw_snippet": "原始帖：接码群控线索，联系 TG:risk",
+                                    "clean_text": "接码群控线索 联系 TG:risk",
+                                    "classification": {
+                                        "risk_category": "诈骗引流",
+                                        "secondary_label": "私域导流",
+                                        "confidence": 0.86,
+                                        "review_required": False,
+                                    },
+                                    "entities": [
+                                        {
+                                            "entity_type": "contact",
+                                            "normalized_value": "Telegram:risk",
+                                            "raw_value": "TG:risk",
+                                            "confidence": 0.91,
+                                        }
+                                    ],
+                                }
+                            ],
                         },
                         "evidence_chain": [
                             {
@@ -225,6 +249,26 @@ def test_build_report_aggregates_acceptance_sections_and_test_results(tmp_path):
                         "evidence_reviewability_rate": 0.6,
                     },
                 },
+                "profile_quality_cost_latency_curve": [
+                    {
+                        "profile": "fast",
+                        "quality": {"primary_classification_f1": 0.82, "clue_recall": 0.25},
+                        "cost": {"llm_calls_per_1000_records": 0.0, "estimated_tokens": 0},
+                        "latency": {"p95_latency_ms": 12.5},
+                    },
+                    {
+                        "profile": "balanced",
+                        "quality": {"primary_classification_f1": 0.84, "clue_recall": 0.3},
+                        "cost": {"llm_calls_per_1000_records": 1.0, "estimated_tokens": 600},
+                        "latency": {"p95_latency_ms": 18.5},
+                    },
+                    {
+                        "profile": "high_recall",
+                        "quality": {"primary_classification_f1": 0.86, "clue_recall": 0.35},
+                        "cost": {"llm_calls_per_1000_records": 2.0, "estimated_tokens": 1200},
+                        "latency": {"p95_latency_ms": 25.5},
+                    },
+                ],
             },
             ensure_ascii=False,
         ),
@@ -267,6 +311,11 @@ def test_build_report_aggregates_acceptance_sections_and_test_results(tmp_path):
     assert saved["evaluation_metrics"]["object_clue_f1"] == 0.25
     assert saved["evaluation_metrics"]["evidence_reviewability_rate"] == 0.6
     assert saved["evaluation_metrics"]["classification_prediction_semantics"]["metric_scope"] == "review_augmented_predictions"
+    assert [row["profile"] for row in saved["evaluation_metrics"]["profile_quality_cost_latency_curve"]] == [
+        "fast",
+        "balanced",
+        "high_recall",
+    ]
     assert saved["test_results"][0]["returncode"] == 0
     demo = saved["end_to_end_demo"]
     assert demo["query"] == "取当天诈骗引流相关线索"
@@ -282,9 +331,14 @@ def test_build_report_aggregates_acceptance_sections_and_test_results(tmp_path):
     assert demo["entities"]["entity_type_counts"]["contact"] == 2
     assert demo["clues"]["evidence_chain"][0]["clue_id"] == "clue-1"
     assert demo["clues"]["evidence_chain"][0]["evidence_trace_ids"] == ["risk", "review"]
+    assert demo["clues"]["evidence_chain"][0]["evidence_cards"][0]["raw_snippet"] == "原始帖：接码群控线索，联系 TG:risk"
+    assert demo["clues"]["evidence_chain"][0]["one_shot_review_chain"]["clean"] == "接码群控线索 联系 TG:risk"
+    assert demo["clues"]["evidence_chain"][0]["one_shot_review_chain"]["classification"]["risk_category"] == "诈骗引流"
+    assert demo["clues"]["evidence_chain"][0]["one_shot_review_chain"]["entities"][0]["normalized_value"] == "Telegram:risk"
     assert demo["clues"]["evidence_chain"][0]["suggested_review_action"] == "human_verify_cross_source_trace"
     assert demo["cost_latency"]["elapsed_seconds"] == 1.25
     assert demo["cost_latency"]["llm_cost"]["total_usd"] == 0.02
+    assert demo["cost_latency"]["profile_quality_cost_latency_curve"][2]["profile"] == "high_recall"
     assert demo["verification"]["test_results"][0]["status"] == "passed"
     assert demo["evidence_scope"]["mode"] == "single_e2e_artifact_with_supporting_aggregates"
     assert "end_to_end_demo" in saved["acceptance_keys"]

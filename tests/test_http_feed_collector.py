@@ -275,6 +275,97 @@ def test_http_feed_collector_splits_duckduckgo_search_snapshot_into_result_rows(
     assert rows[0]["content_text"].startswith("接码平台资源汇总 接码 平台 TG 招募")
 
 
+def test_http_feed_collector_splits_direct_duckduckgo_html_results():
+    html = """
+    <html>
+      <body>
+        <div class="result">
+          <h2 class="result__title">
+            <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.v2ex.com%2Ft%2F1085916">做了一个小工具：小红书加微引导图生成器</a>
+          </h2>
+          <a class="result__url" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.v2ex.com%2Ft%2F1085916">www.v2ex.com/t/1085916</a>
+          <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.v2ex.com%2Ft%2F1085916">群控脚本和引流图片讨论，联系 TG:risk01</a>
+        </div>
+        <div class="result">
+          <h2 class="result__title">
+            <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fnews.example%2Fanti-fraud">警方通报</a>
+          </h2>
+          <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fnews.example%2Fanti-fraud">警方通报 反诈 宣传</a>
+        </div>
+      </body>
+    </html>
+    """
+
+    collector = HTTPFeedCollector(
+        HTTPFeedConfig(
+            source_url="https://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+            source_name="direct-ddg-v2ex",
+            source_type="Forum",
+            legal_basis="PUBLIC_COMPLIANT_DATA",
+            feed_format="html",
+            network_enabled=True,
+            allowed_domains=("html.duckduckgo.com",),
+            include_keywords=("群控", "脚本", "引流"),
+            exclude_keywords=("警方通报",),
+            query_term="群控",
+            query_term_stage="core",
+        ),
+        opener=lambda request, timeout: FakeHTTPResponse(html, "text/html; charset=utf-8"),
+    )
+
+    rows = [model_dump(item) for item in collector.collect()]
+
+    assert len(rows) == 1
+    assert rows[0]["source_url"] == "https://www.v2ex.com/t/1085916"
+    assert rows[0]["search_query_url"].startswith("https://html.duckduckgo.com/html/")
+    assert rows[0]["result_title"] == "做了一个小工具：小红书加微引导图生成器"
+    assert rows[0]["content_text"] == "做了一个小工具：小红书加微引导图生成器 群控脚本和引流图片讨论，联系 TG:risk01"
+    assert rows[0]["query_term"] == "群控"
+
+
+def test_http_feed_collector_splits_bing_html_results():
+    html = """
+    <html>
+      <body>
+        <ol id="b_results">
+          <li class="b_algo">
+            <h2><a href="https://www.v2ex.com/t/1085916">小红书加微引导图生成器</a></h2>
+            <div class="b_caption"><p>群控脚本和引流图片讨论，联系 TG:risk01</p></div>
+          </li>
+          <li class="b_algo">
+            <h2><a href="https://news.example/anti-fraud">警方通报</a></h2>
+            <div class="b_caption"><p>警方通报 反诈 宣传</p></div>
+          </li>
+        </ol>
+      </body>
+    </html>
+    """
+
+    collector = HTTPFeedCollector(
+        HTTPFeedConfig(
+            source_url="https://www.bing.com/search?q=site%3Awww.v2ex.com+%E7%BE%A4%E6%8E%A7",
+            source_name="bing-v2ex",
+            source_type="Forum",
+            legal_basis="PUBLIC_COMPLIANT_DATA",
+            feed_format="html",
+            network_enabled=True,
+            allowed_domains=("www.bing.com",),
+            include_keywords=("群控", "脚本", "引流"),
+            exclude_keywords=("警方通报",),
+            query_term="群控",
+        ),
+        opener=lambda request, timeout: FakeHTTPResponse(html, "text/html; charset=utf-8"),
+    )
+
+    rows = [model_dump(item) for item in collector.collect()]
+
+    assert len(rows) == 1
+    assert rows[0]["source_url"] == "https://www.v2ex.com/t/1085916"
+    assert rows[0]["search_query_url"].startswith("https://www.bing.com/search")
+    assert rows[0]["result_title"] == "小红书加微引导图生成器"
+    assert rows[0]["content_text"] == "小红书加微引导图生成器 群控脚本和引流图片讨论，联系 TG:risk01"
+
+
 def test_http_feed_collector_drops_duckduckgo_block_page_instead_of_persisting_it():
     html = """
     <html>
@@ -781,6 +872,7 @@ sources:
         max_sources=5,
         source_min_quota=[],
         disable_source_min_quotas=False,
+        source_name_max_quota=2,
     )
 
     selected, summary = selected_sources_from_args(args, catalog_path)
@@ -798,6 +890,37 @@ sources:
     assert summary["selected_source_quota_counts"]["public_account_or_article"] == 1
     assert summary["selected_source_quota_counts"]["secondhand_market"] == 1
     assert summary["selected_source_quota_counts"]["crowdsourcing_platform"] == 1
+
+
+def test_collect_public_sources_allows_configurable_source_name_quota(tmp_path):
+    catalog_path = tmp_path / "source_catalog_name_quota.yaml"
+    catalog_path.write_text(
+        """
+sources:
+  - source_name: repeated-search
+    query_url_template: https://search.example/?q={query}
+    query_seed_terms: [site:example.com]
+    query_global_terms: [a, b, c, d]
+    source_type: Forum
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    allowed_domain: search.example
+        """.strip(),
+        encoding="utf-8",
+    )
+    args = Namespace(
+        source_class=[],
+        max_sources=4,
+        source_min_quota=[],
+        disable_source_min_quotas=True,
+        source_name_max_quota=4,
+    )
+
+    selected, summary = selected_sources_from_args(args, catalog_path)
+
+    assert len(selected or []) == 4
+    assert summary["source_name_max_quota"] == 4
+    assert summary["selected_source_name_counts"]["repeated-search"] == 4
+    assert summary["source_name_quota_warnings"] == []
 
 
 def test_quota_balanced_source_slice_preserves_broad_class_diversity_after_quota_fill():

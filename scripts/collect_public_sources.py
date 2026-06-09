@@ -102,6 +102,12 @@ def parse_args() -> argparse.Namespace:
         help="Disable default granular source minimum quotas when --max-sources is used.",
     )
     parser.add_argument(
+        "--source-name-max-quota",
+        type=int,
+        default=DEFAULT_SOURCE_NAME_MAX_QUOTA,
+        help="Max expanded query variants selected per source_name when --max-sources is used.",
+    )
+    parser.add_argument(
         "--summary-out",
         default="",
         help="Optional JSON file for the collection run summary.",
@@ -167,6 +173,7 @@ def selected_sources_from_args(args: argparse.Namespace, catalog_path: Path) -> 
 
     requested_classes = {str(item) for item in (args.source_class or []) if str(item).strip()}
     max_sources = max(0, int(args.max_sources or 0))
+    source_name_max_quota = max(1, int(getattr(args, "source_name_max_quota", DEFAULT_SOURCE_NAME_MAX_QUOTA) or DEFAULT_SOURCE_NAME_MAX_QUOTA))
     expanded = load_source_catalog(catalog_path)
     filtered = [
         dict(source)
@@ -178,7 +185,7 @@ def selected_sources_from_args(args: argparse.Namespace, catalog_path: Path) -> 
         filtered,
         max_sources=max_sources,
         minimum_quotas=minimum_quotas,
-        source_name_max_quota=DEFAULT_SOURCE_NAME_MAX_QUOTA,
+        source_name_max_quota=source_name_max_quota,
     )
     selected = quota_selection.selected
     selected_class_counts = Counter(source_class_for_record(source) for source in selected)
@@ -194,7 +201,7 @@ def selected_sources_from_args(args: argparse.Namespace, catalog_path: Path) -> 
         "source_class_filter": sorted(requested_classes),
         "max_sources": max_sources,
         "source_minimum_quotas": minimum_quotas,
-        "source_name_max_quota": DEFAULT_SOURCE_NAME_MAX_QUOTA,
+        "source_name_max_quota": source_name_max_quota,
         "expanded_source_count": len(expanded),
         "filtered_source_count": len(filtered),
         "selected_source_count": len(selected),

@@ -1,11 +1,13 @@
 clue_generation_rules:
   clue_promotion:
     shared_contact_48h:
-      match_clue_types: [shared_contact_48h, graph_shared_contact_cross_source]
+      match_clue_types: [shared_contact_48h, graph_shared_contact_cross_source, shared_invite_code_multi_source]
       match_clue_type_contains: [contact, account, invite]
       require_any:
         - min_sources: 2
         - min_observations: 2
+        - any_entity_type: [invite_code]
+      require_any_entity: [contact, account, invite_code]
       actionability_bonus:
         sensitive_entity: 0.18
       pass_reason: contact_account_cross_source_or_two_observations
@@ -26,6 +28,14 @@ clue_generation_rules:
         - min_sources: 2
       pass_reason: tool_slang_has_transaction_or_cross_source_support
       fail_reason: tool_slang_requires_contact_price_url_or_cross_source_support
+    shared_settlement_multi_source:
+      match_clue_types: [shared_settlement_multi_source]
+      require_any:
+        - min_sources: 2
+        - min_observations: 2
+      require_any_entity: [settlement]
+      pass_reason: settlement_cross_source_or_two_observations
+      fail_reason: settlement_requires_two_sources_or_two_observations
     high_frequency_template:
       match_clue_type_contains: [template]
       require_all:

@@ -1,0 +1,70 @@
+# Temporary no-proxy collection trial. This catalog intentionally avoids r.jina.ai
+# so we can isolate whether HTTP 401 came from the proxy layer.
+sources:
+  - source_name: duckduckgo_direct_v2ex_search_trial
+    source_type: Forum
+    platform: duckduckgo
+    source_url: https://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7%20%E8%84%9A%E6%9C%AC
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: html.duckduckgo.com
+    include_keywords: [群控, 脚本, 引流, 接码, userbot, automation]
+    include_themes: [诈骗引流, 账号交易, 众包任务, 接码]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: v2ex_direct_public_thread_trial
+    source_type: Forum
+    platform: v2ex
+    source_url: https://www.v2ex.com/t/1085916
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.v2ex.com
+    include_keywords: [小红书, 微信号, 引流, 图片, 账号, ban]
+    include_themes: [诈骗引流, 工具交易]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: telegram_direct_public_channel_trial
+    source_type: IM
+    platform: telegram
+    source_url: https://t.me/s/pythonzh
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: t.me
+    include_keywords: [Telegram, Python, 群, 频道]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: freelancer_direct_jobs_trial
+    source_type: Vertical
+    platform: crowdsourcing
+    source_url: https://www.freelancer.com/jobs/
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.freelancer.com
+    include_keywords: [automation, scraper, bot, telegram, python, marketing, scraping]
+    include_themes: [众包任务]
+    exclude_keywords: [anti-spam, prevent, moderation]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: goofish_direct_search_trial
+    source_type: Vertical
+    platform: second_hand_market
+    source_url: https://www.goofish.com/search?q=%E8%B4%A6%E5%8F%B7
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.goofish.com
+    include_keywords: [账号, 卖号, 实名号, 白号, 老号]
+    include_themes: [账号交易]
+    exclude_keywords: [登录, signup, security verification, just a moment]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true

@@ -130,7 +130,11 @@ def _contextual_entity(entity: Any, text: str) -> Any:
                 masked_value=_mask_sensitive(f"Telegram:{bare}"),
                 sensitivity_level="sensitive",
             )
-    if entity_type == "invite_code" and any(marker in local_prefix for marker in ("uid", "用户id", "账号", "账户")):
+    if (
+        entity_type == "invite_code"
+        and any(marker in local_prefix for marker in ("uid", "用户id", "账号", "账户", "接码项目贴记录", "账号池节点"))
+        and not any(marker in local_prefix for marker in ("邀请码", "暗号", "口令", "code"))
+    ):
         return _replace_entity(
             entity,
             entity_type="account",

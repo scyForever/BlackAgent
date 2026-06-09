@@ -45,6 +45,20 @@ def test_offline_clue_builder_persists_candidate_clues_to_repo():
     assert reviewability["source_count"] >= 2
     assert reviewability["entity_support_count"] >= 1
     assert reviewability["original_snippets"]
+    assert repo.list()[0]["evidence_cards"] == reviewability["evidence_cards"]
+    assert reviewability["evidence_cards"]
+    assert {
+        "trace_id",
+        "source_name",
+        "source_type",
+        "publish_time",
+        "raw_snippet",
+        "clean_text",
+        "classification",
+        "entities",
+    } <= set(reviewability["evidence_cards"][0])
+    assert reviewability["evidence_cards"][0]["classification"]["risk_category"]
+    assert reviewability["evidence_cards"][0]["entities"]
     assert reviewability["time_range"]["start"] == "2026-05-23T01:00:00+00:00"
     assert reviewability["time_range"]["end"] == "2026-05-23T03:00:00+00:00"
 

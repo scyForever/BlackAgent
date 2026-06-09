@@ -1,0 +1,382 @@
+# No-proxy source catalog for the multi-source acceptance pack.
+# It avoids r.jina.ai and uses direct public HTTP endpoints only.
+sources:
+  - source_name: direct_public_article_search
+    source_type: public_account
+    platform: html_article
+    source_url: https://www.bing.com/search?q=site%3Amp.weixin.qq.com%2Fs+%E6%8E%A5%E7%A0%81+%E7%BE%A4%E6%8E%A7
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:mp.weixin.qq.com/s"]
+    query_global_terms: [接码, 群控, 私域导流, 刷单, 卖号, 反诈 黑灰产]
+    query_themes: [接码, 账号交易, 诈骗引流, 刷单作弊, 众包任务]
+    query_term_limit: 6
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [接码, 群控, 私域, 导流, 刷单, 卖号, 账号, 黑灰产, 反诈, 电诈, 跑分, 引流, 拉新]
+    include_themes: [接码, 账号交易, 诈骗引流, 刷单作弊, 众包任务]
+    exclude_keywords: [游戏攻略, 影视, 小说, 美食]
+    min_keyword_hits: 1
+    source_quota_groups: [public_account_or_article]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_public_article_broad_search
+    source_type: public_account
+    platform: html_article
+    source_url: https://www.bing.com/search?q=site%3Amp.weixin.qq.com%2Fs+%E9%BB%91%E7%81%B0%E4%BA%A7+%E6%8E%A5%E7%A0%81
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:mp.weixin.qq.com/s"]
+    query_global_terms: [黑灰产 接码, 电诈 引流, 反诈 跑分, 账号买卖, 短信验证码, 私域导流, 群控脚本, 刷单诈骗]
+    query_themes: [接码, 账号交易, 诈骗引流, 刷单作弊, 众包任务]
+    query_term_limit: 8
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [黑灰产, 接码, 电诈, 引流, 跑分, 账号, 买卖, 验证码, 私域, 导流, 群控, 脚本, 刷单, 诈骗]
+    include_themes: [接码, 账号交易, 诈骗引流, 刷单作弊, 众包任务]
+    exclude_keywords: [游戏攻略, 影视, 小说, 美食]
+    min_keyword_hits: 1
+    source_quota_groups: [public_account_or_article]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_public_article_news_blog_search
+    source_type: html_article
+    platform: html_article
+    source_url: https://www.bing.com/search?q=%E9%BB%91%E7%81%B0%E4%BA%A7+%E6%8E%A5%E7%A0%81+%E6%96%87%E7%AB%A0
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: []
+    query_global_terms: [黑灰产 接码 文章, 电诈 引流 文章, 反诈 跑分 文章, 账号买卖 文章, 短信验证码 接码 文章, 私域导流 文章, 群控脚本 文章, 刷单诈骗 文章]
+    query_themes: [接码, 账号交易, 诈骗引流, 刷单作弊, 众包任务]
+    query_term_limit: 8
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [黑灰产, 接码, 电诈, 引流, 跑分, 账号, 买卖, 验证码, 私域, 导流, 群控, 脚本, 刷单, 诈骗, 文章]
+    include_themes: [接码, 账号交易, 诈骗引流, 刷单作弊, 众包任务]
+    exclude_keywords: [游戏攻略, 影视, 小说, 美食]
+    min_keyword_hits: 1
+    source_quota_groups: [public_account_or_article]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_secondhand_search
+    source_type: marketplace
+    platform: second_hand_market
+    source_url: https://www.bing.com/search?q=site%3Acarousell.sg+sell+verified+account
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:carousell.sg"]
+    query_global_terms: [sell account, verified account, old account, account sale, account shop, telegram account]
+    query_themes: [账号交易]
+    query_term_limit: 6
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [account, verified, old account, sell account, account sale, telegram, bulk, shop]
+    include_themes: [账号交易]
+    exclude_keywords: [login, signup, guide, tutorial, review, official, security verification]
+    min_keyword_hits: 1
+    source_quota_groups: [secondhand_market]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_secondhand_playerup_search
+    source_type: marketplace
+    platform: second_hand_market
+    source_url: https://www.bing.com/search?q=site%3Aplayerup.com+telegram+account
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:playerup.com"]
+    query_global_terms: [telegram account, verified account, social media account, account sale, game account, bulk account]
+    query_themes: [账号交易]
+    query_term_limit: 6
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [account, sale, sell, buy, verified, telegram, social, game, bulk, marketplace]
+    include_themes: [账号交易]
+    exclude_keywords: [login, signup, security verification]
+    min_keyword_hits: 1
+    source_quota_groups: [secondhand_market]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_secondhand_epicnpc_search
+    source_type: marketplace
+    platform: second_hand_market
+    source_url: https://www.bing.com/search?q=site%3Aepicnpc.com+telegram+account
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:epicnpc.com"]
+    query_global_terms: [telegram account, verified account, social media account, account sale, game account, bulk account]
+    query_themes: [账号交易]
+    query_term_limit: 6
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [account, sale, sell, buy, verified, telegram, social, game, bulk, marketplace]
+    include_themes: [账号交易]
+    exclude_keywords: [login, signup, security verification]
+    min_keyword_hits: 1
+    source_quota_groups: [secondhand_market]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_secondhand_pzds_search
+    source_type: marketplace
+    platform: second_hand_market
+    source_url: https://www.bing.com/search?q=site%3Apzds.com+%E8%B4%A6%E5%8F%B7%E4%BA%A4%E6%98%93
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:pzds.com"]
+    query_global_terms: [账号交易, 卖号, 账号买卖, 游戏账号, 成品号, 实名号]
+    query_themes: [账号交易]
+    query_term_limit: 6
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [账号, 账号交易, 卖号, 账号买卖, 游戏账号, 成品号, 实名号, 买号]
+    include_themes: [账号交易]
+    exclude_keywords: [登录, 找回, 安全验证]
+    min_keyword_hits: 1
+    source_quota_groups: [secondhand_market]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_crowdsourcing_search
+    source_type: task_platform
+    platform: crowdsourcing
+    source_url: https://www.bing.com/search?q=site%3Awww.freelancer.com%2Fjobs+telegram+automation+scraper
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:www.freelancer.com/jobs"]
+    query_global_terms: [telegram automation, userbot, scraper, pyrogram, telethon, bulk messaging, lead scraping]
+    query_themes: [众包任务]
+    query_term_limit: 8
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [telegram, automation, userbot, scraper, pyrogram, telethon, bulk, messaging, lead, scraping, bot]
+    include_themes: [众包任务]
+    exclude_keywords: [anti-spam, prevent, moderation, tutorial]
+    min_keyword_hits: 1
+    source_quota_groups: [crowdsourcing_platform]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_crowdsourcing_upwork_search
+    source_type: task_platform
+    platform: crowdsourcing
+    source_url: https://www.bing.com/search?q=site%3Awww.upwork.com%2Ffreelance-jobs+telegram+bot
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:www.upwork.com/freelance-jobs"]
+    query_global_terms: [telegram bot, telegram scraper, lead scraping, bulk messaging, python automation, social media automation]
+    query_themes: [众包任务]
+    query_term_limit: 8
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [telegram, bot, scraper, scraping, automation, lead, bulk, messaging, python, freelance]
+    include_themes: [众包任务]
+    exclude_keywords: [anti-spam, prevent, moderation, tutorial]
+    min_keyword_hits: 1
+    source_quota_groups: [crowdsourcing_platform]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_crowdsourcing_fiverr_search
+    source_type: task_platform
+    platform: crowdsourcing
+    source_url: https://www.bing.com/search?q=site%3Awww.fiverr.com%2Fgigs+telegram+bot
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:www.fiverr.com/gigs"]
+    query_global_terms: [telegram bot, telegram scraper, lead scraping, bulk messaging, python automation, social media automation]
+    query_themes: [众包任务]
+    query_term_limit: 8
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [telegram, bot, scraper, scraping, automation, lead, bulk, messaging, python, freelance]
+    include_themes: [众包任务]
+    exclude_keywords: [anti-spam, prevent, moderation, tutorial]
+    min_keyword_hits: 1
+    source_quota_groups: [crowdsourcing_platform]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_crowdsourcing_peopleperhour_search
+    source_type: task_platform
+    platform: crowdsourcing
+    source_url: https://www.bing.com/search?q=site%3Awww.peopleperhour.com+telegram+bot
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:www.peopleperhour.com"]
+    query_global_terms: [telegram bot, telegram scraper, lead scraping, bulk messaging, python automation, social media automation]
+    query_themes: [众包任务]
+    query_term_limit: 8
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [telegram, bot, scraper, scraping, automation, lead, bulk, messaging, python, freelance]
+    include_themes: [众包任务]
+    exclude_keywords: [anti-spam, prevent, moderation, tutorial]
+    min_keyword_hits: 1
+    source_quota_groups: [crowdsourcing_platform]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_crowdsourcing_guru_search
+    source_type: task_platform
+    platform: crowdsourcing
+    source_url: https://www.bing.com/search?q=site%3Awww.guru.com%2Fd%2Fjobs+telegram+bot
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:www.guru.com/d/jobs"]
+    query_global_terms: [telegram bot, telegram scraper, lead scraping, bulk messaging, python automation, social media automation]
+    query_themes: [众包任务]
+    query_term_limit: 8
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [telegram, bot, scraper, scraping, automation, lead, bulk, messaging, python, freelance]
+    include_themes: [众包任务]
+    exclude_keywords: [anti-spam, prevent, moderation, tutorial]
+    min_keyword_hits: 1
+    source_quota_groups: [crowdsourcing_platform]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_technical_forum_search
+    source_type: Forum
+    platform: technical_community
+    source_url: https://www.bing.com/search?q=site%3Awww.v2ex.com+%E7%BE%A4%E6%8E%A7+%E8%84%9A%E6%9C%AC
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:www.v2ex.com"]
+    query_global_terms: [群控, 脚本, 接码, 协议号, 私域导流, 加微, telegram automation, userbot]
+    query_themes: [接码, 账号交易, 诈骗引流, 众包任务]
+    query_term_limit: 8
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [群控, 脚本, 接码, 协议号, 私域, 引流, 加微, 微信号, telegram, userbot, automation, 群发, 采集群成员]
+    include_themes: [接码, 账号交易, 诈骗引流, 众包任务]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣]
+    min_keyword_hits: 1
+    source_quota_groups: [vertical_or_technical]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_technical_stackoverflow_search
+    source_type: Forum
+    platform: technical_community
+    source_url: https://www.bing.com/search?q=site%3Astackoverflow.com%2Fquestions+telegram+bot
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:stackoverflow.com/questions"]
+    query_global_terms: [telegram bot, telethon, pyrogram, userbot, scraper, selenium automation, bulk messaging]
+    query_themes: [众包任务, 接码]
+    query_term_limit: 8
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [telegram, bot, telethon, pyrogram, userbot, scraper, selenium, automation, bulk, messaging]
+    include_themes: [众包任务, 接码]
+    exclude_keywords: [anti-spam, prevent, moderation]
+    min_keyword_hits: 1
+    source_quota_groups: [vertical_or_technical]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_technical_github_search
+    source_type: technical
+    platform: technical_community
+    source_url: https://www.bing.com/search?q=site%3Agithub.com+telegram+userbot
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:github.com"]
+    query_global_terms: [telegram userbot, telethon userbot, pyrogram userbot, telegram scraper, bulk messaging, group scraper]
+    query_themes: [众包任务, 接码]
+    query_term_limit: 8
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [telegram, userbot, telethon, pyrogram, scraper, automation, bulk, messaging, group]
+    include_themes: [众包任务, 接码]
+    exclude_keywords: [anti-spam, prevent, moderation]
+    min_keyword_hits: 1
+    source_quota_groups: [vertical_or_technical]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_technical_v2ex_broad_search
+    source_type: Forum
+    platform: technical_community
+    source_url: https://www.bing.com/search?q=site%3Awww.v2ex.com+telegram+bot
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:www.v2ex.com"]
+    query_global_terms: [telegram bot, telegram scraper, telethon, pyrogram, userbot, 群控脚本, 接码平台, 短信验证码, 私域导流, 群发工具]
+    query_themes: [接码, 账号交易, 诈骗引流, 众包任务]
+    query_term_limit: 8
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [telegram, bot, scraper, telethon, pyrogram, userbot, 群控, 脚本, 接码, 验证码, 私域, 导流, 群发]
+    include_themes: [接码, 账号交易, 诈骗引流, 众包任务]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣]
+    min_keyword_hits: 1
+    source_quota_groups: [vertical_or_technical]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_technical_reddit_search
+    source_type: Forum
+    platform: technical_community
+    source_url: https://www.bing.com/search?q=site%3Areddit.com%2Fr+telegram+scraper
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:reddit.com/r"]
+    query_global_terms: [telegram scraper, telegram bot, telethon userbot, pyrogram scraper, selenium automation, bulk messaging, group scraper, account verification]
+    query_themes: [众包任务, 接码, 账号交易]
+    query_term_limit: 8
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [telegram, bot, scraper, scraping, telethon, pyrogram, userbot, selenium, automation, bulk, messaging, verification, account]
+    include_themes: [众包任务, 接码, 账号交易]
+    exclude_keywords: [anti-spam, prevent, moderation]
+    min_keyword_hits: 1
+    source_quota_groups: [vertical_or_technical]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_technical_github_discussions_search
+    source_type: technical
+    platform: technical_community
+    source_url: https://www.bing.com/search?q=site%3Agithub.com%2Fdiscussions+telegram+userbot
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:github.com/discussions"]
+    query_global_terms: [telegram userbot, telethon userbot, pyrogram userbot, telegram scraper, bulk messaging, group scraper, account verification]
+    query_themes: [众包任务, 接码]
+    query_term_limit: 8
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [telegram, userbot, telethon, pyrogram, scraper, automation, bulk, messaging, group, verification, account]
+    include_themes: [众包任务, 接码]
+    exclude_keywords: [anti-spam, prevent, moderation]
+    min_keyword_hits: 1
+    source_quota_groups: [vertical_or_technical]
+    robots_allowed: true
+    terms_allow_security_research: true
+
+  - source_name: direct_technical_cn_blog_search
+    source_type: Forum
+    platform: technical_community
+    source_url: https://www.bing.com/search?q=site%3Acnblogs.com+telegram+bot
+    query_url_template: https://www.bing.com/search?q={query}
+    query_seed_terms: ["site:cnblogs.com"]
+    query_global_terms: [telegram bot, telethon, pyrogram, 接码平台, 群控脚本, 短信验证码, 私域导流, 群发工具]
+    query_themes: [接码, 账号交易, 诈骗引流, 众包任务]
+    query_term_limit: 8
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: www.bing.com
+    include_keywords: [telegram, bot, telethon, pyrogram, 接码, 验证码, 群控, 脚本, 私域, 导流, 群发]
+    include_themes: [接码, 账号交易, 诈骗引流, 众包任务]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣]
+    min_keyword_hits: 1
+    source_quota_groups: [vertical_or_technical]
+    robots_allowed: true
+    terms_allow_security_research: true

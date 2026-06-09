@@ -290,9 +290,11 @@ class ScoreStage:
                 payload["evidence_reviewability"] = build_evidence_reviewability(
                     payload,
                     assessment=assessment,
+                    classifications=context.get("classifications") or [],
                     entities=entities,
                     records=records,
                 )
+                payload["evidence_cards"] = payload["evidence_reviewability"].get("evidence_cards") or []
             output.append(payload)
         return output
 

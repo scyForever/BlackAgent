@@ -108,6 +108,20 @@ class TextFilterPipelineTest(unittest.TestCase):
         self.assertEqual("generic_guide_noise", dropped_reasons["guide-noise"])
         self.assertEqual("defensive_context_noise", dropped_reasons["defensive-noise"])
 
+    def test_cleaner_keeps_human_confirmed_non_tutorial_clue_gold(self) -> None:
+        result = CleanerPipeline().clean(
+            [
+                {
+                    "trace_id": "manual-tool-clue",
+                    "source_trace_id": "manual-tool-clue",
+                    "content_text": "授权样本：群发器售后贴和教程贴都出现 tool-mh14，人工确认不是普通教程。",
+                }
+            ]
+        )
+
+        self.assertEqual(1, len(result.cleaned))
+        self.assertFalse(result.dropped)
+
     def test_text_filter_helpers_cover_blank_garbage_and_similarity(self) -> None:
         self.assertEqual("招募 刷单", normalize_text(" 招募\t刷单\n"))
         self.assertTrue(is_blank_or_garbled("����%%%%@@@@"))

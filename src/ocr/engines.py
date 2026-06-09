@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -21,21 +22,33 @@ class OCRRuntimeError(RuntimeError):
 class TesseractCliOCREngine:
     """OCR engine backed by an installed ``tesseract`` binary."""
 
-    def __init__(self, *, executable: str = "tesseract", language: str = "chi_sim+eng", timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        *,
+        executable: str = "tesseract",
+        language: str = "chi_sim+eng",
+        timeout_seconds: float = 10.0,
+        tessdata_dir: str | Path | None = None,
+    ) -> None:
         self.executable = executable
         self.language = language
         self.timeout_seconds = timeout_seconds
+        self.tessdata_dir = str(tessdata_dir) if tessdata_dir else None
 
     def __call__(self, image_path: str | Path) -> str:
         binary = shutil.which(self.executable)
         if not binary:
             raise OCRRuntimeError(f"tesseract_not_found:{self.executable}")
+        env = None
+        if self.tessdata_dir:
+            env = {**os.environ, "TESSDATA_PREFIX": self.tessdata_dir}
         result = subprocess.run(  # noqa: S603 - explicit executable and local image path only.
             [binary, str(image_path), "stdout", "-l", self.language],
             check=False,
             capture_output=True,
             text=True,
             timeout=self.timeout_seconds,
+            env=env,
         )
         if result.returncode != 0:
             raise OCRRuntimeError(f"tesseract_failed:{result.stderr.strip() or result.returncode}")

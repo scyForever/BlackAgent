@@ -372,6 +372,7 @@ class InvestigationClueMixin:
                     classification_by_trace[trace_id] = dict(item)
             prompt_context = self.phase_engine.runtime_prompt_context(
                 label=self._exploration_label(candidate_clues, runtime_quality_gate=runtime_quality_gate),
+                include_gray=True,
             )
             prompt_context["history"] = processed_records[-12:]
             hypotheses: list[dict[str, Any]] = []

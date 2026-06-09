@@ -677,6 +677,16 @@ def test_clue_promotion_archives_weak_duplicates_and_caps_actionable_load():
                 "confidence": 0.4,
             },
             {
+                "clue_id": "candidate-3",
+                "clue_type": "shared_contact_48h",
+                "key": "TG:core02",
+                "risk_category": "工具交易",
+                "evidence_trace_ids": ["t5", "t6"],
+                "source_names": ["tg-c", "forum-d"],
+                "entity_values": ["TG:core02"],
+                "confidence": 0.78,
+            },
+            {
                 "clue_id": "weak-tool",
                 "clue_type": "tool_slang",
                 "key": "脚本",
@@ -691,13 +701,69 @@ def test_clue_promotion_archives_weak_duplicates_and_caps_actionable_load():
             "entities": [
                 {"source_trace_id": "t1", "entity_type": "contact"},
                 {"source_trace_id": "t2", "entity_type": "contact"},
+                {"source_trace_id": "t5", "entity_type": "contact"},
+                {"source_trace_id": "t6", "entity_type": "contact"},
+            ]
+        },
+    )
+
+    assert len(actionable) == 2
+    assert {item["clue_id"] for item in actionable} == {"candidate-1", "candidate-3"}
+    assert all(item["clue_stage"] == "actionable" for item in actionable)
+    assert {item["clue_id"] for item in stage.archived_weak_clues} == {"candidate-2", "weak-tool"}
+
+
+def test_clue_promotion_promotes_shared_settlement_multi_source():
+    stage = CluePromotionStage()
+    actionable = stage.run_batch(
+        [
+            {
+                "clue_id": "settlement-1",
+                "clue_type": "shared_settlement_multi_source",
+                "key": "USDT",
+                "risk_category": "诈骗引流",
+                "evidence_trace_ids": ["pay-a", "pay-b"],
+                "source_names": ["feed-a", "forum-b"],
+                "entity_values": ["USDT"],
+                "confidence": 0.86,
+            }
+        ],
+        context={
+            "entities": [
+                {"source_trace_id": "pay-a", "entity_type": "settlement"},
+                {"source_trace_id": "pay-b", "entity_type": "settlement"},
             ]
         },
     )
 
     assert len(actionable) == 1
-    assert actionable[0]["clue_stage"] == "actionable"
-    assert {item["clue_id"] for item in stage.archived_weak_clues} == {"candidate-2", "weak-tool"}
+    assert actionable[0]["promotion_reason"] == "settlement_cross_source_or_two_observations"
+
+
+def test_clue_promotion_promotes_shared_invite_code_multi_source():
+    stage = CluePromotionStage()
+    actionable = stage.run_batch(
+        [
+            {
+                "clue_id": "invite-1",
+                "clue_type": "shared_invite_code_multi_source",
+                "key": "INV-MH-01",
+                "risk_category": "账号交易",
+                "evidence_trace_ids": ["invite-a", "invite-b"],
+                "source_names": ["forum-a", "feed-b"],
+                "entity_values": ["INV-MH-01"],
+                "confidence": 0.86,
+            }
+        ],
+        context={
+            "entities": [
+                {"source_trace_id": "invite-a", "entity_type": "invite_code"},
+            ]
+        },
+    )
+
+    assert len(actionable) == 1
+    assert actionable[0]["promotion_reason"] == "contact_account_cross_source_or_two_observations"
 
 
 def test_clue_promotion_accepts_new_configured_rule_without_python_branch(tmp_path):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+import time
 from typing import Any, Callable, Iterable, Mapping
 
 from src.cleaner.text_filter import normalize_text
@@ -22,6 +23,8 @@ class OCRImageTextResult:
     sources: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     engine_outputs: dict[str, str] = field(default_factory=dict)
+    engine_latencies_ms: dict[str, float] = field(default_factory=dict)
+    engine_costs: dict[str, float] = field(default_factory=dict)
     ocr_engine_confidences: dict[str, float] = field(default_factory=dict)
     ocr_confidence_details: dict[str, Any] = field(default_factory=dict)
 
@@ -62,6 +65,8 @@ class OCRImageTextAdapter:
         errors: list[str] = []
         engine_texts: list[str] = []
         engine_outputs: dict[str, str] = {}
+        engine_latencies_ms: dict[str, float] = {}
+        engine_costs: dict[str, float] = {}
         engine_confidences: dict[str, float] = {}
         engine_confidence_details: dict[str, dict[str, Any]] = {}
         upstream_confidence = normalize_ocr_confidence(materialized.get("ocr_confidence"))
@@ -73,9 +78,11 @@ class OCRImageTextAdapter:
                 continue
             for engine_name, engine in self.engines.items():
                 output_key = engine_name if len(image_paths) == 1 else f"{engine_name}:{Path(path).name}"
+                start = time.perf_counter()
                 try:
                     raw_output = engine(path)
-                    extracted_text, confidence, confidence_field = _engine_output_text_and_confidence(raw_output, engine)
+                    engine_latencies_ms[output_key] = round((time.perf_counter() - start) * 1000, 3)
+                    extracted_text, confidence, confidence_field, cost = _engine_output_text_confidence_and_cost(raw_output, engine)
                     engine_outputs[output_key] = extracted_text
                     if extracted_text and extracted_text not in engine_texts:
                         engine_texts.append(extracted_text)
@@ -88,7 +95,10 @@ class OCRImageTextAdapter:
                             "field": confidence_field or "confidence",
                             "confidence": confidence,
                         }
+                    if cost is not None:
+                        engine_costs[output_key] = cost
                 except Exception as exc:  # pragma: no cover - defensive for injected engines
+                    engine_latencies_ms[output_key] = round((time.perf_counter() - start) * 1000, 3)
                     errors.append(f"ocr_engine_error:{engine_name}:{path}:{exc}")
         final_text = normalize_text(" ".join([text, *engine_texts]))
         content_modality = _merge_modality(
@@ -106,6 +116,8 @@ class OCRImageTextAdapter:
             sources=sorted(set(sources)),
             errors=errors,
             engine_outputs=engine_outputs,
+            engine_latencies_ms=engine_latencies_ms,
+            engine_costs=engine_costs,
             ocr_engine_confidences=engine_confidences,
             ocr_confidence_details={
                 "upstream": upstream_confidence_details,
@@ -123,6 +135,8 @@ class OCRImageTextAdapter:
         data["ocr_sources"] = result.sources
         data["ocr_errors"] = result.errors
         data["ocr_engine_outputs"] = result.engine_outputs
+        data["ocr_engine_latencies_ms"] = result.engine_latencies_ms
+        data["ocr_engine_costs"] = result.engine_costs
         data["ocr_confidence"] = result.ocr_confidence
         data["ocr_engine_confidences"] = result.ocr_engine_confidences
         data["ocr_confidence_details"] = result.ocr_confidence_details
@@ -161,22 +175,23 @@ def _merge_modality(base: str, *, had_upstream_text: bool, had_engine_text: bool
     return "image_text"
 
 
-def _engine_output_text_and_confidence(raw_output: Any, engine: OCREngine) -> tuple[str, float | None, str | None]:
+def _engine_output_text_confidence_and_cost(raw_output: Any, engine: OCREngine) -> tuple[str, float | None, str | None, float | None]:
     if isinstance(raw_output, Mapping):
         text = normalize_text(str(_first_present(raw_output, ("text", "ocr_text", "content_text", "output", "value")) or ""))
         confidence, field_name = _first_confidence(raw_output)
-        return text, confidence, field_name
+        return text, confidence, field_name, _first_cost(raw_output)
     if hasattr(raw_output, "model_dump"):
         try:
-            return _engine_output_text_and_confidence(raw_output.model_dump(), engine)
+            return _engine_output_text_confidence_and_cost(raw_output.model_dump(), engine)
         except Exception:
             pass
     if hasattr(raw_output, "__dataclass_fields__"):
-        return _engine_output_text_and_confidence(asdict(raw_output), engine)
+        return _engine_output_text_confidence_and_cost(asdict(raw_output), engine)
     text = normalize_text(str(raw_output or ""))
     confidence = normalize_ocr_confidence(getattr(engine, "default_ocr_confidence", None))
     field_name = "engine.default_ocr_confidence" if confidence is not None else None
-    return text, confidence, field_name
+    cost = _numeric_or_none(getattr(engine, "default_ocr_cost", None))
+    return text, confidence, field_name, cost
 
 
 def _first_present(payload: Mapping[str, Any], fields: Iterable[str]) -> Any:
@@ -193,6 +208,23 @@ def _first_confidence(payload: Mapping[str, Any]) -> tuple[float | None, str | N
         if confidence is not None:
             return confidence, field_name
     return None, None
+
+
+def _first_cost(payload: Mapping[str, Any]) -> float | None:
+    for field_name in ("ocr_cost", "cost", "cost_usd", "estimated_cost", "estimated_cost_usd"):
+        cost = _numeric_or_none(payload.get(field_name))
+        if cost is not None:
+            return cost
+    return None
+
+
+def _numeric_or_none(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return round(float(value), 6)
+    except (TypeError, ValueError):
+        return None
 
 
 __all__ = ["OCRImageTextAdapter", "OCRImageTextResult"]

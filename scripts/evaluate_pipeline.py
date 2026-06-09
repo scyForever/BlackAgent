@@ -11,6 +11,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+import yaml
+
 
 def configure_stdout_utf8() -> None:
     if hasattr(sys.stdout, "reconfigure"):
@@ -67,6 +69,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--ablation",
         action="store_true",
         help="Run fast/off, high_recall/off, and high_recall/mock and report LLM marginal value.",
+    )
+    parser.add_argument(
+        "--profile-curve",
+        action="store_true",
+        help="Run fast, balanced, and high_recall and report quality/cost/latency tradeoff curves.",
     )
     parser.add_argument(
         "--ablation-include-real",
@@ -667,7 +674,9 @@ def _clue_object_match_score(expected: Mapping[str, Any], actual: Mapping[str, A
     score = 2
     expected_key = _normalize_entity_value(expected.get("key"))
     actual_key = _normalize_entity_value(actual.get("key"))
+    has_key_match = False
     if expected_key and actual_key and (expected_key == actual_key or expected_key in actual_key or actual_key in expected_key):
+        has_key_match = True
         score += 4
     expected_risk = _normalize_label(expected.get("risk_category"))
     actual_risk = _normalize_label(actual.get("risk_category"))
@@ -675,11 +684,17 @@ def _clue_object_match_score(expected: Mapping[str, Any], actual: Mapping[str, A
         score += 2
     expected_entities = {_normalize_entity_value(item) for item in expected.get("expected_entity_values") or [] if _normalize_entity_value(item)}
     actual_entities = {_normalize_entity_value(item) for item in actual.get("entity_values") or [] if _normalize_entity_value(item)}
-    if expected_entities and actual_entities & expected_entities:
+    has_entity_match = bool(expected_entities and actual_entities & expected_entities)
+    if has_entity_match:
         score += 3
+    expected_evidence = _evidence_set(expected)
+    actual_evidence = _evidence_set(actual)
+    overlap_count = len(expected_evidence & actual_evidence)
+    if overlap_count:
+        score += 2 + overlap_count
+    if expected_key and not has_key_match and not has_entity_match:
+        return 0
     if not expected_key and not expected_entities:
-        expected_evidence = _evidence_set(expected)
-        actual_evidence = _evidence_set(actual)
         if expected_evidence and actual_evidence & expected_evidence:
             score += 2
     return score if score >= 5 else 0
@@ -982,10 +997,22 @@ def main(argv: list[str] | None = None) -> int:
         "clue_records": load_jsonl(args.clues_gold) if args.clues_gold else None,
         "hard_negative_records": load_jsonl(args.hard_negative) if args.hard_negative else None,
     }
-    report = (
-        evaluate_ablation(**loaded, with_budget=True, include_real=args.ablation_include_real)
-        if args.ablation
-        else evaluate(
+    if args.profile_curve:
+        report = evaluate_profile_curve(
+            loaded["records"],
+            entity_records=loaded["entity_records"],
+            clue_records=loaded["clue_records"],
+            hard_negative_records=loaded["hard_negative_records"],
+            llm_mode=args.llm_mode,
+            with_budget=True,
+            classification_granularity=args.classification_granularity,
+            dataset_name=args.dataset_name,
+            dataset_kind=args.dataset_kind,
+        )
+    elif args.ablation:
+        report = evaluate_ablation(**loaded, with_budget=True, include_real=args.ablation_include_real)
+    else:
+        report = evaluate(
             loaded["records"],
             entity_records=loaded["entity_records"],
             clue_records=loaded["clue_records"],
@@ -997,7 +1024,6 @@ def main(argv: list[str] | None = None) -> int:
             dataset_name=args.dataset_name,
             dataset_kind=args.dataset_kind,
         )
-    )
     if args.ablation and args.write_latest_llm_value:
         report["latest_llm_value"] = write_latest_llm_value_report(
             report,
@@ -1114,6 +1140,89 @@ def evaluate_ablation(
     }
 
 
+def evaluate_profile_curve(
+    records: list[dict[str, Any]],
+    *,
+    entity_records: list[dict[str, Any]] | None = None,
+    clue_records: list[dict[str, Any]] | None = None,
+    hard_negative_records: list[dict[str, Any]] | None = None,
+    profiles: Iterable[str] = ("fast", "balanced", "high_recall"),
+    llm_mode: str = "off",
+    with_budget: bool = True,
+    classification_granularity: str = "auto",
+    dataset_name: str | None = None,
+    dataset_kind: str | None = None,
+) -> dict[str, Any]:
+    scenarios: dict[str, dict[str, Any]] = {}
+    curve: list[dict[str, Any]] = []
+    for profile in profiles:
+        normalized_profile = str(profile or "").strip()
+        if normalized_profile not in {"fast", "balanced", "high_recall"}:
+            continue
+        report = evaluate(
+            deepcopy(records),
+            entity_records=deepcopy(entity_records),
+            clue_records=deepcopy(clue_records),
+            hard_negative_records=deepcopy(hard_negative_records),
+            profile=normalized_profile,
+            llm_mode=llm_mode,
+            with_budget=with_budget,
+            classification_granularity=classification_granularity,
+            dataset_name=dataset_name,
+            dataset_kind=dataset_kind,
+        )
+        scenarios[normalized_profile] = report
+        curve.append(_profile_curve_row(normalized_profile, report))
+    return {
+        "status": "completed",
+        "mode": "profile_quality_cost_latency_curve",
+        "profiles": [row["profile"] for row in curve],
+        "llm_mode": llm_mode,
+        "profile_quality_cost_latency_curve": curve,
+        "scenarios": scenarios,
+        "claim_boundary": (
+            "Curve compares local/offline pipeline quality, deterministic routing cost estimates, "
+            "and measured local p95 latency for the same evaluation fixtures."
+        ),
+    }
+
+
+def _profile_curve_row(profile: str, report: Mapping[str, Any]) -> dict[str, Any]:
+    dimensions = report.get("profile_comparison_dimensions") if isinstance(report.get("profile_comparison_dimensions"), Mapping) else {}
+    return {
+        "profile": profile,
+        "quality": {
+            "primary_classification_f1": report.get("primary_classification_f1"),
+            "secondary_classification_f1": report.get("secondary_classification_f1"),
+            "hierarchical_classification_f1": report.get("hierarchical_classification_f1"),
+            "classification_recall": dimensions.get("classification_recall") or report.get("classification_recall"),
+            "false_positive_rate": report.get("false_positive_rate"),
+            "classification_review_rate": report.get("classification_review_rate"),
+            "entity_f1": report.get("entity_f1"),
+            "clue_precision": report.get("clue_precision"),
+            "clue_recall": report.get("clue_recall"),
+            "clue_f1": report.get("clue_f1"),
+        },
+        "cost": {
+            "llm_calls": dimensions.get("llm_calls"),
+            "llm_calls_per_1000_records": report.get("llm_calls_per_1000_records"),
+            "estimated_tokens": dimensions.get("estimated_tokens"),
+            "estimated_tokens_per_valid_clue": report.get("estimated_tokens_per_valid_clue"),
+            "profile_budget": _budget_profile(profile),
+        },
+        "latency": {
+            "p50_latency_ms": report.get("p50_latency_ms"),
+            "p95_latency_ms": dimensions.get("p95_latency_ms") or report.get("p95_latency_ms"),
+        },
+        "tradeoff_summary": {
+            "profile": profile,
+            "quality_signal": report.get("hierarchical_classification_f1") or report.get("primary_classification_f1"),
+            "cost_signal": report.get("llm_calls_per_1000_records"),
+            "latency_signal_ms": dimensions.get("p95_latency_ms") or report.get("p95_latency_ms"),
+        },
+    }
+
+
 def _gateway_for_mode(llm_mode: str) -> LLMGateway | None:
     if llm_mode == "mock":
         return LLMGateway(LLMGatewayConfig(dry_run=True, mock=True))
@@ -1123,29 +1232,60 @@ def _gateway_for_mode(llm_mode: str) -> LLMGateway | None:
 
 
 def _budget_profile(profile: str) -> dict[str, Any]:
+    configured = _configured_budget_profile(profile)
+    if configured:
+        return configured
     return {
         "fast": {
-            "max_candidate_clues": 4,
-            "max_llm_calls": 2,
-            "max_llm_tokens": 4000,
-            "max_llm_classify_records": 2,
-            "max_llm_refine_clues": 1,
+            "max_candidate_clues": 20,
+            "max_llm_calls": 3,
+            "max_llm_tokens": 3000,
+            "max_llm_classify_records": 5,
+            "max_llm_extract_records": 5,
+            "max_llm_refine_clues": 2,
         },
         "balanced": {
-            "max_candidate_clues": 6,
-            "max_llm_calls": 20,
-            "max_llm_tokens": 20000,
+            "max_candidate_clues": 50,
+            "max_llm_calls": 10,
+            "max_llm_tokens": 10000,
             "max_llm_classify_records": 20,
-            "max_llm_refine_clues": 10,
+            "max_llm_extract_records": 20,
+            "max_llm_refine_clues": 6,
         },
         "high_recall": {
-            "max_candidate_clues": 6,
+            "max_candidate_clues": 200,
             "max_llm_calls": 40,
-            "max_llm_tokens": 40000,
-            "max_llm_classify_records": 40,
+            "max_llm_tokens": 50000,
+            "max_llm_classify_records": 100,
+            "max_llm_extract_records": 100,
             "max_llm_refine_clues": 20,
         },
     }.get(profile, {})
+
+
+def _configured_budget_profile(profile: str) -> dict[str, Any]:
+    path = PROJECT_ROOT / "config" / "routing_profiles.yaml"
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except OSError:
+        return {}
+    profiles = payload.get("routing_profiles") if isinstance(payload, Mapping) else {}
+    raw = profiles.get(profile) if isinstance(profiles, Mapping) else None
+    if not isinstance(raw, Mapping):
+        return {}
+    budget_keys = {
+        "max_elapsed_seconds",
+        "max_sources",
+        "max_raw_records",
+        "max_candidate_clues",
+        "max_llm_calls",
+        "max_llm_tokens",
+        "max_llm_classify_records",
+        "max_llm_extract_records",
+        "max_llm_refine_clues",
+        "max_query_rewrite_sources",
+    }
+    return {key: raw[key] for key in budget_keys if key in raw}
 
 
 def _llm_value_delta(base: Mapping[str, Any], llm: Mapping[str, Any]) -> dict[str, Any]:

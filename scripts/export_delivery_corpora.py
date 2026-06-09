@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.cleaner.text_filter import BLACKGRAY_LITERAL_VARIANT_REPLACEMENTS, normalize_intel_text, normalize_text
 from src.collector.relevance import get_theme_search_variants, load_theme_synonym_registry
-from src.collector.source_metadata import build_collection_metadata, source_class_for_record
+from src.collector.source_metadata import build_collection_metadata, source_class_for_record, source_quota_groups_for_record
 from src.enhancement.source_intake import MultimodalTextExtractor
 from storage.sql_backend import connect
 
@@ -51,6 +51,21 @@ def parse_args() -> argparse.Namespace:
         default="data/collection_phase_defense_quota_balanced_sample.jsonl",
         help="Strict defense quota-balanced raw JSONL sample output path",
     )
+    parser.add_argument(
+        "--acceptance-pack-jsonl-out",
+        default="data/collection_phase_multi_source_acceptance_pack.jsonl",
+        help="300-500 record multi-source balanced acceptance pack JSONL output path",
+    )
+    parser.add_argument(
+        "--acceptance-pack-classifications",
+        default="",
+        help="Optional classification JSONL; when paired with entities, acceptance pack only samples trace IDs present in both.",
+    )
+    parser.add_argument(
+        "--acceptance-pack-entities",
+        default="",
+        help="Optional entity JSONL; when paired with classifications, acceptance pack only samples trace IDs present in both.",
+    )
     parser.add_argument("--limit", type=int, default=0, help="Optional max raw rows to export (0 = all)")
     return parser.parse_args()
 
@@ -60,6 +75,19 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as file_obj:
         for row in rows:
             file_obj.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _load_jsonl(path: str | Path) -> list[dict[str, Any]]:
+    resolved = Path(path)
+    if not resolved.is_absolute():
+        resolved = (PROJECT_ROOT / resolved).resolve()
+    if not resolved.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in resolved.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    return rows
 
 
 def _query_stage_lookup() -> dict[tuple[str, str], str]:
@@ -292,6 +320,131 @@ def build_quota_sample(
     return summary
 
 
+ACCEPTANCE_PACK_CATEGORIES = (
+    "public_account_or_article",
+    "secondhand_market",
+    "crowdsourcing_platform",
+    "technical_or_forum",
+)
+
+
+def build_acceptance_pack_sample(
+    rows: list[dict[str, Any]],
+    *,
+    min_records: int = 300,
+    max_records: int = 500,
+    include_trace_ids: bool = False,
+    required_trace_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """Build a deterministic 300-500 multi-source acceptance pack summary."""
+
+    target_min = max(1, int(min_records))
+    target_max = max(target_min, int(max_records))
+    per_category_target = max(1, target_min // len(ACCEPTANCE_PACK_CATEGORIES))
+    required_ids = {str(item).strip() for item in (required_trace_ids or set()) if str(item).strip()}
+    filtered_rows = [
+        row
+        for row in rows
+        if not required_ids or _trace_id(row) in required_ids
+    ]
+    buckets: dict[str, list[dict[str, Any]]] = {category: [] for category in ACCEPTANCE_PACK_CATEGORIES}
+    for row in filtered_rows:
+        category = _acceptance_pack_category(row)
+        if category:
+            buckets[category].append(row)
+
+    available_counts = {category: len(buckets[category]) for category in ACCEPTANCE_PACK_CATEGORIES}
+    eligible_count = sum(available_counts.values())
+    warnings: list[str] = []
+    if eligible_count < target_min:
+        warnings.append(f"acceptance_pack_total_below_minimum:available={eligible_count};required={target_min}")
+    for category in ACCEPTANCE_PACK_CATEGORIES:
+        available_count = available_counts[category]
+        if available_count < per_category_target:
+            warnings.append(f"{category}_insufficient:available={available_count};required={per_category_target}")
+
+    status = "insufficient_records" if warnings else "completed"
+    selected: list[dict[str, Any]] = []
+    for category in ACCEPTANCE_PACK_CATEGORIES:
+        if status == "completed":
+            selected.extend(buckets[category][:per_category_target])
+        else:
+            selected.extend(buckets[category][: min(len(buckets[category]), target_max - len(selected))])
+            if len(selected) >= target_max:
+                break
+
+    selected_counts = Counter(_acceptance_pack_category(row) or "uncategorized" for row in selected)
+    source_counts = Counter(_source_name(row) for row in selected)
+    trace_ids = [_trace_id(row) for row in selected]
+    summary = {
+        "status": status,
+        "pack_version": "multi_source_acceptance_pack_v1",
+        "target_record_range": {"min": target_min, "max": target_max},
+        "target_record_count": target_min,
+        "per_category_target": per_category_target,
+        "target_categories": list(ACCEPTANCE_PACK_CATEGORIES),
+        "raw_record_count": len(rows),
+        "evidence_ready_trace_filter": {
+            "enabled": bool(required_ids),
+            "required_trace_count": len(required_ids),
+            "excluded_without_required_trace": len(rows) - len(filtered_rows),
+        },
+        "eligible_record_count": eligible_count,
+        "selected_count": len(selected),
+        "available_category_counts": [
+            {"category": category, "count": available_counts[category]}
+            for category in ACCEPTANCE_PACK_CATEGORIES
+        ],
+        "selected_category_counts": [
+            {"category": category, "count": selected_counts.get(category, 0)}
+            for category in ACCEPTANCE_PACK_CATEGORIES
+        ],
+        "source_counts": [{"source_name": name, "count": count} for name, count in source_counts.most_common(20)],
+        "selected_trace_id_sample": trace_ids[:20],
+        "warnings": warnings,
+        "claim_boundary": (
+            "completed_300_to_500_multi_source_acceptance_pack"
+            if status == "completed"
+            else "insufficient_records_exported_for_audit_not_300_record_acceptance"
+        ),
+    }
+    if include_trace_ids:
+        summary["selected_trace_ids"] = trace_ids
+    return summary
+
+
+def acceptance_pack_required_trace_ids(
+    *,
+    classifications: list[dict[str, Any]],
+    entities: list[dict[str, Any]],
+) -> set[str]:
+    classification_ids = {_trace_id(row) for row in classifications if _trace_id(row)}
+    entity_ids = {_trace_id(row) for row in entities if _trace_id(row)}
+    if not classification_ids or not entity_ids:
+        return set()
+    return classification_ids & entity_ids
+
+
+def _acceptance_pack_category(row: dict[str, Any]) -> str | None:
+    groups = set(source_quota_groups_for_record(row))
+    if groups & {"public_account_or_article", "public_account_article"}:
+        return "public_account_or_article"
+    if "secondhand_market" in groups:
+        return "secondhand_market"
+    if "crowdsourcing_platform" in groups:
+        return "crowdsourcing_platform"
+    if "vertical_or_technical" in groups:
+        return "technical_or_forum"
+
+    source_text = " ".join(
+        str(row.get(field) or "").strip().lower()
+        for field in ("source_type", "type", "platform", "source_name", "name", "source_url", "url")
+    )
+    if any(marker in source_text for marker in ("forum", "tieba", "technical", "techforum", "threat_intel")):
+        return "technical_or_forum"
+    return None
+
+
 def _strict_class_targets(
     available_counts: dict[str, int],
     *,
@@ -474,6 +627,17 @@ def main() -> int:
         if not Path(args.defense_quota_jsonl_out).is_absolute()
         else Path(args.defense_quota_jsonl_out).resolve()
     )
+    acceptance_pack_out = (
+        (PROJECT_ROOT / args.acceptance_pack_jsonl_out).resolve()
+        if not Path(args.acceptance_pack_jsonl_out).is_absolute()
+        else Path(args.acceptance_pack_jsonl_out).resolve()
+    )
+    acceptance_classifications = _load_jsonl(args.acceptance_pack_classifications) if args.acceptance_pack_classifications else []
+    acceptance_entities = _load_jsonl(args.acceptance_pack_entities) if args.acceptance_pack_entities else []
+    acceptance_required_trace_ids = acceptance_pack_required_trace_ids(
+        classifications=acceptance_classifications,
+        entities=acceptance_entities,
+    )
 
     backend = connect(f"sqlite:///{db_path.as_posix()}")
     backend.create_schema()
@@ -542,6 +706,35 @@ def main() -> int:
     ]
     _write_jsonl(defense_quota_out, defense_quota_rows)
 
+    acceptance_pack = build_acceptance_pack_sample(
+        exported_rows,
+        include_trace_ids=True,
+        required_trace_ids=acceptance_required_trace_ids or None,
+    )
+    acceptance_pack["evidence_ready_inputs"] = {
+        "classifications_jsonl": str((PROJECT_ROOT / args.acceptance_pack_classifications).resolve())
+        if args.acceptance_pack_classifications and not Path(args.acceptance_pack_classifications).is_absolute()
+        else str(Path(args.acceptance_pack_classifications).resolve()) if args.acceptance_pack_classifications else "",
+        "entities_jsonl": str((PROJECT_ROOT / args.acceptance_pack_entities).resolve())
+        if args.acceptance_pack_entities and not Path(args.acceptance_pack_entities).is_absolute()
+        else str(Path(args.acceptance_pack_entities).resolve()) if args.acceptance_pack_entities else "",
+        "classification_trace_count": len({_trace_id(row) for row in acceptance_classifications if _trace_id(row)}),
+        "entity_trace_count": len({_trace_id(row) for row in acceptance_entities if _trace_id(row)}),
+        "required_trace_count": len(acceptance_required_trace_ids),
+        "claim_boundary": (
+            "acceptance pack sampled only from traces with both classification and entity evidence"
+            if acceptance_required_trace_ids
+            else "acceptance pack did not receive both classification and entity evidence inputs"
+        ),
+    }
+    acceptance_selected_ids = set(acceptance_pack.pop("selected_trace_ids", []) or [])
+    acceptance_pack_rows = [
+        row
+        for row in exported_rows
+        if str(row.get("trace_id") or row.get("source_trace_id") or row.get("hash_id") or "") in acceptance_selected_ids
+    ]
+    _write_jsonl(acceptance_pack_out, acceptance_pack_rows)
+
     manifest = {
         "status": "completed",
         "db_path": str(db_path),
@@ -558,6 +751,7 @@ def main() -> int:
         "raw_jsonl": str(raw_out),
         "quota_balanced_jsonl": str(quota_out),
         "defense_quota_balanced_jsonl": str(defense_quota_out),
+        "acceptance_pack_jsonl": str(acceptance_pack_out),
         "query_term_stage_counts": [{"stage": name, "count": count} for name, count in stage_counts.most_common()],
         "special_signal_counts": [{"signal": name, "count": count} for name, count in signal_counts.most_common()],
         "source_class_counts": [{"source_class": name, "count": count} for name, count in source_class_counts.most_common()],
@@ -565,6 +759,7 @@ def main() -> int:
         "top_sources": [{"source_name": name, "count": count} for name, count in source_counts.most_common(20)],
         "quota_balanced_sample": quota_sample,
         "defense_quota_balanced_sample": defense_quota_sample,
+        "multi_source_acceptance_pack": acceptance_pack,
         "sample_special_signal_rows": samples,
     }
     manifest_out.parent.mkdir(parents=True, exist_ok=True)

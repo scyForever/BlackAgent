@@ -4,7 +4,12 @@ import json
 import sys
 
 from scripts import export_delivery_corpora
-from scripts.export_delivery_corpora import _annotate_row, _query_stage_lookup, build_quota_sample
+from scripts.export_delivery_corpora import (
+    _annotate_row,
+    _query_stage_lookup,
+    build_acceptance_pack_sample,
+    build_quota_sample,
+)
 from src.enhancement.source_intake import MultimodalTextExtractor
 from storage.sql_backend import connect
 
@@ -22,6 +27,13 @@ def raw_row(prefix: str, idx: int, *, source_name: str, source_type: str) -> dic
         "legal_basis": "AUTHORIZED_PARTNER",
         "content_text": "接码平台继续放单，联系 TG:captcha01",
     }
+
+
+def acceptance_row(prefix: str, idx: int, *, source_name: str, source_type: str, source_class: str | None = None) -> dict[str, str]:
+    row = raw_row(prefix, idx, source_name=source_name, source_type=source_type)
+    if source_class:
+        row["source_class"] = source_class
+    return row
 
 
 def test_export_delivery_corpora_can_infer_variant_stage_and_special_signals():
@@ -52,6 +64,125 @@ def test_export_delivery_corpora_can_infer_variant_stage_and_special_signals():
     assert annotated["source_snapshot_id"].startswith("variant-source:")
     assert annotated["source_access_type"] == "manual_upload"
     assert annotated["collection_quality"]["quality_version"] == "collection_quality_v1"
+
+
+def test_acceptance_pack_selects_balanced_300_records_across_required_source_categories():
+    rows = (
+        [
+            acceptance_row("article", idx, source_name="wechat-public-account", source_type="public_account")
+            for idx in range(80)
+        ]
+        + [
+            acceptance_row("secondhand", idx, source_name="xianyu-secondhand-market", source_type="marketplace")
+            for idx in range(80)
+        ]
+        + [
+            acceptance_row("crowd", idx, source_name="crowdsourcing-task-platform", source_type="task_platform")
+            for idx in range(80)
+        ]
+        + [
+            acceptance_row("technical", idx, source_name="technical-forum", source_type="technical")
+            for idx in range(80)
+        ]
+    )
+
+    sample = build_acceptance_pack_sample(rows, include_trace_ids=True)
+    selected_category_counts = {item["category"]: item["count"] for item in sample["selected_category_counts"]}
+    available_category_counts = {item["category"]: item["count"] for item in sample["available_category_counts"]}
+
+    assert sample["status"] == "completed"
+    assert sample["selected_count"] == 300
+    assert sample["target_record_range"] == {"min": 300, "max": 500}
+    assert selected_category_counts == {
+        "public_account_or_article": 75,
+        "secondhand_market": 75,
+        "crowdsourcing_platform": 75,
+        "technical_or_forum": 75,
+    }
+    assert available_category_counts == {
+        "public_account_or_article": 80,
+        "secondhand_market": 80,
+        "crowdsourcing_platform": 80,
+        "technical_or_forum": 80,
+    }
+    assert len(sample["selected_trace_ids"]) == 300
+    assert sample["warnings"] == []
+
+
+def test_acceptance_pack_can_require_evidence_ready_trace_ids():
+    rows = (
+        [
+            acceptance_row("article", idx, source_name="wechat-public-account", source_type="public_account")
+            for idx in range(80)
+        ]
+        + [
+            acceptance_row("secondhand", idx, source_name="xianyu-secondhand-market", source_type="marketplace")
+            for idx in range(80)
+        ]
+        + [
+            acceptance_row("crowd", idx, source_name="crowdsourcing-task-platform", source_type="task_platform")
+            for idx in range(80)
+        ]
+        + [
+            acceptance_row("technical", idx, source_name="technical-forum", source_type="technical")
+            for idx in range(80)
+        ]
+    )
+    evidence_ready = {
+        row["trace_id"]
+        for row in rows
+        if not (row["trace_id"].startswith("secondhand-") and int(row["trace_id"].rsplit("-", 1)[1]) < 5)
+    }
+
+    sample = build_acceptance_pack_sample(rows, include_trace_ids=True, required_trace_ids=evidence_ready)
+    selected_category_counts = {item["category"]: item["count"] for item in sample["selected_category_counts"]}
+    available_category_counts = {item["category"]: item["count"] for item in sample["available_category_counts"]}
+
+    assert sample["status"] == "completed"
+    assert sample["selected_count"] == 300
+    assert sample["evidence_ready_trace_filter"] == {
+        "enabled": True,
+        "required_trace_count": 315,
+        "excluded_without_required_trace": 5,
+    }
+    assert selected_category_counts == {
+        "public_account_or_article": 75,
+        "secondhand_market": 75,
+        "crowdsourcing_platform": 75,
+        "technical_or_forum": 75,
+    }
+    assert available_category_counts["secondhand_market"] == 75
+    assert all(trace_id in evidence_ready for trace_id in sample["selected_trace_ids"])
+
+
+def test_acceptance_pack_reports_insufficiency_without_claiming_300_records():
+    rows = [
+        acceptance_row("article", idx, source_name="wechat-public-account", source_type="public_account")
+        for idx in range(40)
+    ] + [
+        acceptance_row("technical", idx, source_name="technical-forum", source_type="technical")
+        for idx in range(90)
+    ]
+
+    sample = build_acceptance_pack_sample(rows)
+    selected_category_counts = {item["category"]: item["count"] for item in sample["selected_category_counts"]}
+    available_category_counts = {item["category"]: item["count"] for item in sample["available_category_counts"]}
+
+    assert sample["status"] == "insufficient_records"
+    assert sample["selected_count"] == 130
+    assert sample["target_record_range"] == {"min": 300, "max": 500}
+    assert selected_category_counts == {
+        "public_account_or_article": 40,
+        "secondhand_market": 0,
+        "crowdsourcing_platform": 0,
+        "technical_or_forum": 90,
+    }
+    assert available_category_counts["public_account_or_article"] == 40
+    assert available_category_counts["technical_or_forum"] == 90
+    assert sample["claim_boundary"] == "insufficient_records_exported_for_audit_not_300_record_acceptance"
+    assert any("acceptance_pack_total_below_minimum" in warning for warning in sample["warnings"])
+    assert any("secondhand_market_insufficient" in warning for warning in sample["warnings"])
+    assert any("crowdsourcing_platform_insufficient" in warning for warning in sample["warnings"])
 
 
 def test_quota_sample_caps_single_source_and_reports_underfilled_classes():
@@ -180,6 +311,7 @@ def test_main_manifest_exposes_existing_and_strict_defense_quota_samples(tmp_pat
     raw_out = tmp_path / "raw.jsonl"
     quota_out = tmp_path / "quota.jsonl"
     defense_quota_out = tmp_path / "defense-quota.jsonl"
+    acceptance_pack_out = tmp_path / "acceptance-pack.jsonl"
     manifest_out = tmp_path / "manifest.json"
 
     backend = connect(sqlite_dsn(db_path))
@@ -211,6 +343,8 @@ def test_main_manifest_exposes_existing_and_strict_defense_quota_samples(tmp_pat
             str(quota_out),
             "--defense-quota-jsonl-out",
             str(defense_quota_out),
+            "--acceptance-pack-jsonl-out",
+            str(acceptance_pack_out),
             "--manifest-out",
             str(manifest_out),
         ],
@@ -231,3 +365,8 @@ def test_main_manifest_exposes_existing_and_strict_defense_quota_samples(tmp_pat
     assert manifest["defense_quota_balanced_sample"]["strict_balance"] is True
     assert manifest["defense_quota_balanced_sample"]["selected_count"] == 71
     assert len(defense_rows) == 71
+    assert manifest["acceptance_pack_jsonl"] == str(acceptance_pack_out.resolve())
+    assert manifest["multi_source_acceptance_pack"]["status"] == "insufficient_records"
+    assert manifest["multi_source_acceptance_pack"]["target_record_range"] == {"min": 300, "max": 500}
+    assert manifest["multi_source_acceptance_pack"]["claim_boundary"] == "insufficient_records_exported_for_audit_not_300_record_acceptance"
+    assert len(acceptance_pack_out.read_text(encoding="utf-8").splitlines()) == 50

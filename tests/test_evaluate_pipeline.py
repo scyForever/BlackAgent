@@ -1,7 +1,7 @@
 from argparse import Namespace
 
 from scripts import evaluate_pipeline
-from scripts.evaluate_pipeline import evaluate, evaluate_ablation, evaluate_clues, load_jsonl, quality_gate_failures
+from scripts.evaluate_pipeline import evaluate, evaluate_ablation, evaluate_clues, evaluate_profile_curve, load_jsonl, quality_gate_failures
 from src.evaluation.llm_ablation import LLMValueGate
 
 
@@ -44,7 +44,10 @@ def test_evaluate_pipeline_reports_classification_entity_and_clue_metrics():
     assert report["clue"]["graph_clue_eval"]["expected_clue_count"] == 1
     assert report["clue"]["graph_clue_eval"]["status"] == "completed"
     assert report["clue"]["overall_review_load_eval"]["metric_note"] == "review_load_is_reported_separately_from_standard_vs_graph_quality"
-    assert report["clue"]["clue_overgeneration_ratio"] == 1.0
+    assert report["clue"]["clue_overgeneration_ratio"] >= 1.0
+    assert report["clue"]["overall_review_load_eval"]["clue_overgeneration_ratio"] == report["clue"]["clue_overgeneration_ratio"]
+    assert report["clue"]["duplicate_clue_rate"] == 0.0
+    assert report["clue"]["graph_clue_eval"]["clue_overgeneration_ratio"] == 1.0
     assert report["classification"]["primary"]["fp"] <= 30
     assert "primary_classification_f1" in report
     assert "secondary_classification_f1" in report
@@ -139,6 +142,77 @@ def test_evaluate_clues_scores_expected_clue_objects_evidence_chains_and_reviewa
     assert metrics["object_clue_eval"]["evidence_chain_recall"] == 1.0
     assert metrics["object_clue_eval"]["evidence_reviewability_rate"] == 1.0
     assert metrics["duplicate_clue_rate"] > 0
+
+
+def test_evaluate_clues_prefers_matching_evidence_when_type_and_key_tie():
+    records = [
+        {
+            "trace_id": "bridge-gold-a",
+            "expected_clues": [
+                {
+                    "clue_type": "shared_domain_multi_source",
+                    "key": "risk.example",
+                    "risk_category": "诈骗引流",
+                    "expected_evidence_trace_ids": ["bridge-gold-a", "bridge-gold-b"],
+                    "expected_entity_values": ["risk.example"],
+                    "min_evidence_count": 2,
+                    "min_source_count": 2,
+                }
+            ],
+        }
+    ]
+    actual = [
+        {
+            "clue_type": "shared_domain_multi_source",
+            "key": "risk.example",
+            "risk_category": "诈骗引流",
+            "evidence_trace_ids": ["unrelated-a", "unrelated-b"],
+            "entity_values": ["risk.example"],
+        },
+        {
+            "clue_type": "shared_domain_multi_source",
+            "key": "risk.example",
+            "risk_category": "诈骗引流",
+            "evidence_trace_ids": ["bridge-gold-a", "bridge-gold-b"],
+            "entity_values": ["risk.example"],
+            "source_names": ["source-a", "source-b"],
+        },
+    ]
+
+    metrics = evaluate_clues(records, actual)
+
+    assert metrics["object_clue_eval"]["matched_clue_count"] == 1
+    assert metrics["object_clue_eval"]["evidence_chain_recall"] == 1.0
+
+
+def test_evaluate_clues_does_not_match_keyed_graph_clue_by_type_only():
+    records = [
+        {
+            "trace_id": "graph-gold-a",
+            "expected_clues": [
+                {
+                    "clue_type": "entity_graph_tool_trade_cluster",
+                    "key": "loginbot-mh22",
+                    "risk_category": "工具交易",
+                    "expected_evidence_trace_ids": ["graph-gold-a", "graph-gold-b"],
+                    "expected_entity_values": ["loginbot-mh22", "批量登录"],
+                }
+            ],
+        }
+    ]
+    actual = [
+        {
+            "clue_type": "entity_graph_tool_trade_cluster",
+            "key": "Telegram:mhfinal24",
+            "risk_category": "工具交易",
+            "evidence_trace_ids": ["graph-gold-b", "graph-gold-c"],
+            "entity_values": ["Telegram:mhfinal24", "群控"],
+        }
+    ]
+
+    metrics = evaluate_clues(records, actual)
+
+    assert metrics["object_clue_eval"]["matched_clue_count"] == 0
 
 
 def test_manual_heldout_clue_gold_fixture_exists_with_evidence_chain_requirements():
@@ -245,6 +319,37 @@ def test_llm_ablation_reports_value_gate_when_mock_adds_no_quality_gain():
     assert {"fast_off", "high_recall_off", "high_recall_mock"} <= set(report["scenarios"])
     assert "llm_calls_delta" in report["llm_value"]
     assert LLMValueGate().should_enable_record_enrich("high_recall", report["llm_value"]) is report["llm_value_gate"]["should_enable_record_enrich"]
+
+
+def test_profile_curve_reports_quality_cost_and_latency_for_all_profiles():
+    report = evaluate_profile_curve(
+        load_jsonl("tests/evaluation/gold_classification.jsonl"),
+        entity_records=load_jsonl("tests/evaluation/gold_entities.jsonl"),
+        clue_records=load_jsonl("tests/evaluation/gold_clues.jsonl"),
+        hard_negative_records=load_jsonl("tests/evaluation/hard_negative.jsonl"),
+        llm_mode="off",
+        with_budget=True,
+    )
+
+    rows = report["profile_quality_cost_latency_curve"]
+    by_profile = {row["profile"]: row for row in rows}
+
+    assert report["mode"] == "profile_quality_cost_latency_curve"
+    assert list(by_profile) == ["fast", "balanced", "high_recall"]
+    for profile, row in by_profile.items():
+        assert row["quality"]["primary_classification_f1"] is not None
+        assert "hierarchical_classification_f1" in row["quality"]
+        assert "clue_recall" in row["quality"]
+        assert "llm_calls_per_1000_records" in row["cost"]
+        assert "estimated_tokens" in row["cost"]
+        assert "p95_latency_ms" in row["latency"]
+        assert row["cost"]["profile_budget"]["max_llm_calls"] > 0
+        assert row["tradeoff_summary"]["profile"] == profile
+
+
+def test_evaluate_pipeline_budget_profile_uses_routing_profile_config():
+    assert evaluate_pipeline._budget_profile("high_recall")["max_candidate_clues"] == 200
+    assert evaluate_pipeline._budget_profile("fast")["max_candidate_clues"] == 20
 
 
 def test_llm_value_gate_tightens_model_router_record_enrich_without_blocking_conflicts():

@@ -331,6 +331,16 @@ class HTTPFeedCollector:
                 yield {"indicator": row[0], "raw_columns": row}
 
     def _html_rows(self, body: str) -> Iterable[Mapping[str, Any] | str]:
+        direct_duckduckgo_rows = list(self._direct_duckduckgo_html_rows(body))
+        if direct_duckduckgo_rows:
+            yield from direct_duckduckgo_rows
+            return
+
+        bing_rows = list(self._bing_html_rows(body))
+        if bing_rows:
+            yield from bing_rows
+            return
+
         parser = _HTMLSnapshotParser()
         parser.feed(body)
         snapshot_text = parser.snapshot_text()
@@ -461,6 +471,66 @@ class HTTPFeedCollector:
             )
         return rows
 
+    def _direct_duckduckgo_html_rows(self, body: str) -> Iterable[dict[str, Any]]:
+        if "result__a" not in body or "duckduckgo" not in body.lower():
+            return []
+
+        parser = _DuckDuckGoHTMLResultParser()
+        parser.feed(body)
+        rows: list[dict[str, Any]] = []
+        for rank, item in enumerate(parser.rows(), start=1):
+            title = _collapse_ws(str(item.get("title") or ""))
+            snippet = _collapse_ws(str(item.get("snippet") or ""))
+            target_url = str(item.get("url") or "").strip()
+            content_text = _collapse_ws(" ".join(part for part in (title, snippet) if part))
+            if not target_url or not content_text:
+                continue
+            rows.append(
+                {
+                    "source_url": target_url,
+                    "search_query_url": self.config.source_url,
+                    "search_query": self.config.search_query,
+                    "query_theme": self.config.query_theme,
+                    "query_term": self.config.query_term,
+                    "query_term_stage": self.config.query_term_stage,
+                    "query_variant_index": self.config.query_variant_index,
+                    "result_title": title,
+                    "result_rank": rank,
+                    "content_text": content_text,
+                }
+            )
+        return rows
+
+    def _bing_html_rows(self, body: str) -> Iterable[dict[str, Any]]:
+        if "b_algo" not in body:
+            return []
+
+        parser = _BingHTMLResultParser()
+        parser.feed(body)
+        rows: list[dict[str, Any]] = []
+        for rank, item in enumerate(parser.rows(), start=1):
+            title = _collapse_ws(str(item.get("title") or ""))
+            snippet = _collapse_ws(str(item.get("snippet") or ""))
+            target_url = str(item.get("url") or "").strip()
+            content_text = _collapse_ws(" ".join(part for part in (title, snippet) if part))
+            if not target_url or not content_text:
+                continue
+            rows.append(
+                {
+                    "source_url": target_url,
+                    "search_query_url": self.config.source_url,
+                    "search_query": self.config.search_query,
+                    "query_theme": self.config.query_theme,
+                    "query_term": self.config.query_term,
+                    "query_term_stage": self.config.query_term_stage,
+                    "query_variant_index": self.config.query_variant_index,
+                    "result_title": title,
+                    "result_rank": rank,
+                    "content_text": content_text,
+                }
+            )
+        return rows
+
 
 def _data_line(line: str) -> bool:
     stripped = line.strip()
@@ -543,6 +613,128 @@ class _HTMLSnapshotParser(HTMLParser):
             self._title_parts.append(normalized)
 
 
+class _DuckDuckGoHTMLResultParser(HTMLParser):
+    """Extract result title/snippet rows from DuckDuckGo's non-JS HTML page."""
+
+    RESULT_LINK_CLASSES = {"result__a", "result__snippet"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._active_role: str | None = None
+        self._active_href = ""
+        self._active_text_parts: list[str] = []
+        self._rows: list[dict[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "a":
+            return
+        attr_map = {str(key).lower(): str(value) for key, value in attrs if key and value}
+        classes = set(str(attr_map.get("class") or "").split())
+        role = next((item for item in self.RESULT_LINK_CLASSES if item in classes), "")
+        if not role:
+            return
+        self._active_role = "title" if role == "result__a" else "snippet"
+        self._active_href = attr_map.get("href", "")
+        self._active_text_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._active_role:
+            self._active_text_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() != "a" or not self._active_role:
+            return
+        text = _collapse_ws(" ".join(self._active_text_parts))
+        target_url = _normalize_http_link(_decode_duckduckgo_target(self._active_href))
+        if text and target_url:
+            self._append_result_part(self._active_role, target_url, text)
+        self._active_role = None
+        self._active_href = ""
+        self._active_text_parts = []
+
+    def rows(self) -> list[dict[str, str]]:
+        return [dict(row) for row in self._rows if row.get("title") and row.get("url")]
+
+    def _append_result_part(self, role: str, target_url: str, text: str) -> None:
+        if role == "title":
+            self._rows.append({"url": target_url, "title": text, "snippet": ""})
+            return
+        for row in reversed(self._rows):
+            if row.get("url") == target_url and not row.get("snippet"):
+                row["snippet"] = text
+                return
+        self._rows.append({"url": target_url, "title": "", "snippet": text})
+
+
+class _BingHTMLResultParser(HTMLParser):
+    """Extract result title/snippet rows from Bing search result HTML."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._in_result = False
+        self._result_depth = 0
+        self._in_title_link = False
+        self._in_caption = False
+        self._active_href = ""
+        self._title_parts: list[str] = []
+        self._snippet_parts: list[str] = []
+        self._rows: list[dict[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {str(key).lower(): str(value) for key, value in attrs if key and value}
+        classes = set(str(attr_map.get("class") or "").split())
+        if tag.lower() == "li" and "b_algo" in classes:
+            self._in_result = True
+            self._result_depth = 1
+            self._active_href = ""
+            self._title_parts = []
+            self._snippet_parts = []
+            return
+        if self._in_result:
+            self._result_depth += 1
+        if self._in_result and tag.lower() == "a" and not self._active_href:
+            href = _normalize_http_link(str(attr_map.get("href") or ""))
+            if href:
+                self._active_href = href
+                self._in_title_link = True
+        if self._in_result and "b_caption" in classes:
+            self._in_caption = True
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title_link:
+            self._title_parts.append(data)
+        elif self._in_caption:
+            self._snippet_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        lowered = tag.lower()
+        if lowered == "a" and self._in_title_link:
+            self._in_title_link = False
+        if lowered == "div" and self._in_caption:
+            self._in_caption = False
+        if not self._in_result:
+            return
+        self._result_depth -= 1
+        if lowered == "li" or self._result_depth <= 0:
+            self._finish_result()
+
+    def rows(self) -> list[dict[str, str]]:
+        return [dict(row) for row in self._rows if row.get("title") and row.get("url")]
+
+    def _finish_result(self) -> None:
+        title = _collapse_ws(" ".join(self._title_parts))
+        snippet = _collapse_ws(" ".join(self._snippet_parts))
+        if self._active_href and title:
+            self._rows.append({"url": self._active_href, "title": title, "snippet": snippet})
+        self._in_result = False
+        self._result_depth = 0
+        self._in_title_link = False
+        self._in_caption = False
+        self._active_href = ""
+        self._title_parts = []
+        self._snippet_parts = []
+
+
 def _collapse_ws(value: str) -> str:
     return " ".join(value.split())
 
@@ -559,6 +751,15 @@ def _decode_duckduckgo_target(link: str) -> str:
     if query_target:
         return unquote(query_target[0])
     return link
+
+
+def _normalize_http_link(link: str) -> str:
+    text = str(link or "").strip()
+    if text.startswith("//"):
+        return f"https:{text}"
+    if text.startswith(("http://", "https://")):
+        return text
+    return ""
 
 
 def _parse_retry_after_seconds(value: str | None) -> float | None:

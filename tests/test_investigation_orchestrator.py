@@ -935,8 +935,10 @@ def test_investigation_orchestrator_review_decision_can_feed_lifecycle_runtime_c
     )
 
     runtime_mapping = orchestrator.phase_engine.runtime_slang_mapping()
+    gray_runtime_mapping = orchestrator.phase_engine.runtime_slang_mapping(include_gray=True)
     assert feedback["review_state"]["decision"] == "APPROVED"
-    assert runtime_mapping["火苗"] == "WhatsApp"
+    assert "火苗" not in runtime_mapping
+    assert gray_runtime_mapping["火苗"] == "WhatsApp"
     assert feedback["lifecycle_context"]["few_shot_examples"][0]["term"] == "火苗"
 
 

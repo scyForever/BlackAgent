@@ -331,7 +331,12 @@ def _end_to_end_demo(
             "samples": clue_samples,
             "evidence_chain": _demo_evidence_chain(e2e_evidence),
         },
-        "cost_latency": _demo_cost_latency(e2e_evidence, execution_summary, referenced_run=referenced_run or {}),
+        "cost_latency": _demo_cost_latency(
+            e2e_evidence,
+            execution_summary,
+            referenced_run=referenced_run or {},
+            evaluation_metrics=evaluation_metrics,
+        ),
         "verification": {
             "evaluation_metrics": evaluation_metrics,
             "test_results": test_results,
@@ -418,6 +423,7 @@ def _demo_evidence_chain(evidence: dict[str, Any], *, limit: int = 5) -> list[di
     for clue in clues[:limit]:
         raw_chain = clue.get("evidence_chain") if isinstance(clue.get("evidence_chain"), list) else []
         reviewability = clue.get("evidence_reviewability") if isinstance(clue.get("evidence_reviewability"), dict) else {}
+        evidence_cards = [dict(item) for item in (reviewability.get("evidence_cards") or []) if isinstance(item, dict)]
         evidence_trace_ids = _string_list(clue.get("evidence_trace_ids")) or _unique_values(
             item.get("source_trace_id") for item in raw_chain if isinstance(item, dict)
         )
@@ -430,6 +436,8 @@ def _demo_evidence_chain(evidence: dict[str, Any], *, limit: int = 5) -> list[di
                 "source_names": _string_list(clue.get("source_names")),
                 "evidence_trace_count": int(clue.get("evidence_trace_count") or len(evidence_trace_ids)),
                 "evidence_chain": [dict(item) for item in raw_chain if isinstance(item, dict)],
+                "evidence_cards": evidence_cards,
+                "one_shot_review_chain": _one_shot_review_chain(evidence_cards),
                 "suggested_review_action": clue.get("suggested_review_action") or reviewability.get("suggested_review_action"),
                 "review_action_reasons": [str(item) for item in (reviewability.get("review_action_reasons") or [])],
             }
@@ -437,13 +445,33 @@ def _demo_evidence_chain(evidence: dict[str, Any], *, limit: int = 5) -> list[di
     return rows
 
 
+def _one_shot_review_chain(evidence_cards: list[dict[str, Any]]) -> dict[str, Any]:
+    if not evidence_cards:
+        return {}
+    card = evidence_cards[0]
+    return {
+        "source": {
+            "trace_id": card.get("trace_id"),
+            "source_name": card.get("source_name"),
+            "source_type": card.get("source_type"),
+            "publish_time": card.get("publish_time"),
+        },
+        "raw": card.get("raw_snippet"),
+        "clean": card.get("clean_text"),
+        "classification": dict(card.get("classification") or {}) if isinstance(card.get("classification"), dict) else {},
+        "entities": [dict(item) for item in (card.get("entities") or []) if isinstance(item, dict)],
+    }
+
+
 def _demo_cost_latency(
     evidence: dict[str, Any],
     execution_summary: dict[str, Any],
     *,
     referenced_run: dict[str, Any] | None = None,
+    evaluation_metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     referenced_run = referenced_run or {}
+    evaluation_metrics = evaluation_metrics or {}
     referenced_summary = (
         referenced_run.get("execution_summary")
         if isinstance(referenced_run.get("execution_summary"), dict)
@@ -503,6 +531,7 @@ def _demo_cost_latency(
             or evidence.get("elapsed_budget_exhausted")
             or referenced_summary.get("elapsed_budget_exhausted")
         ),
+        "profile_quality_cost_latency_curve": evaluation_metrics.get("profile_quality_cost_latency_curve") or [],
     }
 
 
@@ -536,6 +565,7 @@ def _evaluation_metrics(report: dict[str, Any]) -> dict[str, Any]:
         "evidence_chain_precision": object_eval.get("evidence_chain_precision"),
         "evidence_chain_recall": object_eval.get("evidence_chain_recall"),
         "evidence_reviewability_rate": object_eval.get("evidence_reviewability_rate"),
+        "profile_quality_cost_latency_curve": report.get("profile_quality_cost_latency_curve") or [],
         "dataset": report.get("dataset") or {},
     }
 

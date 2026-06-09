@@ -174,12 +174,14 @@ class DynamicSlangLifecycleManager:
         target_risk_category: str | None = None,
         reviewed_at: str | None = None,
         gray_rollout_at: str | None = None,
-        activated_at: str | None = None,
         baseline_eval_version: str | None = None,
         post_eval_version: str | None = None,
         evaluation_gain: Mapping[str, Any] | None = None,
     ) -> SlangLifecycleRecord:
-        """Promote a human-approved candidate through review, gray rollout, and activation."""
+        """Promote a human-approved candidate through review and gray rollout.
+
+        Activation is a separate operator action after gray rollout evaluation.
+        """
 
         timestamp = datetime.now(timezone.utc).isoformat()
         self.nominate(term, normalized_term, evidence_trace_ids)
@@ -196,7 +198,7 @@ class DynamicSlangLifecycleManager:
             post_eval_version=post_eval_version,
             evaluation_gain=evaluation_gain,
         )
-        self.gray_rollout(
+        return self.gray_rollout(
             term,
             reviewer=reviewer,
             notes=notes,
@@ -204,18 +206,6 @@ class DynamicSlangLifecycleManager:
             batch_id=batch_id,
             target_risk_category=target_risk_category,
             gray_rollout_at=gray_rollout_at or timestamp,
-            baseline_eval_version=baseline_eval_version,
-            post_eval_version=post_eval_version,
-            evaluation_gain=evaluation_gain,
-        )
-        return self.activate(
-            term,
-            reviewer=reviewer,
-            notes=notes,
-            lifecycle_version=lifecycle_version,
-            batch_id=batch_id,
-            target_risk_category=target_risk_category,
-            activated_at=activated_at or timestamp,
             baseline_eval_version=baseline_eval_version,
             post_eval_version=post_eval_version,
             evaluation_gain=evaluation_gain,
@@ -263,15 +253,66 @@ class DynamicSlangLifecycleManager:
             records = [record for record in records if record.stage == stage]
         return records
 
-    def runtime_records(self, *, include_candidates: bool = False) -> list[SlangLifecycleRecord]:
-        stages = set(self.runtime_stages(include_candidates=include_candidates))
+    @classmethod
+    def from_records(cls, records: Iterable[Mapping[str, Any] | Any]) -> "DynamicSlangLifecycleManager":
+        manager = cls()
+        for item in records:
+            term = str(get_record_field(item, "term") or "").strip()
+            if not term:
+                continue
+            normalized_term = str(get_record_field(item, "normalized_term") or term).strip() or term
+            stage = str(get_record_field(item, "stage") or cls.NEW_CANDIDATE).strip().upper() or cls.NEW_CANDIDATE
+            evidence_trace_ids = get_record_field(item, "evidence_trace_ids") or []
+            if isinstance(evidence_trace_ids, str):
+                evidence_trace_ids = [evidence_trace_ids]
+            evaluation_gain = get_record_field(item, "evaluation_gain")
+            manager._store_record(
+                term=term,
+                normalized_term=normalized_term,
+                stage=stage,
+                evidence_trace_ids=evidence_trace_ids,
+                reviewer=get_record_field(item, "reviewer"),
+                notes=get_record_field(item, "notes"),
+                lifecycle_version=get_record_field(item, "lifecycle_version"),
+                batch_id=get_record_field(item, "batch_id"),
+                target_risk_category=get_record_field(item, "target_risk_category"),
+                reviewed_at=get_record_field(item, "reviewed_at"),
+                gray_rollout_at=get_record_field(item, "gray_rollout_at"),
+                activated_at=get_record_field(item, "activated_at"),
+                baseline_eval_version=get_record_field(item, "baseline_eval_version"),
+                post_eval_version=get_record_field(item, "post_eval_version"),
+                evaluation_gain=evaluation_gain if isinstance(evaluation_gain, Mapping) else None,
+                allow_downgrade=True,
+            )
+        return manager
+
+    def runtime_records(
+        self,
+        *,
+        include_candidates: bool = False,
+        include_gray: bool = False,
+    ) -> list[SlangLifecycleRecord]:
+        stages = set(self.runtime_stages(include_candidates=include_candidates, include_gray=include_gray))
         records = [record for record in self._records.values() if record.stage in stages]
         return sorted(records, key=lambda item: (-self._stage_priority(item.stage), item.term.lower()))
 
-    def runtime_terms_mapping(self, *, include_candidates: bool = False) -> dict[str, str]:
-        return {record.term: record.normalized_term for record in self.runtime_records(include_candidates=include_candidates)}
+    def runtime_terms_mapping(
+        self,
+        *,
+        include_candidates: bool = False,
+        include_gray: bool = False,
+    ) -> dict[str, str]:
+        return {
+            record.term: record.normalized_term
+            for record in self.runtime_records(include_candidates=include_candidates, include_gray=include_gray)
+        }
 
-    def runtime_slang_entries(self, *, include_candidates: bool = False) -> list[dict[str, Any]]:
+    def runtime_slang_entries(
+        self,
+        *,
+        include_candidates: bool = False,
+        include_gray: bool = False,
+    ) -> list[dict[str, Any]]:
         return [
             {
                 "term": record.term,
@@ -279,7 +320,7 @@ class DynamicSlangLifecycleManager:
                 "stage": record.stage,
                 "evidence_trace_ids": list(record.evidence_trace_ids),
             }
-            for record in self.runtime_records(include_candidates=include_candidates)
+            for record in self.runtime_records(include_candidates=include_candidates, include_gray=include_gray)
         ]
 
     def few_shot_examples_for_label(self, label: str | None = None) -> list[dict[str, Any]]:
@@ -292,17 +333,25 @@ class DynamicSlangLifecycleManager:
             if str(item.get("label") or "").strip().lower() == normalized_label
         ]
 
-    def prompt_context(self, *, label: str | None = None, include_candidates: bool = False) -> dict[str, Any]:
+    def prompt_context(
+        self,
+        *,
+        label: str | None = None,
+        include_candidates: bool = False,
+        include_gray: bool = False,
+    ) -> dict[str, Any]:
         return {
-            "slang_terms": self.runtime_slang_entries(include_candidates=include_candidates),
+            "slang_terms": self.runtime_slang_entries(include_candidates=include_candidates, include_gray=include_gray),
             "few_shot_examples": self.few_shot_examples_for_label(label),
             "negative_samples": [dict(item) for item in self.negative_samples],
             "whitelist_candidates": [dict(item) for item in self.whitelist_candidates],
         }
 
     @classmethod
-    def runtime_stages(cls, *, include_candidates: bool = False) -> tuple[str, ...]:
-        stages = [cls.GRAY_ROLLOUT, cls.ACTIVE]
+    def runtime_stages(cls, *, include_candidates: bool = False, include_gray: bool = False) -> tuple[str, ...]:
+        stages = [cls.ACTIVE]
+        if include_gray:
+            stages.insert(0, cls.GRAY_ROLLOUT)
         if include_candidates:
             stages.insert(0, cls.NEW_CANDIDATE)
         return tuple(stages)

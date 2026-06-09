@@ -168,9 +168,11 @@ class OfflineClueBuilder:
             enriched["evidence_reviewability"] = build_evidence_reviewability(
                 enriched,
                 assessment=assessment,
+                classifications=payload.get("classifications", []),
                 entities=payload.get("entities", []),
                 records=materialized_records,
             )
+            enriched["evidence_cards"] = enriched["evidence_reviewability"].get("evidence_cards") or []
             self.clue_repo.save(enriched)
             saved.append(enriched)
             if assessment is not None and assessment.pass_threshold:

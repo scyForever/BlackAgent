@@ -279,6 +279,7 @@ class InvestigationPhaseMixin:
                     runtime_context=self.phase_engine.runtime_prompt_context(
                         label=self._runtime_context_label(run_state.intent_payload),
                         include_candidates=True,
+                        include_gray=True,
                     ),
                     max_rewrite_sources=int(run_state.budget.get("max_query_rewrite_sources") or 0),
                     budget=run_state.budget_controller,

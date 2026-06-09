@@ -167,6 +167,7 @@ def build_evidence_reviewability(
     clue: Mapping[str, Any] | Any,
     *,
     assessment: ClueQualityAssessment | Mapping[str, Any] | None = None,
+    classifications: Iterable[Mapping[str, Any] | Any] = (),
     entities: Iterable[Mapping[str, Any] | Any] = (),
     records: Iterable[Mapping[str, Any] | Any] = (),
 ) -> dict[str, Any]:
@@ -179,6 +180,12 @@ def build_evidence_reviewability(
     entity_support = _entity_support(clue, evidence_trace_ids=evidence_trace_ids, entities=entities)
     snippets = _evidence_snippets(clue, evidence_trace_ids=evidence_trace_ids, records=records)
     time_range = _evidence_time_range(clue, evidence_trace_ids=evidence_trace_ids, records=records)
+    evidence_cards = _evidence_cards(
+        evidence_trace_ids=evidence_trace_ids,
+        records=records,
+        classifications=list(classifications) or _classifications_from_clue(clue),
+        entities=entities,
+    )
     risk_score, risk_reasons = _reviewability_false_positive_risk(
         clue,
         assessment=assessment,
@@ -212,6 +219,7 @@ def build_evidence_reviewability(
         "entity_support_count": len(entity_support),
         "entity_support": entity_support,
         "original_snippets": snippets,
+        "evidence_cards": evidence_cards,
         "time_range": time_range,
         "observed_time": time_range["end"] or time_range["start"],
         "false_positive_risk": {
@@ -403,6 +411,100 @@ def _evidence_snippets(
         if len(output) >= 5:
             break
     return output
+
+
+def _evidence_cards(
+    *,
+    evidence_trace_ids: list[str],
+    records: Iterable[Mapping[str, Any] | Any],
+    classifications: Iterable[Mapping[str, Any] | Any],
+    entities: Iterable[Mapping[str, Any] | Any],
+) -> list[dict[str, Any]]:
+    records_by_trace = {
+        trace_id: record
+        for record in records
+        if (trace_id := str(get_record_field(record, "source_trace_id") or get_record_field(record, "trace_id") or "").strip())
+    }
+    classifications_by_trace = {
+        trace_id: classification
+        for classification in classifications
+        if (trace_id := str(get_record_field(classification, "source_trace_id") or get_record_field(classification, "trace_id") or "").strip())
+    }
+    entities_by_trace: dict[str, list[dict[str, Any]]] = {}
+    for entity in entities:
+        trace_id = str(get_record_field(entity, "source_trace_id") or get_record_field(entity, "trace_id") or "").strip()
+        if not trace_id:
+            continue
+        entities_by_trace.setdefault(trace_id, []).append(_entity_card(entity))
+
+    cards: list[dict[str, Any]] = []
+    for trace_id in evidence_trace_ids:
+        record = records_by_trace.get(trace_id, {})
+        classification = classifications_by_trace.get(trace_id, {})
+        raw_text = str(
+            get_record_field(record, "content_text")
+            or get_record_field(record, "raw_text")
+            or get_record_field(record, "text")
+            or ""
+        ).strip()
+        clean_text = str(
+            get_record_field(record, "clean_text")
+            or get_record_field(record, "normalized_text")
+            or raw_text
+        ).strip()
+        cards.append(
+            {
+                "trace_id": trace_id,
+                "source_name": _blank_to_none(get_record_field(record, "source_name")),
+                "source_type": _blank_to_none(get_record_field(record, "source_type")),
+                "publish_time": _blank_to_none(
+                    get_record_field(record, "publish_time")
+                    or get_record_field(record, "created_at")
+                    or get_record_field(record, "crawl_time")
+                    or get_record_field(record, "updated_at")
+                ),
+                "raw_snippet": _snippet(raw_text or clean_text),
+                "clean_text": clean_text,
+                "classification": _classification_card(classification),
+                "entities": entities_by_trace.get(trace_id, []),
+            }
+        )
+    return cards
+
+
+def _classifications_from_clue(clue: Mapping[str, Any] | Any) -> list[Mapping[str, Any]]:
+    for field in ("classifications", "evidence_classifications", "trace_classifications"):
+        value = get_record_field(clue, field)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, Mapping)]
+    return []
+
+
+def _classification_card(classification: Mapping[str, Any] | Any) -> dict[str, Any]:
+    if not isinstance(classification, Mapping):
+        return {}
+    final = classification.get("final") if isinstance(classification.get("final"), Mapping) else classification
+    return {
+        "risk_category": final.get("risk_category"),
+        "secondary_label": final.get("secondary_label"),
+        "confidence": final.get("confidence"),
+        "review_required": final.get("review_required"),
+        "conflict_status": final.get("conflict_status"),
+    }
+
+
+def _entity_card(entity: Mapping[str, Any] | Any) -> dict[str, Any]:
+    return {
+        "entity_type": str(get_record_field(entity, "entity_type") or "unknown"),
+        "normalized_value": get_record_field(entity, "normalized_value") or get_record_field(entity, "entity_value"),
+        "raw_value": get_record_field(entity, "raw_value") or get_record_field(entity, "entity_value"),
+        "confidence": get_record_field(entity, "confidence"),
+    }
+
+
+def _blank_to_none(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
 
 
 def _snippet(text: str, *, limit: int = 240) -> str:

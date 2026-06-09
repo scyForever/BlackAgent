@@ -339,20 +339,7 @@ def lifecycle_records_from_review_csv(path: str | Path) -> dict[str, Any]:
                         evaluation_gain=evaluation_gain or None,
                     )
                 if target_stage == DynamicSlangLifecycleManager.ACTIVE:
-                    if _has_post_eval_evidence(post_eval_report, evaluation_gain):
-                        record = manager.activate(
-                            term,
-                            reviewer=reviewer,
-                            notes=notes,
-                            lifecycle_version=lifecycle_version,
-                            batch_id=batch_id,
-                            target_risk_category=target_risk_category,
-                            baseline_eval_version=baseline_eval_version,
-                            post_eval_version=post_eval_version,
-                            evaluation_gain=evaluation_gain or None,
-                        )
-                    else:
-                        activation_warnings.append(f"{term}:activation_requires_post_eval_report")
+                    activation_warnings.append(f"{term}:activation_deferred_until_gray_rollout_eval")
                 approved_count += 1
             elif status in {"rejected", "reject", "denied"}:
                 manager.nominate(term, normalized, evidence_ids)
@@ -388,12 +375,12 @@ def lifecycle_records_from_review_csv(path: str | Path) -> dict[str, Any]:
         "records": records,
         "runtime_ready_records": [
             record.model_dump()
-            for record in manager.runtime_records(include_candidates=False)
+            for record in manager.runtime_records(include_candidates=False, include_gray=True)
             if record.stage in {DynamicSlangLifecycleManager.GRAY_ROLLOUT, DynamicSlangLifecycleManager.ACTIVE}
         ],
         "lifecycle_flow": lifecycle_flow_metadata(),
         "claim_boundary": (
-            "Only approved rows promoted to gray rollout or active are runtime-ready; pending and reviewed-only records remain excluded."
+            "Approved rows from review CSV enter gray rollout first; pending and reviewed-only records remain excluded."
         ),
     }
 
@@ -446,7 +433,7 @@ def lifecycle_flow_metadata() -> dict[str, Any]:
 
 
 def _target_stage_from_row(row: Mapping[str, Any]) -> str:
-    raw = str(row.get("target_stage") or DynamicSlangLifecycleManager.ACTIVE).strip().upper()
+    raw = str(row.get("target_stage") or DynamicSlangLifecycleManager.GRAY_ROLLOUT).strip().upper()
     aliases = {
         "REVIEW": DynamicSlangLifecycleManager.REVIEWED,
         "REVIEWED": DynamicSlangLifecycleManager.REVIEWED,
@@ -458,11 +445,11 @@ def _target_stage_from_row(row: Mapping[str, Any]) -> str:
         "ACTIVE": DynamicSlangLifecycleManager.ACTIVE,
         "ACTIVATE": DynamicSlangLifecycleManager.ACTIVE,
     }
-    return aliases.get(raw, DynamicSlangLifecycleManager.ACTIVE)
+    return aliases.get(raw, DynamicSlangLifecycleManager.GRAY_ROLLOUT)
 
 
-def _has_post_eval_evidence(post_eval_report: Mapping[str, Any], evaluation_gain: Mapping[str, Any]) -> bool:
-    return bool(post_eval_report) and bool(evaluation_gain)
+def lifecycle_manager_from_records(records: Iterable[Mapping[str, Any] | Any]) -> DynamicSlangLifecycleManager:
+    return DynamicSlangLifecycleManager.from_records(records)
 
 
 EVAL_GAIN_METRICS = (

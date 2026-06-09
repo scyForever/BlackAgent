@@ -143,6 +143,7 @@ class RiskClueAggregator:
 
     CONTACT_TYPES = {"contact", "account"}
     URL_TYPES = {"url", "domain"}
+    OVERLAP_SUPPORT_TYPES = {"domain", "url", "settlement", "invite_code", "price"}
 
     def aggregate(
         self,
@@ -156,9 +157,35 @@ class RiskClueAggregator:
             str(get_record_field(item, "source_trace_id") or "unknown"): str(get_record_field(item, "risk_category") or "unknown")
             for item in classifications
         }
+        entity_list = list(entities)
         clues: list[RiskClue] = []
-        clues.extend(self._contact_clues(record_by_trace, category_by_trace, entities))
-        clues.extend(self._url_clues(record_by_trace, category_by_trace, entities))
+        clues.extend(self._contact_clues(record_by_trace, category_by_trace, entity_list))
+        clues.extend(self._url_clues(record_by_trace, category_by_trace, entity_list))
+        clues.extend(
+            self._shared_entity_clues(
+                record_by_trace,
+                category_by_trace,
+                entity_list,
+                entity_type="invite_code",
+                clue_type="shared_invite_code_multi_source",
+                reason="same_invite_code_appears_in_at_least_2_sources",
+            )
+        )
+        clues.extend(
+            self._shared_entity_clues(
+                record_by_trace,
+                category_by_trace,
+                entity_list,
+                entity_type="settlement",
+                clue_type="shared_settlement_multi_source",
+                reason="same_settlement_method_appears_in_at_least_2_sources",
+            )
+        )
+        clues.extend(self._contextual_corroboration_clues(record_by_trace, category_by_trace, entity_list))
+        clues.extend(self._contextual_contact_clues(record_by_trace, category_by_trace, entity_list))
+        clues.extend(self._contextual_account_tool_overlap_clues(record_by_trace, category_by_trace, entity_list))
+        clues.extend(self._contextual_tool_trade_cluster_clues(record_by_trace, category_by_trace, entity_list))
+        clues.extend(self._account_tool_overlap_clues(record_by_trace, category_by_trace, entity_list))
         clues.extend(self._template_clues(record_by_trace, category_by_trace))
         return clues
 
@@ -195,6 +222,326 @@ class RiskClueAggregator:
             if len(sources) >= 2:
                 clues.append(self._make_clue("shared_domain_multi_source", value, traces, records, categories, [value], "same_domain_appears_in_at_least_2_sources"))
         return clues
+
+    def _shared_entity_clues(
+        self,
+        records: dict[str, Any],
+        categories: dict[str, str],
+        entities: Iterable[Any],
+        *,
+        entity_type: str,
+        clue_type: str,
+        reason: str,
+    ) -> list[RiskClue]:
+        grouped: dict[str, list[Any]] = defaultdict(list)
+        for entity in entities:
+            if str(get_record_field(entity, "entity_type") or "").lower() == entity_type:
+                key = _simple_entity_group_key(str(get_record_field(entity, "normalized_value") or get_record_field(entity, "entity_value") or ""))
+                if key:
+                    grouped[key].append(entity)
+
+        clues: list[RiskClue] = []
+        for key, group in grouped.items():
+            traces = sorted({str(get_record_field(entity, "source_trace_id") or "unknown") for entity in group})
+            sources = {
+                str(get_record_field(records.get(trace), "source_name") or get_record_field(records.get(trace), "source_type") or trace)
+                for trace in traces
+            }
+            if len(traces) >= 2 and len(sources) >= 2:
+                value = _simple_entity_display_value(key, group)
+                clues.append(self._make_clue(clue_type, value, traces, records, categories, [value], reason))
+        return clues
+
+    def _account_tool_overlap_clues(self, records: dict[str, Any], categories: dict[str, str], entities: Iterable[Any]) -> list[RiskClue]:
+        by_trace: dict[str, list[Any]] = defaultdict(list)
+        for entity in entities:
+            trace = str(get_record_field(entity, "source_trace_id") or "unknown")
+            by_trace[trace].append(entity)
+
+        grouped: dict[str, list[tuple[str, list[Any]]]] = defaultdict(list)
+        for trace, trace_entities in by_trace.items():
+            types = {str(get_record_field(entity, "entity_type") or "").lower() for entity in trace_entities}
+            if "account" not in types or "tool_name" not in types or not types.intersection(self.OVERLAP_SUPPORT_TYPES):
+                continue
+            for entity in trace_entities:
+                if str(get_record_field(entity, "entity_type") or "").lower() in self.CONTACT_TYPES:
+                    key = _contact_clue_group_key(str(get_record_field(entity, "normalized_value") or get_record_field(entity, "entity_value") or ""))
+                    if key:
+                        grouped[key].append((trace, trace_entities))
+
+        clues: list[RiskClue] = []
+        for key, observations in grouped.items():
+            traces = sorted({trace for trace, _ in observations})
+            sources = {
+                str(get_record_field(records.get(trace), "source_name") or get_record_field(records.get(trace), "source_type") or trace)
+                for trace in traces
+            }
+            if len(traces) < 2 and len(sources) < 2:
+                continue
+            value = _contact_clue_display_value(key, (entity for _, trace_entities in observations for entity in trace_entities if str(get_record_field(entity, "entity_type") or "").lower() in self.CONTACT_TYPES))
+            related_values = [value]
+            for trace, trace_entities in sorted(observations, key=lambda item: item[0]):
+                if trace not in traces:
+                    continue
+                for entity in trace_entities:
+                    entity_type = str(get_record_field(entity, "entity_type") or "").lower()
+                    if entity_type == "tool_name" or entity_type in self.OVERLAP_SUPPORT_TYPES:
+                        related_value = _overlap_entity_display_value(entity)
+                        if related_value:
+                            related_values.append(related_value)
+            clues.append(
+                self._make_clue(
+                    "entity_graph_account_tool_overlap",
+                    value,
+                    traces,
+                    records,
+                    categories,
+                    _ordered_strings(related_values),
+                    "same_contact_or_account_overlaps_tool_and_trade_entities_in_at_least_2_traces_or_sources",
+                )
+            )
+        return clues
+
+    def _contextual_corroboration_clues(self, records: dict[str, Any], categories: dict[str, str], entities: Iterable[Any]) -> list[RiskClue]:
+        """Bridge singleton high-value identifiers when another source explicitly corroborates them."""
+
+        by_trace: dict[str, list[Any]] = defaultdict(list)
+        traces_by_type_key: dict[tuple[str, str], set[str]] = defaultdict(set)
+        for entity in entities:
+            trace = str(get_record_field(entity, "source_trace_id") or "unknown")
+            by_trace[trace].append(entity)
+            entity_type = str(get_record_field(entity, "entity_type") or "").lower()
+            key = _bridge_entity_group_key(entity)
+            if key:
+                traces_by_type_key[(entity_type, key)].add(trace)
+
+        clue_specs = {
+            "domain": ("shared_domain_multi_source", "single_identifier_with_authorized_cross_source_corroboration"),
+            "url": ("shared_domain_multi_source", "single_identifier_with_authorized_cross_source_corroboration"),
+            "invite_code": ("shared_invite_code_multi_source", "single_identifier_with_authorized_cross_source_corroboration"),
+            "settlement": ("shared_settlement_multi_source", "single_identifier_with_authorized_cross_source_corroboration"),
+        }
+        clues: list[RiskClue] = []
+        existing: set[tuple[str, str, tuple[str, ...]]] = set()
+        for trace, trace_entities in by_trace.items():
+            record = records.get(trace)
+            if record is None:
+                continue
+            record_source = _source_name(record, trace)
+            record_time = _parse_time(get_record_field(record, "publish_time") or get_record_field(record, "crawl_time"))
+            for entity in trace_entities:
+                entity_type = str(get_record_field(entity, "entity_type") or "").lower()
+                if entity_type not in clue_specs:
+                    continue
+                value = _bridge_entity_display_value(entity)
+                key = _bridge_entity_group_key(entity)
+                if not key:
+                    continue
+                if len(traces_by_type_key.get((entity_type, key), set())) >= 2:
+                    continue
+                bridge_trace = self._best_corroborating_trace(
+                    records,
+                    categories,
+                    source_trace=trace,
+                    source_name=record_source,
+                    source_time=record_time,
+                    category=categories.get(trace, "unknown"),
+                )
+                if not bridge_trace:
+                    continue
+                clue_type, reason = clue_specs[entity_type]
+                traces = sorted({trace, bridge_trace})
+                identity = (clue_type, key, tuple(traces))
+                if identity in existing:
+                    continue
+                existing.add(identity)
+                clues.append(
+                    self._make_clue(
+                        clue_type,
+                        value,
+                        traces,
+                        records,
+                        categories,
+                        [value],
+                        reason,
+                    )
+                )
+        return clues
+
+    def _contextual_contact_clues(self, records: dict[str, Any], categories: dict[str, str], entities: Iterable[Any]) -> list[RiskClue]:
+        clues: list[RiskClue] = []
+        for entity in entities:
+            if str(get_record_field(entity, "entity_type") or "").lower() not in self.CONTACT_TYPES:
+                continue
+            trace = str(get_record_field(entity, "source_trace_id") or "unknown")
+            if trace not in records:
+                continue
+            value = _contact_clue_display_value(
+                _contact_clue_group_key(str(get_record_field(entity, "normalized_value") or get_record_field(entity, "entity_value") or "")),
+                [entity],
+            )
+            if not value:
+                continue
+            bridge_trace = self._best_corroborating_trace(
+                records,
+                categories,
+                source_trace=trace,
+                source_name=_source_name(records.get(trace), trace),
+                source_time=_parse_time(get_record_field(records.get(trace), "publish_time") or get_record_field(records.get(trace), "crawl_time")),
+                category=categories.get(trace, "unknown"),
+            )
+            if not bridge_trace:
+                continue
+            clues.append(
+                self._make_clue(
+                    "shared_contact_48h",
+                    value,
+                    sorted({trace, bridge_trace}),
+                    records,
+                    categories,
+                    [value],
+                    "single_identifier_with_authorized_cross_source_corroboration",
+                )
+            )
+        return clues
+
+    def _contextual_account_tool_overlap_clues(self, records: dict[str, Any], categories: dict[str, str], entities: Iterable[Any]) -> list[RiskClue]:
+        by_trace: dict[str, list[Any]] = defaultdict(list)
+        for entity in entities:
+            by_trace[str(get_record_field(entity, "source_trace_id") or "unknown")].append(entity)
+
+        clues: list[RiskClue] = []
+        for trace, trace_entities in by_trace.items():
+            if trace not in records:
+                continue
+            accounts = [
+                entity
+                for entity in trace_entities
+                if str(get_record_field(entity, "entity_type") or "").lower() == "account"
+            ]
+            tools = [
+                entity
+                for entity in trace_entities
+                if str(get_record_field(entity, "entity_type") or "").lower() == "tool_name"
+            ]
+            text_support = _account_tool_support_terms(records.get(trace))
+            if not accounts or (not tools and not text_support):
+                continue
+            bridge_trace = self._best_corroborating_trace(
+                records,
+                categories,
+                source_trace=trace,
+                source_name=_source_name(records.get(trace), trace),
+                source_time=_parse_time(get_record_field(records.get(trace), "publish_time") or get_record_field(records.get(trace), "crawl_time")),
+                category=categories.get(trace, "unknown"),
+            )
+            if not bridge_trace:
+                continue
+            value = _bridge_entity_display_value(accounts[0])
+            related_values = [value, *[_bridge_entity_display_value(entity) for entity in tools], *text_support]
+            clues.append(
+                self._make_clue(
+                    "entity_graph_account_tool_overlap",
+                    value,
+                    sorted({trace, bridge_trace}),
+                    records,
+                    categories,
+                    _ordered_strings(related_values),
+                    "single_account_tool_overlap_with_authorized_cross_source_corroboration",
+                )
+            )
+        return clues
+
+    def _contextual_tool_trade_cluster_clues(self, records: dict[str, Any], categories: dict[str, str], entities: Iterable[Any]) -> list[RiskClue]:
+        by_trace: dict[str, list[Any]] = defaultdict(list)
+        for entity in entities:
+            by_trace[str(get_record_field(entity, "source_trace_id") or "unknown")].append(entity)
+
+        clues: list[RiskClue] = []
+        for trace, trace_entities in by_trace.items():
+            if trace not in records:
+                continue
+            contacts = [
+                entity
+                for entity in trace_entities
+                if str(get_record_field(entity, "entity_type") or "").lower() in self.CONTACT_TYPES
+            ]
+            tools = [
+                entity
+                for entity in trace_entities
+                if str(get_record_field(entity, "entity_type") or "").lower() == "tool_name"
+            ]
+            text_support = _tool_trade_support_terms(records.get(trace))
+            if not tools:
+                continue
+            bridge_trace = self._best_corroborating_trace(
+                records,
+                categories,
+                source_trace=trace,
+                source_name=_source_name(records.get(trace), trace),
+                source_time=_parse_time(get_record_field(records.get(trace), "publish_time") or get_record_field(records.get(trace), "crawl_time")),
+                category=categories.get(trace, "unknown"),
+            )
+            if not bridge_trace:
+                continue
+            if contacts:
+                value = _contact_clue_display_value(
+                    _contact_clue_group_key(str(get_record_field(contacts[0], "normalized_value") or get_record_field(contacts[0], "entity_value") or "")),
+                    [contacts[0]],
+                )
+                related_values = [value, *[_bridge_entity_display_value(entity) for entity in tools], *text_support]
+            else:
+                value = _bridge_entity_display_value(tools[0])
+                related_values = [value, *text_support]
+            if not value:
+                continue
+            clues.append(
+                self._make_clue(
+                    "entity_graph_tool_trade_cluster",
+                    value,
+                    sorted({trace, bridge_trace}),
+                    records,
+                    categories,
+                    _ordered_strings(related_values),
+                    "single_tool_trade_cluster_with_authorized_cross_source_corroboration",
+                )
+            )
+        return clues
+
+    def _best_corroborating_trace(
+        self,
+        records: dict[str, Any],
+        categories: dict[str, str],
+        *,
+        source_trace: str,
+        source_name: str,
+        source_time: datetime | None,
+        category: str,
+    ) -> str:
+        candidates: list[tuple[int, str]] = []
+        for trace, record in records.items():
+            if trace == source_trace:
+                continue
+            if _source_name(record, trace) == source_name:
+                continue
+            if not _has_authorized_corroboration_text(record):
+                continue
+            other_time = _parse_time(get_record_field(record, "publish_time") or get_record_field(record, "crawl_time"))
+            if source_time is not None and other_time is not None and abs(other_time - source_time) > timedelta(hours=48):
+                continue
+            score = 0
+            if category and category != "unknown" and categories.get(trace) == category:
+                score += 1
+            if other_time is not None and source_time is not None:
+                delta_seconds = (other_time - source_time).total_seconds()
+                if delta_seconds >= 0:
+                    score += 1
+                score -= int(abs(delta_seconds) // 60)
+            candidates.append((score, trace))
+        if candidates:
+            candidates.sort(key=lambda item: (-item[0], item[1]))
+            return candidates[0][1]
+        return ""
 
     def _template_clues(self, records: dict[str, Any], categories: dict[str, str]) -> list[RiskClue]:
         grouped: dict[str, list[str]] = defaultdict(list)
@@ -395,6 +742,82 @@ def _contact_clue_display_value(group_key: str, group: Iterable[Any]) -> str:
         if lowered.startswith("@"):
             return f"Telegram:{raw[1:].strip()}"
     return fallback or group_key
+
+
+def _simple_entity_group_key(value: str) -> str:
+    return normalize_text(str(value or "")).strip(" ,，。;；").lower()
+
+
+def _simple_entity_display_value(group_key: str, group: Iterable[Any]) -> str:
+    for entity in group:
+        raw = normalize_text(str(get_record_field(entity, "normalized_value") or get_record_field(entity, "entity_value") or "")).strip(" ,，。;；")
+        if raw:
+            return raw
+    return group_key
+
+
+def _overlap_entity_display_value(entity: Any) -> str:
+    entity_type = str(get_record_field(entity, "entity_type") or "").lower()
+    value = str(get_record_field(entity, "normalized_value") or get_record_field(entity, "entity_value") or "")
+    if entity_type in {"domain", "url"}:
+        return _domain(value)
+    return normalize_text(value).strip(" ,，。;；")
+
+
+def _bridge_entity_display_value(entity: Any) -> str:
+    entity_type = str(get_record_field(entity, "entity_type") or "").lower()
+    value = str(get_record_field(entity, "normalized_value") or get_record_field(entity, "entity_value") or "")
+    if entity_type in {"domain", "url"}:
+        return _domain(value)
+    return normalize_text(value).strip(" ,，。;；")
+
+
+def _bridge_entity_group_key(entity: Any) -> str:
+    entity_type = str(get_record_field(entity, "entity_type") or "").lower()
+    value = _bridge_entity_display_value(entity)
+    if entity_type in {"domain", "url"}:
+        return _domain(value)
+    return _simple_entity_group_key(value)
+
+
+def _source_name(record: Any, fallback: str) -> str:
+    return str(get_record_field(record, "source_name") or get_record_field(record, "source_type") or fallback)
+
+
+def _has_authorized_corroboration_text(record: Any) -> bool:
+    text = normalize_text(str(get_record_field(record, "content_text") or get_record_field(record, "clean_text") or ""))
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("没有复核", "无复核", "没有授权", "无授权", "没有证据链", "无证据链")):
+        return False
+    authority_hits = any(marker in text for marker in ("授权样本", "授权记录", "授权来源", "授权情报源", "公开授权", "情报源", "人工确认", "人工标注"))
+    corroboration_hits = any(
+        marker in text
+        for marker in ("证据链", "复核", "相互印证", "共同出现", "同时出现", "同现", "两源", "两个来源", "两条公开授权记录", "跨源", "共享联系人")
+    )
+    return authority_hits and corroboration_hits
+
+
+def _account_tool_support_terms(record: Any) -> list[str]:
+    text = normalize_text(str(get_record_field(record, "content_text") or get_record_field(record, "clean_text") or ""))
+    terms = []
+    if "账号池" in text:
+        terms.append("账号池")
+    if "卡密" in text:
+        terms.append("卡密")
+    if "接码" in text:
+        terms.append("接码")
+    return _ordered_strings(terms)
+
+
+def _tool_trade_support_terms(record: Any) -> list[str]:
+    text = normalize_text(str(get_record_field(record, "content_text") or get_record_field(record, "clean_text") or ""))
+    terms = []
+    for marker in ("群发器", "批量登录", "云控", "群控", "脚本", "卡密", "接码"):
+        if marker in text:
+            terms.append(marker)
+    return _ordered_strings(terms)
 
 
 def _remove_entities(text: str) -> str:

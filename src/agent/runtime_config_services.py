@@ -40,7 +40,7 @@ class InvestigationConfigMixin:
     """Extracted helper group; state is supplied by InvestigationRuntime."""
 
     def _planner_runtime_context(self) -> dict[str, Any]:
-            return self.phase_engine.runtime_prompt_context(include_candidates=True)
+            return self.phase_engine.runtime_prompt_context(include_candidates=True, include_gray=True)
 
 
     def _semantic_local_limit(self, *, budget: Mapping[str, Any]) -> int:

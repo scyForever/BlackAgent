@@ -715,8 +715,10 @@ def test_advanced_components_cover_conflict_entropy_compliance_and_lifecycle():
     lifecycle.review("音符", approved=True, reviewer="analyst")
     assert lifecycle.runtime_terms_mapping() == {}
     lifecycle.gray_rollout("音符", reviewer="analyst")
-    assert lifecycle.runtime_terms_mapping() == {"音符": "抖音"}
+    assert lifecycle.runtime_terms_mapping() == {}
+    assert lifecycle.runtime_terms_mapping(include_gray=True) == {"音符": "抖音"}
     assert lifecycle.activate("音符", reviewer="analyst").stage == lifecycle.ACTIVE
+    assert lifecycle.runtime_terms_mapping() == {"音符": "抖音"}
     lifecycle.ingest_review_decision(
         {
             "payload": {
@@ -731,6 +733,24 @@ def test_advanced_components_cover_conflict_entropy_compliance_and_lifecycle():
     prompt_eval = PromptEvaluator().evaluate("bad_prompt", "return text only", [{}])
     assert prompt_eval.passed is False
     assert "JSON" in prompt_eval.missing_requirements
+
+
+def test_promote_approved_candidate_stops_at_gray_rollout_before_activation():
+    lifecycle = DynamicSlangLifecycleManager()
+
+    record = lifecycle.promote_approved_candidate(
+        "火苗",
+        "WhatsApp",
+        ["trace-1"],
+        reviewer="analyst-a",
+        target_risk_category="诈骗引流",
+    )
+
+    assert record.stage == lifecycle.GRAY_ROLLOUT
+    assert record.gray_rollout_at
+    assert record.activated_at is None
+    assert lifecycle.runtime_terms_mapping() == {}
+    assert lifecycle.runtime_terms_mapping(include_gray=True) == {"火苗": "WhatsApp"}
 
 
 def test_multimodal_text_extractor_merges_nested_image_ocr_and_tracks_sources():
@@ -809,6 +829,38 @@ def test_advanced_entity_extractor_filters_source_aware_boilerplate_and_prioriti
     import hashlib
 
     assert entities[0].canonical_hash == hashlib.sha256("contact:telegram:riskcore01".encode("utf-8")).hexdigest()
+
+
+def test_advanced_entity_extractor_keeps_public_invite_code_as_invite_code_without_code_prefix():
+    entities = AdvancedEntityExtractor().extract(
+        {
+            "trace_id": "public-invite",
+            "content_text": "授权样本：账号交易贴公开邀请码 INV-MH-01，人工标注为可复核线索。",
+        }
+    )
+
+    invite = next(item for item in entities if item.normalized_value == "INV-MH-01")
+    assert invite.entity_type == "invite_code"
+    assert invite.extraction_method == "hidden_invite_code"
+
+
+def test_advanced_entity_extractor_recognizes_manual_clue_identifier_contexts():
+    entities = AdvancedEntityExtractor().extract(
+        {
+            "trace_id": "manual-identifiers",
+            "content_text": (
+                "授权样本：账号批发节点 acct-mh-01 与卡密关键词同时出现。"
+                "群发器售后贴出现 tool-mh14，代实名服务的结算标识 settle-mh23。"
+                "接码项目贴记录 phonepool-mh19，和账号池节点形成图谱重叠。"
+            ),
+        }
+    )
+    by_value = {item.normalized_value: item.entity_type for item in entities}
+
+    assert by_value["acct-mh-01"] == "account"
+    assert by_value["tool-mh14"] == "tool_name"
+    assert by_value["settle-mh23"] == "settlement"
+    assert by_value["phonepool-mh19"] == "account"
 
 
 def test_entity_postprocessor_drops_footer_template_pseudo_entities_and_keeps_trade_links():
