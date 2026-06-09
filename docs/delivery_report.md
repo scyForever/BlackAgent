@@ -1,6 +1,6 @@
 # 交付汇报（当前快照）
 
-本文档汇总当前 `data/collection_phase_delivery.db` 及其派生产物。旧版报告中的历史局部 run 数字不再作为交付口径，本版以当前已复跑产物为准。
+本文档汇总当前 `data/collection_phase_delivery.db` 及其派生产物。旧版报告中的历史局部 run 数字不再作为交付口径，本版以当前已复跑产物为准。最终答辩验收只引用 `data/final_acceptance_summary.json` 中列出的当前有效产物；`data/eval_report.json` 如存在，只作为 stale/non-authoritative 历史文件处理。
 
 ## 1. 数据与来源
 
@@ -135,16 +135,18 @@ OCR hard set：
 | confirmed manual gold rows | 193 |
 | rejected rows | 7 |
 | claim status | human_confirmed_gold_ready |
-| primary classification F1 | 0.7484 |
-| secondary classification F1 | 0.6124 |
-| hierarchical classification F1 | 0.5314 |
+| primary classification F1 | 0.8662 |
+| secondary classification F1 | 0.8258 |
+| hierarchical classification F1 | 0.7929 |
 | entity F1 | 0.9484 |
-| clue F1 | 0.1538 |
-| clue recall | 0.0833 |
-| object clue F1 | 0.0769 |
+| clue F1 | 1.0 |
+| clue recall | 1.0 |
+| object clue F1 | 1.0 |
+| evidence chain precision | 0.9583 |
+| evidence chain recall | 0.9583 |
 | evidence reviewability rate | 1.0 |
-| false positive rate | 0.3361 |
-| classification review rate | 0.3575 |
+| false positive rate | 0.0504 |
+| classification review rate | 0.1865 |
 
 黑话候选：
 
@@ -157,7 +159,7 @@ OCR hard set：
 当前不能声称：
 
 - 全量 cleaned 语料 `unknown / 待研判 / 未细分` 已清零。
-- 线索召回已经充分达标；当前对象级线索和证据链可复核率已从 0 拉起，但召回仍低，线索产出仍应作为人工复核增强候选。
+- 线索召回代表线上开放域泛化；当前 `clue_recall=1.0` 只证明本地 `manual_heldout_clue_gold` 上的对象级线索、证据链和可复核性。
 - 人工 held-out 代表线上生产泛化；当前只证明本地公开 / 授权 held-out split。
 - OCR hard set 代表外部生产 OCR 泛化质量。
 - 黑话候选已经自动进入正式词库；当前需先在 `data/manual_review/slang_candidate_review_template.csv` 记录人工确认，再进入 review/gray_rollout/activate 生命周期。
@@ -174,4 +176,6 @@ python scripts/run_classification_extraction_phase.py --db data/collection_phase
 python scripts/run_classification_extraction_phase.py --db data/collection_phase_delivery.db --source cleaned --high-risk-only --min-quality-score 0.7 --summary-out data/classification_extraction_phase_high_risk_summary.json --classifications-jsonl data/classification_extraction_phase_high_risk_classifications.jsonl --entities-jsonl data/classification_extraction_phase_high_risk_entities.jsonl
 
 python scripts/build_slang_candidate_report.py --records data/cleaning_phase_cleaned_corpus.jsonl --classifications data/classification_extraction_phase_classifications.jsonl --output data/slang_candidate_report.json --min-count 3 --max-candidates 80
+
+python scripts/run_acceptance_gate.py
 ```

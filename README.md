@@ -87,6 +87,14 @@ python scripts/run_agent_cli.py --demo-sample
 
 `--demo-sample` 没有显式 `--query` 时会自动使用内置默认 query，适合非交互 smoke。
 
+最终验收口径冻结在一个摘要文件中：
+
+```powershell
+python scripts/run_acceptance_gate.py
+```
+
+该命令会生成 `data/final_acceptance_summary.json`，并只把当前有效产物作为最终验收依据：`data/manual_heldout_eval_current.json`、`data/eval_manual_heldout_clue_recall_report.json`、多源 evidence pack 报告，以及显式运行的验收命令结果。`data/eval_report.json` 只作为历史/临时报告处理，不作为最终答辩口径。
+
 一键答辩 demo/API/UI：
 
 ```powershell
@@ -115,6 +123,24 @@ python scripts/run_agent_cli.py `
   --enable-network `
   --show summary
 ```
+
+答辩演示建议使用两条明确路径：
+
+```powershell
+# 离线稳定演示：使用内置样本和本地 evidence pack，不依赖当天网络和外部凭据。
+python scripts/run_agent_cli.py --demo-sample --show summary --dry-run
+
+# 授权联网演示：仅在已配置授权 source / X / Telegram 凭据时展示实时采集。
+python scripts/run_agent_cli.py `
+  --query "取当天诈骗引流相关线索" `
+  --enable-network `
+  --routing-profile high_recall `
+  --source-config-path config/intel_sources.acceptance_telegramnav_live.yaml `
+  --max-sources 4 `
+  --show summary
+```
+
+如果没有 X/TG 等凭据，联网演示只能展示已授权 HTTP/source catalog 或 loopback smoke；不要暗示已经实时覆盖这些平台。
 
 控制效果 / 成本 / 时延取舍：
 
@@ -239,7 +265,7 @@ python scripts/evaluate_pipeline.py `
   --max-hard-negative-fpr 0.10 `
   --max-clue-overgeneration-ratio 2.0 `
   --max-review-load-per-100-records 3.0 `
-  --output data/eval_report.json
+  --output data/eval_gold_fixture_report.json
 
 python scripts/evaluate_pipeline.py `
   --gold tests/evaluation/gold_classification.jsonl `
