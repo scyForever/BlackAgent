@@ -2,7 +2,7 @@
 
 BlackAgent 是一个**本地运行的黑灰产公开/授权情报调查 Agent**。核心能力通过 CLI、脚本或 `src.local_runtime.LocalAgentRuntime` 在进程内调用；答辩展示可选 `scripts/serve_demo_api.py` 提供本机 stdlib HTTP demo/API/UI，不引入 FastAPI/uvicorn，也不作为生产公网服务。
 
-核心链路（对外展示口径压缩为 5 阶段）：
+核心链路：
 
 ```text
 输入任务（query / 上传样本 / 指定 source / 时间范围）
@@ -55,20 +55,10 @@ Request
 ## 运行边界
 
 - Agent 默认不启动 Web 服务，也没有生产 `/api/v1/...` 路由。
-- `scripts/serve_demo_api.py` 是本机答辩 demo/UI，默认绑定 `127.0.0.1`，只调用本地样本和 runtime，不代表线上多租户 API。
+- `scripts/serve_demo_api.py` 是 demo/UI，默认绑定 `127.0.0.1`，只调用本地样本和 runtime，不代表线上多租户 API。
 - `main.py` 只是 CLI 包装入口，不创建 `app` 或 `create_app`。
 - `pyproject.toml` 不再依赖 FastAPI/uvicorn/httpx。
 - 保留内部 HTTP feed 采集器、X/TG 等第三方接口客户端、OpenAI-compatible LLM provider 配置；这些是 agent 内部运行依赖，不是对外暴露接口。
-
-
-## 交付与使用文档
-
-- `docs/使用文档.md`：面向使用者的完整运行说明，覆盖安装、demo、文本/文件输入、联网采集、routing profile、真实 LLM、阶段脚本、结果解读和验收命令。
-- `docs/deployment.md`：本机 demo、Docker 演示容器、服务器部署边界与 P0-P2 复跑命令。
-- `docs/交付文档.md`：按 `黑灰产情报分析Agent.docx` 逐项映射分阶段目标和核心挑战，说明每一项如何实现、对应代码/配置/脚本、交付产物和当前统计结果。
-- `docs/collection_phase_delivery.md`：数据采集阶段产物说明。
-- `docs/cleaning_phase_delivery.md`：智能清洗阶段产物说明。
-- `docs/phase2_phase3_delivery.md`：分类 / 抽取阶段产物说明。
 
 ## 快速开始
 
@@ -124,7 +114,7 @@ python scripts/run_agent_cli.py `
   --show summary
 ```
 
-答辩演示建议使用两条明确路径：
+两条明确路径：
 
 ```powershell
 # 离线稳定演示：使用内置样本和本地 evidence pack，不依赖当天网络和外部凭据。
@@ -139,8 +129,6 @@ python scripts/run_agent_cli.py `
   --max-sources 4 `
   --show summary
 ```
-
-如果没有 X/TG 等凭据，联网演示只能展示已授权 HTTP/source catalog 或 loopback smoke；不要暗示已经实时覆盖这些平台。
 
 控制效果 / 成本 / 时延取舍：
 
@@ -175,6 +163,17 @@ python scripts/smoke_llm_real.py --force-real --include-investigation
 ```powershell
 python scripts/collect_blackgray_all.py --fresh
 ```
+
+## 答辩与交付材料
+
+`docs/答辩验收材料/` 是面向答辩与验收的最终材料（已补齐流程图 / 证据链可视化，mermaid + ASCII 双形式）：
+
+- `BlackAgent_一图看懂.md`：一页速览——端到端流程图 + 核心数字 + 4 个真实用例 + 边界。
+- `BlackAgent_真实用例速览.md`：群控 / 接码 / 群发云控 / 实名号 4 条线索的可视化证据链与逐条证据卡。
+- `BlackAgent_验收报告.md`：完整验收口径、指标、需求对应与合规边界（`.docx` 为可提交版，`BlackAgent_答辩PPT.pptx` 为答辩 deck）。
+- `BlackAgent_阶段目标与技术选型.md`：对照课题文档逐项说明分阶段目标 / 核心挑战怎么做的 + 技术选型。
+
+交付口径与精选数据包整理见 `docs/交付文档.md` 与 `docs/data_delivery_assessment.md`；PPT / Word 由 `scripts/build_delivery_deck.py` 数据绑定生成。
 
 ## 配置
 

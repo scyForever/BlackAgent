@@ -1,7 +1,6 @@
 # BlackAgent 答辩与验收材料
 
-本目录是给评委的最终交付物。已按“少用英文名词、通俗中文讲清细节、能直接复查证据”的口径组织，并补齐了
-**流程图 / 证据链可视化**（mermaid + ASCII 两种形式，渲染器和纯文本/打印环境都能看）。
+本目录是最终交付物。补齐了**流程图 / 证据链可视化**。
 
 ## 建议阅读顺序
 
@@ -29,10 +28,10 @@
   `data/final_acceptance_summary.json`、`data/collection_phase_multi_source_clue_evidence_index.json`、
   `data/collection_phase_multi_source_evidence_pack_report.json`、`data/cleaning_phase_summary.json`、
   `data/classification_extraction_phase_summary.json`；`.docx` 直接由 `BlackAgent_验收报告.md` 渲染，二者保持一致。
-- 重生成命令（本机用 `D:\Anaconda\python.exe`）：
+- 重生成命令：
 
   ```powershell
-  D:\Anaconda\python.exe scripts/build_delivery_deck.py
+  python scripts/build_delivery_deck.py
   ```
 
   该脚本只输出 `.pptx` / `.docx`，不改任何 `.md`；运行末尾会用 `zip_check` 校验文件可正常打开。
@@ -40,6 +39,6 @@
 
 ## 口径与边界
 
-- 文件路径、脚本名和必要报告名按原样保留，便于评委或队友回到仓库核对证据。
+- 文件路径、脚本名和必要报告名按原样保留，便于到仓库核对证据。
 - 所有线索都是**人工复核候选**，不是执法定性，也不是自动处置结果；继续保留人工确认、图片文字抽取、来源结构均衡和线上生产化边界。
 - 不声称生产实时、不自动封禁、不覆盖私群 / 登录后页面、不购买数据。
