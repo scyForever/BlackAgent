@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
+from src.enhancement.clue_quality import build_evidence_reviewability
+
 
 class ClueRetriever:
     """Rank candidate clues using cheap lexical and metadata overlap."""
@@ -68,6 +70,7 @@ class ClueRetriever:
             score += min(float(clue.get("quality_score") or 0.0), 1.0) * 0.1
             score += min(float(clue.get("confidence") or 0.0), 1.0) * 0.08
             clue["retrieval_score"] = round(score, 4)
+            clue.setdefault("evidence_reviewability", build_evidence_reviewability(clue))
             scored.append((score, clue))
 
         scored.sort(key=lambda item: (item[0], float(item[1].get("quality_score") or 0.0), float(item[1].get("confidence") or 0.0)), reverse=True)
@@ -107,22 +110,32 @@ def _clues_from_graph_snapshot(snapshot: Mapping[str, Any]) -> list[dict[str, An
         traces = sorted({str(item.get("trace_id") or "") for item in entity_observations if str(item.get("trace_id") or "").strip()})
         if len(sources) < 2 or len(traces) < 2:
             continue
-        clues.append(
-            {
-                "clue_id": f"graph_snapshot:{entity_id}",
-                "clue_type": "graph_shared_entity_cross_source",
-                "key": entity_id,
-                "risk_category": "unknown",
-                "source_names": sources,
-                "evidence_trace_ids": traces,
-                "entity_values": [str(entity.get("masked_display_value") or entity_id)],
-                "confidence": 0.74,
-                "quality_score": 0.7,
-                "entity_asset_id": entity_id,
-                "entity_observation_refs": [str(item.get("observation_id") or "") for item in entity_observations if item.get("observation_id")],
-                "entity_graph_backend": "entity_graph_snapshot",
-            }
+        clue = {
+            "clue_id": f"graph_snapshot:{entity_id}",
+            "clue_type": "graph_shared_entity_cross_source",
+            "key": entity_id,
+            "risk_category": "unknown",
+            "source_names": sources,
+            "evidence_trace_ids": traces,
+            "entity_values": [str(entity.get("masked_display_value") or entity_id)],
+            "confidence": 0.74,
+            "quality_score": 0.7,
+            "entity_asset_id": entity_id,
+            "entity_observation_refs": [str(item.get("observation_id") or "") for item in entity_observations if item.get("observation_id")],
+            "entity_graph_backend": "entity_graph_snapshot",
+        }
+        clue["evidence_reviewability"] = build_evidence_reviewability(
+            clue,
+            entities=[
+                {
+                    "source_trace_id": item.get("trace_id"),
+                    "entity_type": entity.get("entity_type"),
+                    "normalized_value": entity.get("masked_display_value") or entity_id,
+                }
+                for item in entity_observations
+            ],
         )
+        clues.append(clue)
     return clues
 
 

@@ -26,6 +26,11 @@ class CluePromotionStage:
     def run_batch(self, items: Iterable[Mapping[str, Any]], **kwargs: Any) -> list[dict[str, Any]]:
         context = dict(kwargs.get("context") or {})
         entities = [dict(item) for item in context.get("entities") or [] if isinstance(item, Mapping)]
+        records_by_trace = {
+            str(item.get("trace_id") or item.get("source_trace_id") or ""): dict(item)
+            for item in context.get("records") or []
+            if isinstance(item, Mapping)
+        }
         entity_types_by_trace: dict[str, set[str]] = defaultdict(set)
         for entity in entities:
             trace_id = str(entity.get("source_trace_id") or entity.get("trace_id") or "")
@@ -36,25 +41,25 @@ class CluePromotionStage:
         self.candidate_clues = []
         self.actionable_clues = []
         self.archived_weak_clues = []
-        promoted_by_type: dict[str, dict[str, Any]] = {}
+        promoted_by_identity: dict[tuple[str, str, str], dict[str, Any]] = {}
         overflow_promoted: list[dict[str, Any]] = []
         for raw in items:
             candidate = dict(raw)
             candidate["clue_stage"] = "candidate"
             candidate.setdefault("weak_reason", candidate.get("threshold_reason") or "candidate_from_aggregator")
             self.candidate_clues.append(candidate)
-            promoted, reason, score = self._promote(candidate, entity_types_by_trace=entity_types_by_trace)
+            promoted, reason, score = self._promote(candidate, entity_types_by_trace=entity_types_by_trace, records_by_trace=records_by_trace)
             if promoted:
                 actionable = dict(candidate)
                 actionable["clue_stage"] = "actionable"
                 actionable["promotion_reason"] = reason
                 actionable["actionability_score"] = score
-                clue_type = str(actionable.get("clue_type") or "unknown")
-                existing = promoted_by_type.get(clue_type)
+                identity = _clue_identity(actionable)
+                existing = promoted_by_identity.get(identity)
                 if existing is None or _actionable_rank(actionable) > _actionable_rank(existing):
                     if existing is not None:
                         overflow_promoted.append(existing)
-                    promoted_by_type[clue_type] = actionable
+                    promoted_by_identity[identity] = actionable
                 else:
                     overflow_promoted.append(actionable)
             else:
@@ -63,7 +68,8 @@ class CluePromotionStage:
                 archived["archive_reason"] = reason
                 archived["actionability_score"] = score
                 self.archived_weak_clues.append(archived)
-        self.actionable_clues = list(promoted_by_type.values())
+        self.actionable_clues, superseded = _archive_superseded_generic_clues(promoted_by_identity.values())
+        self.archived_weak_clues.extend(superseded)
         for clue in overflow_promoted:
             archived = dict(clue)
             archived["clue_stage"] = "archived_weak"
@@ -71,7 +77,13 @@ class CluePromotionStage:
             self.archived_weak_clues.append(archived)
         return [dict(item) for item in self.actionable_clues]
 
-    def _promote(self, clue: Mapping[str, Any], *, entity_types_by_trace: Mapping[str, set[str]]) -> tuple[bool, str, float]:
+    def _promote(
+        self,
+        clue: Mapping[str, Any],
+        *,
+        entity_types_by_trace: Mapping[str, set[str]],
+        records_by_trace: Mapping[str, Mapping[str, Any]],
+    ) -> tuple[bool, str, float]:
         clue_type = str(clue.get("clue_type") or "").lower()
         traces = {str(item) for item in (clue.get("evidence_trace_ids") or []) if str(item).strip()}
         sources = {str(item) for item in (clue.get("source_names") or []) if str(item).strip()}
@@ -81,6 +93,29 @@ class CluePromotionStage:
         score = min(0.99, 0.2 + min(len(traces), 4) * 0.12 + min(len(sources), 3) * 0.12 + min(len(entity_values), 3) * 0.06)
         if observed_types.intersection({"contact", "account", "url", "domain", "tool_name", "price", "settlement"}):
             score = min(0.99, score + 0.18)
+
+        if clue_type == "shared_tool_multi_source" and _is_generic_shared_tool_name(str(clue.get("key") or ""), entity_values):
+            return False, "generic_shared_tool_name_requires_specific_identifier", round(score, 4)
+        if (
+            clue_type == "shared_settlement_multi_source"
+            and _is_generic_settlement_value(str(clue.get("key") or ""), entity_values)
+            and _normalized_key(clue.get("key")) != "usdt"
+        ):
+            return False, "generic_settlement_requires_contextual_identifier", round(score, 4)
+        if clue_type == "entity_graph_tool_trade_cluster" and _is_generic_shared_tool_name(str(clue.get("key") or ""), entity_values):
+            return False, "generic_tool_trade_cluster_requires_specific_identifier", round(score, 4)
+        if (
+            clue_type == "entity_graph_tool_trade_cluster"
+            and _is_direct_contact_key(clue.get("key"))
+            and not _has_explicit_tool_trade_text(clue, records_by_trace)
+        ):
+            return False, "direct_contact_tool_cluster_requires_explicit_tool_trade_text", round(score, 4)
+        if (
+            clue_type == "entity_graph_tool_trade_cluster"
+            and _is_direct_contact_key(clue.get("key"))
+            and not _has_specific_tool_cluster_support(entity_values)
+        ):
+            return False, "direct_contact_tool_cluster_requires_specific_tool_support", round(score, 4)
 
         configured_result = _configured_promotion_decision(
             self.rules,
@@ -99,6 +134,113 @@ class CluePromotionStage:
         return False, "no_promotion_rule_matched", round(score, 4)
 
 
+def _archive_superseded_generic_clues(actionable: Iterable[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    clues = [dict(item) for item in actionable]
+    specific_graph_chains = {
+        (_normalized_key(clue.get("key")), tuple(sorted(_trace_set(clue))))
+        for clue in clues
+        if _is_specific_graph_clue(clue)
+    }
+    domain_chains = {
+        tuple(sorted(_trace_set(clue)))
+        for clue in clues
+        if str(clue.get("clue_type") or "").strip().lower() == "shared_domain_multi_source"
+    }
+    tool_cluster_chains = {
+        (_normalized_key(clue.get("key")), tuple(sorted(_trace_set(clue))))
+        for clue in clues
+        if str(clue.get("clue_type") or "").strip().lower() == "entity_graph_tool_trade_cluster"
+    }
+    kept: list[dict[str, Any]] = []
+    archived: list[dict[str, Any]] = []
+    for clue in clues:
+        identity = (_normalized_key(clue.get("key")), tuple(sorted(_trace_set(clue))))
+        if _is_contextual_bridge_contact(clue) and tuple(sorted(_trace_set(clue))) in domain_chains:
+            downgraded = dict(clue)
+            downgraded["clue_stage"] = "archived_weak"
+            downgraded["archive_reason"] = "superseded_by_same_chain_domain_clue"
+            archived.append(downgraded)
+            continue
+        if _is_contextual_bridge_contact(clue) and identity in tool_cluster_chains:
+            downgraded = dict(clue)
+            downgraded["clue_stage"] = "archived_weak"
+            downgraded["archive_reason"] = "superseded_by_same_chain_tool_cluster"
+            archived.append(downgraded)
+            continue
+        if _is_generic_shared_clue(clue) and not _is_direct_contact_key(clue.get("key")) and identity in specific_graph_chains:
+            downgraded = dict(clue)
+            downgraded["clue_stage"] = "archived_weak"
+            downgraded["archive_reason"] = "superseded_by_more_specific_graph_clue"
+            archived.append(downgraded)
+            continue
+        kept.append(clue)
+    kept, bulk_archived = _archive_bulk_template_supported_noise(kept)
+    archived.extend(bulk_archived)
+    return kept, archived
+
+
+def _archive_bulk_template_supported_noise(actionable: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    bulk_templates = [
+        clue
+        for clue in actionable
+        if _is_bulk_template_clue(clue)
+    ]
+    if not bulk_templates:
+        return actionable, []
+
+    archived: list[dict[str, Any]] = []
+    kept: list[dict[str, Any]] = []
+    bulk_risk_categories = {
+        str(clue.get("risk_category") or "").strip().lower()
+        for clue in bulk_templates
+        if str(clue.get("risk_category") or "").strip()
+    }
+    representative_types = {"shared_contact_48h", "shared_domain_multi_source"}
+    grouped_representatives: dict[str, list[tuple[int, dict[str, Any]]]] = defaultdict(list)
+
+    for index, clue in enumerate(actionable):
+        clue_type = str(clue.get("clue_type") or "").strip().lower()
+        clue_risk = str(clue.get("risk_category") or "").strip().lower()
+        if clue_type in representative_types and (not bulk_risk_categories or clue_risk in bulk_risk_categories):
+            grouped_representatives[clue_type].append((index, clue))
+            continue
+        if _is_template_clue(clue_type) and not _template_has_key_entity_support(clue):
+            archived.append(_archived_copy(clue, "template_pattern_kept_in_candidate_pool_requires_key_entity_support"))
+            continue
+        kept.append(clue)
+
+    selected_ids: set[int] = set()
+    for clue_type, items in grouped_representatives.items():
+        if len(items) <= 1:
+            for _index, clue in items:
+                kept.append(clue)
+            continue
+        selected_index, selected = max(items, key=lambda item: _bulk_representative_rank(item[1], item[0]))
+        selected_ids.add(id(selected))
+        kept.append(selected)
+        for _index, clue in items:
+            if id(clue) in selected_ids:
+                continue
+            archived.append(_archived_copy(clue, f"bulk_template_{clue_type}_represented_by_top_evidence"))
+    return kept, archived
+
+
+def _archived_copy(clue: Mapping[str, Any], reason: str) -> dict[str, Any]:
+    archived = dict(clue)
+    archived["clue_stage"] = "archived_weak"
+    archived["archive_reason"] = reason
+    return archived
+
+
+def _bulk_representative_rank(clue: Mapping[str, Any], index: int) -> tuple[float, int, int, int]:
+    return (
+        float(clue.get("confidence") or clue.get("actionability_score") or clue.get("quality_score") or 0.0),
+        len(_trace_set(clue)),
+        len({str(item) for item in (clue.get("source_names") or []) if str(item).strip()}),
+        -index,
+    )
+
+
 def _actionable_rank(clue: Mapping[str, Any]) -> tuple[float, int, int, str]:
     return (
         float(clue.get("actionability_score") or clue.get("quality_score") or clue.get("confidence") or 0.0),
@@ -106,6 +248,127 @@ def _actionable_rank(clue: Mapping[str, Any]) -> tuple[float, int, int, str]:
         len({str(item) for item in (clue.get("source_names") or []) if str(item).strip()}),
         str(clue.get("key") or ""),
     )
+
+
+def _clue_identity(clue: Mapping[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(clue.get("clue_type") or "unknown").strip().lower(),
+        str(clue.get("key") or "").strip().lower(),
+        str(clue.get("risk_category") or "").strip().lower(),
+    )
+
+
+def _is_generic_shared_clue(clue: Mapping[str, Any]) -> bool:
+    clue_type = str(clue.get("clue_type") or "").strip().lower()
+    return clue_type in {"shared_contact_48h", "shared_tool_multi_source"}
+
+
+def _is_direct_contact_key(value: Any) -> bool:
+    lowered = _normalized_key(value)
+    return lowered.startswith(("telegram:", "wechat:", "qq:", "tg:", "wx:")) or lowered.startswith("@")
+
+
+def _is_contextual_bridge_contact(clue: Mapping[str, Any]) -> bool:
+    return (
+        str(clue.get("clue_type") or "").strip().lower() == "shared_contact_48h"
+        and str(clue.get("weak_reason") or clue.get("threshold_reason") or "") == "single_identifier_with_authorized_cross_source_corroboration"
+    )
+
+
+def _is_specific_graph_clue(clue: Mapping[str, Any]) -> bool:
+    clue_type = str(clue.get("clue_type") or "").strip().lower()
+    return clue_type in {"entity_graph_account_tool_overlap", "entity_graph_tool_trade_cluster"}
+
+
+def _is_template_clue(clue_type: str) -> bool:
+    return clue_type in {"high_frequency_template", "shared_template_multi_source"} or "template" in clue_type
+
+
+def _is_bulk_template_clue(clue: Mapping[str, Any]) -> bool:
+    clue_type = str(clue.get("clue_type") or "").strip().lower()
+    if not _is_template_clue(clue_type):
+        return False
+    return len(_trace_set(clue)) >= 8
+
+
+def _template_has_key_entity_support(clue: Mapping[str, Any]) -> bool:
+    values = {_normalized_key(item) for item in (clue.get("entity_values") or []) if str(item).strip()}
+    key = _normalized_key(clue.get("key"))
+    values.add(key)
+    return any(
+        _is_direct_contact_key(value)
+        or value.startswith(("http://", "https://"))
+        or "." in value
+        or ":" in value
+        or "@" in value
+        or _looks_like_machine_identifier(value)
+        for value in values
+    )
+
+
+def _looks_like_machine_identifier(value: str) -> bool:
+    if not value:
+        return False
+    if not any(char.isdigit() for char in value):
+        return False
+    ascii_letters = sum(1 for char in value if ("a" <= char <= "z") or ("A" <= char <= "Z"))
+    separators = sum(1 for char in value if char in {"-", "_"})
+    return ascii_letters >= 2 and (separators > 0 or len(value) <= 32)
+
+
+def _normalized_key(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _trace_set(clue: Mapping[str, Any]) -> set[str]:
+    return {str(item) for item in (clue.get("evidence_trace_ids") or []) if str(item).strip()}
+
+
+def _is_generic_shared_tool_name(key: str, entity_values: set[str]) -> bool:
+    values = {_normalized_key(key), *{_normalized_key(item) for item in entity_values}}
+    generic_values = {
+        "脚本",
+        "群控",
+        "云控",
+        "群发器",
+        "卡密",
+        "接码",
+        "批量登录",
+        "工具",
+        "bot",
+        "userbot",
+    }
+    return bool(values & generic_values) and not any(_looks_like_specific_identifier(value) for value in values)
+
+
+def _is_generic_settlement_value(key: str, entity_values: set[str]) -> bool:
+    values = {_normalized_key(key), *{_normalized_key(item) for item in entity_values}}
+    return bool(values & {"usdt", "跑分", "结算", "担保", "代付"})
+
+
+def _has_explicit_tool_trade_text(clue: Mapping[str, Any], records_by_trace: Mapping[str, Mapping[str, Any]]) -> bool:
+    texts = [
+        str((records_by_trace.get(trace) or {}).get("content_text") or (records_by_trace.get(trace) or {}).get("clean_text") or "")
+        for trace in _trace_set(clue)
+    ]
+    combined = " ".join(texts)
+    return any(marker in combined for marker in ("售卖", "出售", "售后", "批发", "卡密", "下单", "报价", "月卡", "订单"))
+
+
+def _has_specific_tool_cluster_support(entity_values: set[str]) -> bool:
+    values = {_normalized_key(item) for item in entity_values}
+    tool_values = {item for item in values if not _is_direct_contact_key(item)}
+    if any(_looks_like_specific_identifier(item) for item in tool_values):
+        return True
+    return len(tool_values) >= 2
+
+
+def _looks_like_specific_identifier(value: str) -> bool:
+    if not value:
+        return False
+    if any(char.isdigit() for char in value):
+        return True
+    return any(separator in value for separator in ("-", "_", ".", ":"))
 
 
 def _configured_promotion_decision(
@@ -133,7 +396,7 @@ def _configured_promotion_decision(
             continue
         rejected = {item.lower() for item in _string_list(rule.get("reject_risk_categories"))}
         if rejected and str(clue.get("risk_category") or "").lower() in rejected:
-            return False, str(rule.get("fail_reason") or f"{rule_name}_rejected_risk_category"), round(score, 4)
+            return False, str(rule.get("reject_reason") or rule.get("fail_reason") or f"{rule_name}_rejected_risk_category"), round(score, 4)
         passed = _requirements_pass(rule, traces=traces, sources=sources, observed_types=observed_types)
         return (
             passed,

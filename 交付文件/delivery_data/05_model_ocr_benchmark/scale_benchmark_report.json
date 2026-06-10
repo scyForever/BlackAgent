@@ -1,0 +1,56 @@
+{
+  "status": "completed",
+  "run_type": "scale_benchmark_core_routing",
+  "profile": "fast",
+  "batch_size": 1000,
+  "default_defense_scales": [
+    1000,
+    10000,
+    100000
+  ],
+  "scenarios": [
+    {
+      "sample_size": 1000,
+      "classified_count": 1000,
+      "entity_count": 3200,
+      "review_required_count": 200,
+      "elapsed_seconds": 0.8086,
+      "records_per_second": 1236.67,
+      "p50_record_latency_ms": 0.8086,
+      "p95_record_latency_ms": 0.8086,
+      "llm_call_count": 0,
+      "llm_calls_per_1000_records": 0.0,
+      "estimated_llm_tokens": 0,
+      "estimated_tokens_per_1000_records": 0.0,
+      "estimated_llm_cost_usd": 0.0,
+      "clue_recall_proxy": 0.66,
+      "recall_change_vs_previous_scale": null,
+      "route_reasons": {
+        "fast_profile_record_enrich_disabled_for_scale_benchmark": 400,
+        "high_confidence_rule_and_entities": 600
+      }
+    },
+    {
+      "sample_size": 10000,
+      "classified_count": 10000,
+      "entity_count": 32000,
+      "review_required_count": 2000,
+      "elapsed_seconds": 8.0233,
+      "records_per_second": 1246.37,
+      "p50_record_latency_ms": 0.801,
+      "p95_record_latency_ms": 0.82,
+      "llm_call_count": 0,
+      "llm_calls_per_1000_records": 0.0,
+      "estimated_llm_tokens": 0,
+      "estimated_tokens_per_1000_records": 0.0,
+      "estimated_llm_cost_usd": 0.0,
+      "clue_recall_proxy": 0.66,
+      "recall_change_vs_previous_scale": 0.0,
+      "route_reasons": {
+        "fast_profile_record_enrich_disabled_for_scale_benchmark": 4000,
+        "high_confidence_rule_and_entities": 6000
+      }
+    }
+  ],
+  "claim_boundary": "Benchmark is a deterministic local throughput and routing-cost proof covering classification, entity extraction, and model-routing token budget. It is not a live LLM latency or live LLM cost proof, and intentionally excludes external live collection and entity-graph aggregation."
+}

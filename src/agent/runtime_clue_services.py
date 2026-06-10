@@ -14,6 +14,7 @@ from src.scheduling.layered_collection import (
     prioritize_sources_for_investigation,
 )
 from src.safety import PIIMasker
+from src.enhancement.clue_quality import build_evidence_reviewability
 from src.workflows import WorkflowContext
 
 from .budget_controller import RuntimeBudget
@@ -97,6 +98,7 @@ class InvestigationClueMixin:
             base["retrieval_score"] = max(float(existing.get("retrieval_score") or 0.0), float(candidate.get("retrieval_score") or 0.0))
             base["orchestration_origins"] = sorted(origins)
             base["orchestration_origin"] = "hybrid" if len(origins) > 1 else next(iter(origins), base.get("orchestration_origin"))
+            base["evidence_reviewability"] = build_evidence_reviewability(base)
             return base
 
 
@@ -370,6 +372,7 @@ class InvestigationClueMixin:
                     classification_by_trace[trace_id] = dict(item)
             prompt_context = self.phase_engine.runtime_prompt_context(
                 label=self._exploration_label(candidate_clues, runtime_quality_gate=runtime_quality_gate),
+                include_gray=True,
             )
             prompt_context["history"] = processed_records[-12:]
             hypotheses: list[dict[str, Any]] = []

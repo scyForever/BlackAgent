@@ -104,6 +104,7 @@ class ClassificationResult(SchemaModel):
     risk_category: str = Field(min_length=1)
     confidence: float = Field(ge=0.0, le=1.0)
     review_required: bool = False
+    review_bucket: Literal["explicit_risk", "low_relevance", "human_review_required"] = "human_review_required"
     decision_version: str = Field(default="classifier_v1", min_length=1)
     evidence: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)

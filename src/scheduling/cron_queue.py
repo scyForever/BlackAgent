@@ -424,18 +424,24 @@ class CollectionQueueScheduler:
                 ],
             )
         if task_type == "collect_telegram_watch":
-            return self._execute_collection_job(
-                job,
-                [
-                    sys.executable,
-                    "scripts/telegram_telethon_collector.py",
-                    "--config",
-                    str(payload.get("config") or "config/telegram_watch.example.yaml"),
-                    "--db",
-                    self._scheduler_db_path,
-                    "--once",
-                ],
-            )
+            command = [
+                sys.executable,
+                "scripts/telegram_telethon_collector.py",
+                "--config",
+                str(payload.get("config") or "config/telegram_watch.example.yaml"),
+                "--db",
+                self._scheduler_db_path,
+                "--once",
+            ]
+            for payload_name, flag_name in (
+                ("username_limit", "--username-limit"),
+                ("search_limit", "--search-limit"),
+                ("history_limit", "--history-limit"),
+            ):
+                value = payload.get(payload_name)
+                if value:
+                    command.extend([flag_name, str(value)])
+            return self._execute_collection_job(job, command)
         if task_type == "collect_public_batch":
             return self._execute_collection_job(
                 job,

@@ -50,6 +50,10 @@ DEFAULT_NEGATION_MARKERS: tuple[str, ...] = (
     "无返佣",
     "不垫付",
     "不返佣",
+    "切勿垫付",
+    "切勿刷单",
+    "不要相信",
+    "不要轻信",
     "非刷单",
     "非群控",
     "不买卖",
@@ -176,6 +180,11 @@ class RiskPolarityScorer:
         hits = list(solicitation_hits)
         if not hits:
             return False
+        if any(_is_locally_negated(text, marker) for marker in hits):
+            remaining = [marker for marker in hits if not _is_locally_negated(text, marker)]
+            if not remaining:
+                return False
+            hits = remaining
         if any(marker in text for marker in self.negation_markers):
             risky = [marker for marker in hits if marker not in {"返佣", "垫付", "招募"}]
             return bool(risky)
@@ -196,6 +205,31 @@ def polarity_from_config(config: Mapping[str, Any] | None = None) -> RiskPolarit
 def _hits(text: str, markers: Iterable[str]) -> list[str]:
     lowered = text.lower()
     return [marker for marker in markers if marker and marker.lower() in lowered]
+
+
+def _is_locally_negated(text: str, marker: str) -> bool:
+    lowered = text.lower()
+    needle = marker.lower()
+    start = lowered.find(needle)
+    while start >= 0:
+        window = lowered[max(0, start - 12) : start + len(needle) + 8]
+        if any(
+            negation in window
+            for negation in (
+                "无",
+                "未",
+                "没有",
+                "不提供",
+                "未给出",
+                "没有给出",
+                "请勿",
+                "切勿",
+                "不要",
+            )
+        ):
+            return True
+        start = lowered.find(needle, start + len(needle))
+    return False
 
 
 def _confidence(*groups: Iterable[str]) -> float:

@@ -1,9 +1,20 @@
 from src.agent.exploration_agent import ExplorationAgent
 from src.enhancement.engine import PhaseTwoThreeEngine
 from src.enhancement.lifecycle import DynamicSlangLifecycleManager, PromptEvaluator
+from src.enhancement.strategy import RiskClueAggregator
 from src.enhancement.source_intake import ComplianceSourceDiscovery, MultimodalTextExtractor
 from src.enhancement.text_intelligence import AdaptiveEntropyFilter, AdvancedEntityExtractor, FineGrainedIntentClassifier, SlangVariantNormalizer
-from src.classifier.nlp_rule_matcher import ACCOUNT_TRADING, CLICK_FARMING, CROWD_SERVICE, TOOL_TRADING
+from src.intelligence.entity_postprocessor import filter_and_order_entities
+from src.classifier.nlp_rule_matcher import (
+    ACCOUNT_TRADING,
+    CLICK_FARMING,
+    CROWD_SERVICE,
+    FRAUD_TRAFFIC,
+    NORMAL_NOISE,
+    TOOL_TRADING,
+    RuleFastTrackClassifier,
+    review_bucket_for_classification,
+)
 from src.local_runtime import LocalAgentRuntime
 from storage import GraphRepo, VectorRepo
 
@@ -17,6 +28,440 @@ def test_slang_variant_normalizer_confirms_context_before_risk_hint():
     assert any(item.normalized == "抖音" and item.context_confirmed for item in risky.candidates)
     assert "加v" in risky.expanded_text
     assert not any(item.context_confirmed for item in benign.candidates)
+
+
+def test_fine_classifier_routes_obvious_public_technical_pages_to_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "benign-technical-1",
+            "source_name": "Automationforum",
+            "source_type": "TechForum",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "Partial Discharge (PD) Testing of electrical equipment. "
+                "This public article explains insulation diagnostics, "
+                "ElectricalEngineering and ConditionMonitoring concepts for maintenance teams. "
+                "Follow Automationforum on Telegram: https://t.me/F0rumElectrical "
+                "and read more at https://automationforum.co/electrical-engineering/"
+            ),
+        }
+    )
+
+    assert classification.risk_category == NORMAL_NOISE
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+    assert classification.review_decision_reason == "ordinary_public_information_no_risk_signal"
+
+
+def test_fine_classifier_routes_public_steam_guides_to_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "benign-technical-steam-guide",
+            "source_name": "telegram_public_delivery:Automationforum",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "Siphon Tube Pressure Gauge Steam Service Guide. "
+                "Read Full Guide: https://automationforum.co/siphon-tube-pressure-gauge-steam-service-guide/ "
+                "Topic: Siphon tube pressure gauge steam service guide for process engineers."
+            ),
+        }
+    )
+
+    assert classification.risk_category == NORMAL_NOISE
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+    assert classification.review_decision_reason == "ordinary_public_information_no_risk_signal"
+    assert classification.review_bucket == "low_relevance"
+
+
+def test_fine_classifier_marks_defensive_public_false_positive_as_low_relevance_bucket():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "defensive-low-relevance-risk-keywords",
+            "source_name": "security_blog",
+            "source_type": "TechForum",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "安全研究复盘：群控脚本和接码平台常被用于账号滥用，"
+                "本文只做防御检测说明，不提供工具、不交易账号，用户应举报相关广告。"
+            ),
+            "matched_keywords": ["群控", "接码"],
+            "matched_themes": ["工具交易", "接码"],
+        }
+    )
+
+    assert classification.risk_category == NORMAL_NOISE
+    assert classification.review_required is False
+    assert classification.review_bucket == "low_relevance"
+
+
+def test_fine_classifier_routes_public_steam_verification_discussion_to_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "manual-fp-steam-verification-discussion",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "Steam验证码为何由优速通代发? 因国内接收国际短信需代理。"
+                "steam忘记密码时手机验证账号，收到的验证码由优速通发来，"
+                "探讨优速通发steam验证码的原因及安全性。"
+            ),
+            "matched_keywords": ["代发", "验证码"],
+            "matched_themes": ["众包任务", "接码"],
+        }
+    )
+
+    assert classification.risk_category == NORMAL_NOISE
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+    assert classification.review_decision_reason == "ordinary_public_context_overrode_homonym_risk"
+
+
+def test_fine_classifier_routes_consumer_discount_rebate_articles_to_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "manual-fp-consumer-discount",
+            "source_name": "consumer_public_article",
+            "source_type": "Vertical",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "外卖品牌饭卡优惠，充100得125，高信誉用户免开会员，"
+                "平台活动说明里提到返佣和折上折规则。"
+            ),
+            "matched_keywords": ["返佣"],
+            "matched_themes": ["刷单作弊"],
+        }
+    )
+
+    assert classification.risk_category == NORMAL_NOISE
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+    assert classification.review_decision_reason == "ordinary_public_context_overrode_homonym_risk"
+
+
+def test_fine_classifier_routes_public_automation_ads_to_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "manual-fp-automation-ad",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "source_url": "https://www.easy-automation.com/automationtechnology",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "NexGen Automation Technology Ad. Our Service-Oriented Approach Ensures "
+                "You And Your Company Will Always Receive The Best. Advanced Feed Mill, "
+                "Grain & Agronomy Automation Systems Built To Boost Efficiency."
+            ),
+        }
+    )
+
+    assert classification.risk_category == NORMAL_NOISE
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+    assert classification.review_decision_reason == "ordinary_public_information_no_risk_signal"
+
+
+def test_fine_classifier_routes_game_automation_mod_guides_to_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "manual-fp-game-automation-mod",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "终极自动化模组介绍及使用方法。英文名: Ultimate Automation。"
+                "中文名: 终极自动化。简介: 原版群星后期繁琐无趣的操作太多了，"
+                "此模组改变了这一现状，让这些无趣操作交给自动化脚本处理。"
+                "steam创意工坊可查看订阅说明。"
+            ),
+            "matched_keywords": ["脚本", "automation"],
+            "matched_themes": ["工具交易"],
+        }
+    )
+
+    assert classification.risk_category == NORMAL_NOISE
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+    assert classification.review_decision_reason == "ordinary_public_context_overrode_homonym_risk"
+
+
+def test_fine_classifier_routes_public_wechat_group_operations_discussion_to_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "manual-fp-community-group-discussion",
+            "source_name": "tech_forum_blackgray_search",
+            "source_type": "Forum",
+            "source_url": "https://www.v2ex.com/t/821445",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "微信群超过 200 人之后，只能人工邀请，解决方案讨论。"
+                "我有一个技术、创意、生活交流群，群二维码会失效，"
+                "这个问题很麻烦，想讨论普通社区拉新的产品限制。"
+            ),
+            "matched_keywords": ["拉新"],
+            "matched_themes": ["诈骗引流"],
+        }
+    )
+
+    assert classification.risk_category == NORMAL_NOISE
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+    assert classification.review_decision_reason == "ordinary_public_context_overrode_homonym_risk"
+
+
+def test_fine_classifier_routes_public_platform_group_howto_to_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "manual-fp-platform-group-howto",
+            "source_name": "tieba_blackgray_search",
+            "source_type": "Social",
+            "source_url": "https://tieba.baidu.com/p/8601108459",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "b站怎么拉群，在B站拉群需要先下载安装哔哩哔哩APP，"
+                "登录后点击私信右侧的创建圈子，可以加入已有的圈子和创建圈子。"
+            ),
+            "matched_keywords": ["拉群", "验证码"],
+            "matched_themes": ["诈骗引流"],
+        }
+    )
+
+    assert classification.risk_category == NORMAL_NOISE
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+    assert classification.review_decision_reason == "ordinary_public_context_overrode_homonym_risk"
+
+
+def test_fine_classifier_keeps_sms_platform_business_offer_out_of_normal_noise_override():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "review-risk-herosms-business-offer",
+            "source_name": "telegram_public_delivery:herosms_cn",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "HeroSMS 是一个接码平台。我们提供临时号码用于接收验证码。"
+                "主要面向批量购买号码的用户，API 与 SMS-Activate 类似。"
+                "请访问 HeroSMS-Partners 页面，我们提供优惠条件和快速支付。"
+            ),
+            "matched_keywords": ["接码", "接码平台", "验证码"],
+            "matched_themes": ["接码"],
+        }
+    )
+
+    assert classification.risk_category == ACCOUNT_TRADING
+    assert classification.secondary_label == "接码注册"
+    assert classification.review_decision_reason != "ordinary_public_context_overrode_homonym_risk"
+
+
+def test_fine_classifier_keeps_lagroup_business_workflow_out_of_normal_noise_override():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "review-risk-lagroup-workflow",
+            "source_name": "telegram_public_delivery:HHweb_yk",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "拉群主任务流程：右上角 whatsapp 上号，选择拉群主号，选择拉群拉手，输入进群人数，"
+                "导入拉群资源，输入邀请链接。具体方案细节请详细咨询您的经销代理。"
+            ),
+            "matched_keywords": ["拉群", "拉裙"],
+            "matched_themes": ["诈骗引流", "众包任务"],
+        }
+    )
+
+    assert classification.risk_category == CROWD_SERVICE
+    assert classification.secondary_label == "拉群获客"
+    assert classification.review_decision_reason != "ordinary_public_context_overrode_homonym_risk"
+
+
+def test_fine_classifier_keeps_private_domain_monetization_out_of_normal_noise_override():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "review-risk-private-domain-monetization",
+            "source_name": "x_blackgray_search",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "我目前矩阵3个公众号，每篇末尾和评论区植入私域钩子，"
+                "自动导流到微信个人号/企业微信群。私域日新增80-120人，"
+                "3个月累积5000+，私域成交占比70%以上，月变现稳定10w+。"
+            ),
+            "matched_keywords": ["导流", "私域"],
+            "matched_themes": ["诈骗引流"],
+        }
+    )
+
+    assert classification.risk_category == FRAUD_TRAFFIC
+    assert classification.secondary_label == "私域导流"
+    assert classification.review_decision_reason != "ordinary_public_context_overrode_homonym_risk"
+
+
+def test_fine_classifier_routes_public_guides_with_neutral_telegram_channel_to_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "benign-technical-telegram-channel",
+            "source_name": "telegram_public_delivery:Automationforum",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "Understanding Boiler Drum Level Transmitters Accurate DP Measurement Explained. "
+                "Read Full Guide: https://automationforum.co/understanding-boiler-drum-level-transmitters/ "
+                "Follow our Telegram Channel https://t.me/Automationforum and LinkedIn page."
+            ),
+        }
+    )
+
+    assert classification.risk_category == NORMAL_NOISE
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+    assert classification.review_decision_reason == "ordinary_public_information_no_risk_signal"
+
+
+def test_fine_classifier_routes_open_source_userbot_release_notes_to_normal_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "benign-userbot-release-notes",
+            "source_name": "telegram_public_delivery:moonuserbot",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "#Update #Fix - Add back reverse parameter in shift and fwdall modules. "
+                "Fix circle module for python3+. Update your UserBot and custom modules."
+            ),
+        }
+    )
+
+    assert classification.risk_category == NORMAL_NOISE
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+    assert classification.review_decision_reason == "ordinary_public_information_no_risk_signal"
+
+
+def test_fine_classifier_routes_release_notes_with_contributor_mentions_to_noise():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "benign-userbot-release-notes-mention",
+            "source_name": "telegram_public_delivery:moonuserbot",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "#Update #Fix - Add back reverse parameter in shift and fwdall modules. "
+                "Fix circle module for python3+ thanks @xwvux. "
+                "Update your UserBot and custom modules."
+            ),
+        }
+    )
+
+    assert classification.risk_category == NORMAL_NOISE
+    assert classification.secondary_label == "低相关"
+    assert classification.review_required is False
+    assert classification.review_decision_reason == "ordinary_public_information_no_risk_signal"
+
+
+def test_fine_classifier_keeps_contact_trade_solicitation_out_of_normal_noise_fallback():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "risk-adjacent-crowd-1",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "欢迎老板低价接单，联系 TG:demo，群发私信包量",
+        }
+    )
+
+    assert classification.risk_category == CROWD_SERVICE
+    assert classification.risk_category != NORMAL_NOISE
+    assert classification.review_decision_reason != "ordinary_public_information_no_risk_signal"
+
+
+def test_fine_classifier_keeps_weak_direct_contact_signal_in_review_bucket():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "weak-contact-review-1",
+            "source_name": "Automationforum",
+            "source_type": "TechForum",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": (
+                "Public technical guide for electrical testing. "
+                "Contact TG:demo and read more at https://automationforum.co/category/testing/"
+            ),
+        }
+    )
+
+    assert classification.risk_category != NORMAL_NOISE
+    assert classification.review_required is True
+    assert classification.review_decision_reason != "ordinary_public_information_no_risk_signal"
+    assert classification.review_bucket == "human_review_required"
+
+
+def test_fine_classifier_marks_weak_trade_contact_as_human_review_bucket():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "weak-trade-contact-review-bucket",
+            "source_name": "misc-public-channel",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "今晚低价资源可谈，联系 TG:weakreview，老板私聊。",
+        }
+    )
+
+    assert classification.review_required is True
+    assert classification.review_bucket == "human_review_required"
+    assert classification.risk_category != NORMAL_NOISE
+
+
+def test_review_bucket_prioritizes_manual_review_over_low_relevance_category():
+    assert (
+        review_bucket_for_classification(
+            risk_category=NORMAL_NOISE,
+            review_required=True,
+            confidence=0.82,
+        )
+        == "human_review_required"
+    )
+    assert (
+        review_bucket_for_classification(
+            risk_category=NORMAL_NOISE,
+            review_required=False,
+            confidence=0.82,
+            conflict_status="CONFLICT_REVIEW",
+        )
+        == "human_review_required"
+    )
+
+
+def test_fast_classifier_keeps_defensive_weak_trade_contact_in_review_bucket():
+    classification = RuleFastTrackClassifier().classify(
+        {
+            "trace_id": "defensive-weak-trade-contact-review",
+            "source_name": "misc-public-channel",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "安全研究复盘：今晚低价资源可谈，联系 TG:weakreview，老板私聊。",
+        }
+    )
+
+    assert classification.review_required is True
+    assert classification.review_bucket == "human_review_required"
+    assert classification.risk_category != NORMAL_NOISE
+
+
+def test_fine_classifier_promotes_low_price_telegram_slang_to_review_bucket():
+    classification = FineGrainedIntentClassifier().classify(
+        {
+            "trace_id": "weak-telegram-slang-trade",
+            "source_type": "IM",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "content_text": "低价飞机 @seller，老板私聊，价格可谈。",
+        }
+    )
+
+    assert classification.risk_category == ACCOUNT_TRADING
+    assert classification.review_required is True
+    assert classification.review_decision_reason != "no_category_score"
+    assert "slang_context:platform_account_trade" in classification.evidence
 
 
 def phase_records():
@@ -88,6 +533,61 @@ def test_phase2_phase3_engine_builds_clues_playbooks_strategies_and_indexes():
     assert engine.semantic_search("群控脚本 接码", top_k=1)[0]["score"] > 0.2
 
 
+def test_cross_source_clue_uses_structural_authorization_and_skips_generic_domains():
+    aggregator = RiskClueAggregator()
+
+    def authorized_record(trace_id: str, source_name: str) -> dict[str, object]:
+        # A genuine authorized record: legal basis + auditable source URL +
+        # immutable snapshot URI, but NO "证据链/复核/授权样本" marker words.
+        return {
+            "source_trace_id": trace_id,
+            "source_name": source_name,
+            "source_type": "Social",
+            "content_text": "诈骗引流 落地页推广 加微 进群 拉新",
+            "clean_text": "诈骗引流 落地页推广 加微 进群 拉新",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "source_url": f"https://example.test/{trace_id}",
+            "capture_snapshot_uri": f"snap://{trace_id}",
+            "publish_time": "2026-06-09T10:00:00+00:00",
+            "crawl_time": "2026-06-09T10:00:00+00:00",
+        }
+
+    records = [authorized_record("A", "tg_search"), authorized_record("B", "tieba_search")]
+    classifications = [
+        {"source_trace_id": "A", "risk_category": "诈骗引流"},
+        {"source_trace_id": "B", "risk_category": "诈骗引流"},
+    ]
+    # A high-value landing domain that appears only once (singleton on A).
+    entities = [
+        {
+            "source_trace_id": "A",
+            "entity_type": "url",
+            "entity_value": "https://scamland.example/go",
+            "normalized_value": "https://scamland.example/go",
+        }
+    ]
+    clues = aggregator.aggregate(records=records, classifications=classifications, entities=entities)
+    cross_source = [clue for clue in clues if len(set(clue.source_names)) >= 2]
+    assert any(
+        clue.clue_type == "shared_domain_multi_source" and clue.key == "scamland.example"
+        for clue in cross_source
+    )
+
+    # Generic platform / state-media / dictionary domains recur across public
+    # search snippets but are not black/gray assets: they must never form clues.
+    generic_entities = [
+        {"source_trace_id": "A", "entity_type": "url", "entity_value": "https://zhihu.com/x", "normalized_value": "https://zhihu.com/x"},
+        {"source_trace_id": "B", "entity_type": "url", "entity_value": "https://zhihu.com/y", "normalized_value": "https://zhihu.com/y"},
+        {"source_trace_id": "A", "entity_type": "url", "entity_value": "https://cnr.cn/a", "normalized_value": "https://cnr.cn/a"},
+        {"source_trace_id": "B", "entity_type": "url", "entity_value": "https://cnr.cn/b", "normalized_value": "https://cnr.cn/b"},
+    ]
+    generic_clues = aggregator.aggregate(records=records, classifications=classifications, entities=generic_entities)
+    assert not any(
+        clue.clue_type == "shared_domain_multi_source" and clue.key in {"zhihu.com", "cnr.cn"}
+        for clue in generic_clues
+    )
+
+
 def test_advanced_components_cover_conflict_entropy_compliance_and_lifecycle():
     noisy = {"trace_id": "noise-1", "content_text": "!!!!!!!!!!!!", "legal_basis": "PUBLIC_COMPLIANT_DATA"}
     assert AdaptiveEntropyFilter().evaluate(noisy).action == "DROP"
@@ -118,8 +618,8 @@ def test_advanced_components_cover_conflict_entropy_compliance_and_lifecycle():
             "matched_keywords": ["私域", "导流"],
         }
     )
-    assert crowd_ops.risk_category == CROWD_SERVICE
-    assert crowd_ops.secondary_label == "代运营"
+    assert crowd_ops.risk_category == FRAUD_TRAFFIC
+    assert crowd_ops.secondary_label == "私域导流"
 
     crowd_ads = FineGrainedIntentClassifier().classify(
         {
@@ -207,9 +707,10 @@ def test_advanced_components_cover_conflict_entropy_compliance_and_lifecycle():
             "matched_keywords": ["卡单"],
         }
     )
-    assert gameplay_issue.risk_category == CLICK_FARMING
-    assert gameplay_issue.secondary_label == "卡单玩法"
-    assert gameplay_issue.review_required is True
+    assert gameplay_issue.risk_category == NORMAL_NOISE
+    assert gameplay_issue.secondary_label == "低相关"
+    assert gameplay_issue.review_required is False
+    assert gameplay_issue.review_decision_reason == "ordinary_public_context_overrode_homonym_risk"
 
     brush_platform = FineGrainedIntentClassifier().classify(
         {
@@ -268,8 +769,12 @@ def test_advanced_components_cover_conflict_entropy_compliance_and_lifecycle():
     lifecycle = DynamicSlangLifecycleManager()
     lifecycle.nominate("音符", "抖音", ["trace-1"])
     lifecycle.review("音符", approved=True, reviewer="analyst")
+    assert lifecycle.runtime_terms_mapping() == {}
     lifecycle.gray_rollout("音符", reviewer="analyst")
+    assert lifecycle.runtime_terms_mapping() == {}
+    assert lifecycle.runtime_terms_mapping(include_gray=True) == {"音符": "抖音"}
     assert lifecycle.activate("音符", reviewer="analyst").stage == lifecycle.ACTIVE
+    assert lifecycle.runtime_terms_mapping() == {"音符": "抖音"}
     lifecycle.ingest_review_decision(
         {
             "payload": {
@@ -284,6 +789,24 @@ def test_advanced_components_cover_conflict_entropy_compliance_and_lifecycle():
     prompt_eval = PromptEvaluator().evaluate("bad_prompt", "return text only", [{}])
     assert prompt_eval.passed is False
     assert "JSON" in prompt_eval.missing_requirements
+
+
+def test_promote_approved_candidate_stops_at_gray_rollout_before_activation():
+    lifecycle = DynamicSlangLifecycleManager()
+
+    record = lifecycle.promote_approved_candidate(
+        "火苗",
+        "WhatsApp",
+        ["trace-1"],
+        reviewer="analyst-a",
+        target_risk_category="诈骗引流",
+    )
+
+    assert record.stage == lifecycle.GRAY_ROLLOUT
+    assert record.gray_rollout_at
+    assert record.activated_at is None
+    assert lifecycle.runtime_terms_mapping() == {}
+    assert lifecycle.runtime_terms_mapping(include_gray=True) == {"火苗": "WhatsApp"}
 
 
 def test_multimodal_text_extractor_merges_nested_image_ocr_and_tracks_sources():
@@ -309,6 +832,157 @@ def test_multimodal_text_extractor_merges_nested_image_ocr_and_tracks_sources():
     assert materialized["multimodal_signal_count"] >= 3
     assert "images.ocr_text" in materialized["multimodal_text_sources"]
     assert "images.text_blocks.text" in materialized["multimodal_text_sources"]
+
+
+def test_advanced_entity_extractor_filters_source_aware_boilerplate_and_prioritizes_high_value_entities():
+    entities = AdvancedEntityExtractor().extract(
+        {
+            "trace_id": "entity-postprocess",
+            "source_name": "automationforum",
+            "source_type": "Article",
+            "source_class": "social_or_forum",
+            "source_url": "https://www.easy-automation.com/automationtechnology",
+            "query_url_template": "https://search.example.com/?q={query}",
+            "content_text": (
+                "Home Channel Image https http https://static.example.com/logo.png "
+                "Source https://www.easy-automation.com/automationtechnology "
+                "Search https://search.example.com/?q=telegram "
+                "Follow Us Telegram Channel https://t.me/Automationforum On LinkedIn "
+                "https://linkedin.com/company/automationforum Twitter https://twitter.com/automationforum "
+                "真正风险：群控脚本出售，联系 TG:riskcore01，微信 wxrisk01，QQ:1234567，"
+                "邀请码 code:ABCD88，USDT 结算，落地 risk-pay.example/path，账号 UID:acct8899，"
+                "低价接单客服 https://t.me/riskdeal01"
+            ),
+        }
+    )
+
+    values = [item.normalized_value for item in entities]
+    types = [item.entity_type for item in entities]
+
+    assert "Image" not in values
+    assert "Channel" not in values
+    assert "https" not in values
+    assert "http" not in values
+    assert "https://static.example.com/logo.png" not in values
+    assert "https://www.easy-automation.com/automationtechnology" not in values
+    assert "https://search.example.com/?q=telegram" not in values
+    assert "https://t.me/Automationforum" not in values
+    assert "https://linkedin.com/company/automationforum" not in values
+    assert "https://twitter.com/automationforum" not in values
+    assert "https://t.me/riskdeal01" in values
+    assert values[:9] == [
+        "Telegram:riskcore01",
+        "WeChat:wxrisk01",
+        "QQ:1234567",
+        "https://risk-pay.example/path",
+        "https://t.me/riskdeal01",
+        "acct8899",
+        "ABCD88",
+        "USDT",
+        "群控",
+    ]
+    assert types[:9] == ["contact", "contact", "contact", "url", "url", "account", "invite_code", "settlement", "tool_name"]
+    import hashlib
+
+    assert entities[0].canonical_hash == hashlib.sha256("contact:telegram:riskcore01".encode("utf-8")).hexdigest()
+
+
+def test_advanced_entity_extractor_keeps_public_invite_code_as_invite_code_without_code_prefix():
+    entities = AdvancedEntityExtractor().extract(
+        {
+            "trace_id": "public-invite",
+            "content_text": "授权样本：账号交易贴公开邀请码 INV-MH-01，人工标注为可复核线索。",
+        }
+    )
+
+    invite = next(item for item in entities if item.normalized_value == "INV-MH-01")
+    assert invite.entity_type == "invite_code"
+    assert invite.extraction_method == "hidden_invite_code"
+
+
+def test_advanced_entity_extractor_recognizes_manual_clue_identifier_contexts():
+    entities = AdvancedEntityExtractor().extract(
+        {
+            "trace_id": "manual-identifiers",
+            "content_text": (
+                "授权样本：账号批发节点 acct-mh-01 与卡密关键词同时出现。"
+                "群发器售后贴出现 tool-mh14，代实名服务的结算标识 settle-mh23。"
+                "接码项目贴记录 phonepool-mh19，和账号池节点形成图谱重叠。"
+            ),
+        }
+    )
+    by_value = {item.normalized_value: item.entity_type for item in entities}
+
+    assert by_value["acct-mh-01"] == "account"
+    assert by_value["tool-mh14"] == "tool_name"
+    assert by_value["settle-mh23"] == "settlement"
+    assert by_value["phonepool-mh19"] == "account"
+
+
+def test_entity_postprocessor_drops_footer_template_pseudo_entities_and_keeps_trade_links():
+    text = (
+        "Footer Home Image https://cdn.example.com/logo.png "
+        "Source https://source.example/post?utm=nav "
+        "Search https://source.example/search?q=telegram "
+        "Follow us Telegram Channel https://t.me/SecurityDigest on LinkedIn "
+        "https://linkedin.com/company/securitydigest and Twitter https://twitter.com/securitydigest. "
+        "真正风险：联系 TG:riskcore01 微信 wxrisk01 QQ:1234567，"
+        "落地域名 risk-pay.example，低价接单客服 https://t.me/riskdeal01，"
+        "账号 UID:acct8899，邀请码 code:ABCD88，USDT 结算，群控脚本出售。"
+    )
+
+    def entity(entity_type, value, normalized=None):
+        return {
+            "entity_type": entity_type,
+            "entity_value": value,
+            "normalized_value": normalized or value,
+            "start_offset": text.find(value),
+        }
+
+    ordered = filter_and_order_entities(
+        [
+            entity("slang_term", "Image"),
+            entity("contact", "Channel"),
+            entity("url", "https"),
+            entity("url", "http"),
+            entity("url", "https://cdn.example.com/logo.png"),
+            entity("url", "https://source.example/post?utm=nav"),
+            entity("url", "https://source.example/search?q=telegram"),
+            entity("url", "https://t.me/SecurityDigest"),
+            entity("url", "https://linkedin.com/company/securitydigest"),
+            entity("url", "https://twitter.com/securitydigest"),
+            entity("contact", "TG:riskcore01", "Telegram:riskcore01"),
+            entity("contact", "wxrisk01", "WeChat:wxrisk01"),
+            entity("contact", "QQ:1234567", "QQ:1234567"),
+            entity("domain", "risk-pay.example"),
+            entity("url", "https://t.me/riskdeal01"),
+            entity("account", "acct8899"),
+            entity("invite_code", "ABCD88"),
+            entity("settlement", "USDT"),
+            entity("tool_name", "群控"),
+        ],
+        {
+            "content_text": text,
+            "source_url": "https://source.example/post?utm=nav",
+            "query_url_template": "https://source.example/search?q={query}",
+        },
+    )
+
+    values = [item["normalized_value"] for item in ordered]
+    types = [item["entity_type"] for item in ordered]
+
+    assert values == [
+        "Telegram:riskcore01",
+        "WeChat:wxrisk01",
+        "QQ:1234567",
+        "risk-pay.example",
+        "https://t.me/riskdeal01",
+        "acct8899",
+        "ABCD88",
+        "USDT",
+        "群控",
+    ]
+    assert types == ["contact", "contact", "contact", "domain", "url", "account", "invite_code", "settlement", "tool_name"]
 
 
 def test_vector_and_graph_repositories_are_adapter_shaped():

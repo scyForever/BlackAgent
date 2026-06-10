@@ -1,0 +1,8 @@
+{
+  "trace_id": "de378f06-d06c-4abf-91df-5f7e0a121698",
+  "source_name": "telegram_blackgray_search",
+  "source_url": "https://t.me/s/Dragon_Userbot?before=14",
+  "crawl_time": "2026-05-26T02:33:08.473583Z",
+  "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3At.me%2Fs%20userbot",
+  "content_text": "Dragon Userbot - Telegram Image 9t.me/s/Dragon_Userbot?before=14 UPDATE Very important changes have been made to the updater.py file. Please update the **Userbot** via .update and manually reload it on the server."
+}

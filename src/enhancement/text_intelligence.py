@@ -14,14 +14,18 @@ from src.classifier.nlp_rule_matcher import (
     CROWD_SERVICE,
     FRAUD_TRAFFIC,
     NORMAL_NOISE,
+    REVIEW_BUCKET_HUMAN_REVIEW_REQUIRED,
+    REVIEW_BUCKET_LOW_RELEVANCE,
     TOOL_TRADING,
     UNKNOWN,
     RuleFastTrackClassifier,
+    review_bucket_for_classification,
 )
 from src.collector.base_collector import get_record_field
 from src.extractor.entity_extractor import ACCOUNT, CONTACT, TOOL_NAME, URL, BasicEntityExtractor
 from src.enhancement.context_polarity import NEGATIVE_RISK_ASSERTION, polarity_from_config
 from src.intelligence.entity_normalizer import EntityNormalizer
+from src.intelligence.entity_postprocessor import filter_and_order_entities
 from src.rules import RuleRegistry
 
 
@@ -119,6 +123,7 @@ class FineClassificationResult:
     secondary_label: str
     confidence: float
     review_required: bool
+    review_bucket: str = REVIEW_BUCKET_HUMAN_REVIEW_REQUIRED
     final_secondary_label: str | None = None
     candidate_secondary_labels: list[dict[str, Any]] = field(default_factory=list)
     conflict_status: str = "RESOLVED"
@@ -277,6 +282,746 @@ class SlangVariantNormalizer:
 class FineGrainedIntentClassifier:
     """Phase II second-level classifier plus Phase III conflict resolver."""
 
+    ORDINARY_PUBLIC_INFO_MARKERS = (
+        "article",
+        "read more",
+        "read full guide",
+        "follow us",
+        "linkedin",
+        "twitter",
+        "public",
+        "explains",
+        "documentation",
+        "docs",
+        "guide",
+        "tutorial",
+        "blog",
+        "news",
+        "release notes",
+        "changelog",
+        "#update",
+        "#fix",
+        "知识",
+        "科普",
+        "文章",
+        "新闻",
+        "公告",
+        "介绍",
+        "说明",
+        "解读",
+        "资料",
+    )
+    ORDINARY_TECHNICAL_MARKERS = (
+        "technology",
+        "company",
+        "feed mill",
+        "grain",
+        "agronomy",
+        "partial discharge",
+        "conditionmonitoring",
+        "condition monitoring",
+        "electricalengineering",
+        "electrical engineering",
+        "electrical",
+        "engineering",
+        "diagnostics",
+        "maintenance",
+        "equipment",
+        "testing",
+        "process engineers",
+        "pressure gauge",
+        "control valve",
+        "boiler",
+        "automationforum",
+        "forumelectrical",
+        "电气",
+        "工程",
+        "自动化",
+        "设备",
+        "维护",
+        "诊断",
+        "测试",
+    )
+    ORDINARY_TECHNICAL_TROUBLESHOOTING_MARKERS = (
+        "automation license manager",
+        "license manager service",
+        "博途",
+        "西门子",
+        "siemens",
+        "报错",
+        "无法启动",
+        "重新安装",
+        "防火墙",
+        "解决方案",
+        "service",
+    )
+    ORDINARY_AUTOMATION_TECH_DISCUSSION_MARKERS = (
+        "v2ex",
+        "automation software",
+        "automationdirect",
+        "automation forum",
+        "top 10 automation",
+        "free list",
+        "duckduckgo",
+        "microsoft ad network",
+        "ad clicks",
+        "privacy protected",
+        "百科",
+        "词条",
+        "api",
+        "开源项目",
+        "产品介绍",
+        "教程文档",
+        "选型",
+        "维护说明",
+        "机器人创建的网站",
+        "用的什么原理",
+        "userbot",
+        "频道普通订阅者",
+        "历史内容的整理",
+        "创建自己频道",
+        "添加机器人",
+        "云服务",
+        "用户隐私",
+        "车辆编辑器",
+        "车辆文件",
+        "导出的车",
+        "重新导入",
+        "grok imagine",
+        "批量跑图",
+        "批量跑视频",
+        "lora module",
+        "building automation",
+    )
+    ORDINARY_PUBLIC_SOURCE_MARKERS = (
+        "forum",
+        "blog",
+        "news",
+        "vertical",
+        "technical",
+        "techforum",
+        "website",
+        "web",
+        "social",
+        "tieba",
+        "百度贴吧",
+        "automationforum",
+        "forumelectrical",
+    )
+    PUBLIC_SOCIAL_LINK_MARKERS = (
+        "follow us",
+        "linkedin",
+        "twitter",
+        "t.me/",
+        "read more",
+        "read full guide",
+        "category/",
+        "github",
+    )
+    ORDINARY_SOFTWARE_UPDATE_MARKERS = (
+        "#update",
+        "#fix",
+        "release notes",
+        "changelog",
+        "regression",
+        "module loading",
+        "custom modules",
+        "update your userbot",
+        "restart your dynos",
+        "latest commits",
+    )
+    TECHNICAL_HOMONYM_RISK_MARKERS = (
+        "steam",
+        "automation",
+    )
+    ORDINARY_STEAM_DISCUSSION_MARKERS = (
+        "忘记密码",
+        "手机验证",
+        "安全性",
+        "原因",
+        "为何",
+        "为什么",
+        "探讨",
+        "讨论",
+    )
+    ORDINARY_GAME_CONTEXT_MARKERS = (
+        "游戏",
+        "单人局",
+        "战局",
+        "玩法",
+        "模组",
+        "mod",
+        "steam创意工坊",
+        "荒野大镖客",
+        "群星",
+        "创意工坊",
+        "订阅说明",
+        "车辆编辑器",
+        "车辆文件",
+        "导出的车",
+        "重新导入",
+        ".car",
+    )
+    ORDINARY_CONSUMER_PROMO_MARKERS = (
+        "外卖",
+        "饭卡",
+        "流量卡",
+        "运营商",
+        "平台活动",
+        "优惠",
+        "折上折",
+        "充值",
+        "充100",
+        "会员",
+        "高信誉用户",
+    )
+    ORDINARY_CONSUMER_VERIFICATION_MARKERS = (
+        "qq",
+        "QQ",
+        "手机验证码",
+        "验证码自动填充",
+        "自动填充",
+        "不用手输",
+        "防偷窥",
+        "账号安全",
+        "登录",
+        "支付",
+        "云闪付",
+        "切换设备",
+        "短信验证",
+        "短信费用",
+        "安全验证机制",
+        "验证码收不到",
+        "短信验证码收不到",
+        "收不到验证码",
+        "验证码正常",
+        "手机号未欠费",
+        "换手机",
+        "接收不到",
+        "登录不上去",
+        "移动手机号",
+        "10086",
+        "没有拦截",
+        "没开拦截",
+        "怎么解决",
+        "输不对",
+        "被锁定",
+        "原因",
+        "解决办法",
+        "探讨",
+        "问题全解决",
+        "手机软件",
+        "什么值得买",
+        "战网",
+        "战网通行证",
+        "gaijin pass",
+        "战争雷霆",
+        "animate",
+        "lovelive",
+        "短信通知",
+        "验证密码",
+        "确认绑定",
+        "绑定成功",
+        "无法登录",
+        "修复账号",
+        "更改方法",
+        "手机短信",
+        "短信实时同步",
+    )
+    ORDINARY_GROUP_SEND_DISCUSSION_MARKERS = (
+        "群发的邮件",
+        "群发邮件",
+        "全部回复",
+        "收件人",
+        "办公邮件",
+        "邮件设置",
+        "普通办公",
+        "发送时的设置",
+        "回复是否",
+        "所有人都能看到",
+        "功能更新说明",
+        "配置文档",
+        "使用教程",
+        "参数含义",
+        "没有报价",
+        "没有联系方式",
+    )
+    ORDINARY_FINANCE_MANUAL_ORDER_MARKERS = (
+        "手工单",
+        "量化交易",
+        "ai量化",
+        "AI量化",
+        "ai 量化",
+        "AI 量化",
+        "代码规则",
+        "按代码规则",
+        "频繁砍仓",
+        "情绪",
+        "贪婪",
+        "恐惧",
+        "追涨杀跌",
+        "止损",
+        "仓位",
+        "回撤",
+        "行情",
+        "交易策略",
+        "黄金",
+        "外汇",
+        "ea自动单",
+        "自动执行规则",
+        "情绪零干扰",
+    )
+    ORDINARY_NEWS_DISCUSSION_MARKERS = (
+        "余承东",
+        "聊天截图",
+        "离职",
+        "玩笑",
+        "网友",
+        "新闻",
+        "报道",
+    )
+    ORDINARY_COMMUNITY_DISCUSSION_MARKERS = (
+        "微信群",
+        "交流群",
+        "社区",
+        "群二维码",
+        "人工邀请",
+        "解决方案讨论",
+        "问题很麻烦",
+        "产品限制",
+        "普通社区",
+        "技术、创意、生活",
+        "b站",
+        "哔哩哔哩",
+        "app",
+        "创建圈子",
+        "加入已有的圈子",
+        "怎么拉群",
+        "下载安装",
+        "小圈群聊",
+        "小圈交流",
+        "学习成长",
+        "找同好",
+        "文明发言",
+        "群友",
+        "扣1",
+    )
+    ORDINARY_HEALTH_PRIVATE_DOMAIN_AD_MARKERS = (
+        "大健康",
+        "健康管理",
+        "慢病",
+        "随访",
+        "诊所",
+        "营养师",
+        "医疗",
+        "全牌照",
+        "权威资质",
+        "科研技术",
+        "服务产品体系",
+        "医疗交付",
+        "专业医疗",
+        "白皮书",
+        "普通saas",
+        "saas资料",
+        "客户管理",
+        "企微客户管理",
+        "公开投放案例",
+        "会员复购",
+        "项目招前段",
+        "社群运营吧",
+    )
+    ORDINARY_PUBLIC_ADDV_DISCUSSION_MARKERS = (
+        "网友讨论",
+        "讨论",
+        "吐槽",
+        "公共社交",
+        "社交礼仪",
+        "很多帖子",
+        "动不动",
+        "大家",
+        "没有给出",
+        "没有提供",
+        "未给出",
+        "不涉及",
+        "只是",
+        "门槛",
+        "下头",
+        "恋人未满",
+        "来自 android",
+        "android 客户端",
+        "百度贴吧",
+        "吧友",
+        "平平淡淡",
+        "创作人认证",
+        "百家号",
+        "原创标签",
+        "申请条件",
+        "如何申请",
+        "是不是有问题",
+    )
+    ORDINARY_PRIVATE_DOMAIN_BOOK_DISCUSSION_MARKERS = (
+        "马化腾",
+        "书籍",
+        "读后",
+        "阅读",
+        "普通人能学会吗",
+        "赚钱思维",
+        "方法",
+        "收获",
+        "吧友",
+    )
+    ORDINARY_PRIVATE_DOMAIN_CASE_STUDY_MARKERS = (
+        "案例拆解",
+        "体系全拆解",
+        "会员",
+        "复购率",
+        "企业微信",
+        "小程序商城",
+        "营销玩法",
+        "运营范本",
+        "零售行业",
+        "参考价值",
+        "什么值得买",
+        "智能速览",
+        "全渠道",
+        "全渠道闭环",
+        "流量池",
+        "私域流量池",
+        "专柜",
+        "品牌",
+        "品牌增长",
+        "营收",
+        "文章详细拆解",
+    )
+    ORDINARY_PUBLIC_SCAM_DISCUSSION_MARKERS = (
+        "骗局吗",
+        "是不是骗局",
+        "揭秘",
+        "套路",
+        "真假辨别",
+        "辨别方法",
+        "吧友",
+        "公共讨论",
+        "卖课",
+        "绘画群",
+    )
+    ORDINARY_GAME_GUIDE_MARKERS = (
+        "防骑",
+        "拉怪",
+        "命令圣印",
+        "奉献",
+        "嘲讽",
+        "boss",
+        "天赋",
+        "循环输出",
+        "技能详解",
+        "攻略",
+        "技巧",
+    )
+    SMS_PLATFORM_BUSINESS_MARKERS = (
+        "接码平台",
+        "临时号码",
+        "接收验证码",
+        "批量购买",
+        "快速支付",
+        "sms-activate",
+        "供应商",
+        "具体号码",
+        "自有软件",
+        "二次使用",
+        "接的码",
+        "手机码",
+        "专属手机码",
+        "不在线",
+    )
+    ACCOUNT_STOCK_MARKERS = (
+        "协议号",
+        "直登号",
+        "tdata",
+        "session+json",
+        "session",
+        "json",
+        "号码文件",
+        "号码包",
+        "号段",
+        "全球号段",
+        "库存",
+        "自助取号",
+        "取号机器人",
+        "自动售号机器人",
+        "自助下单取号",
+        "自助下单",
+        "补货通知",
+        "保一手",
+        "保首登",
+        "首登",
+        "死号",
+        "筛活",
+        "发号",
+        "发号即下架",
+        "账号保一手",
+        "无效包补",
+        "24小时不打烊",
+    )
+    GROUP_CONTROL_BOT_MARKERS = (
+        "群控机器人",
+        "微信号群控",
+        "群控系统",
+        "云控系统",
+        "短信群发云控",
+        "协议层",
+        "mtproto",
+        "userbot support",
+        "full mtproto userbot",
+        "ai agents",
+        "vbot",
+        "web api",
+        "扫码加好友",
+        "自动加为好友",
+        "拉入 vbot 群",
+        "拉入vbot群",
+        "开放时间",
+        "q 群",
+        "q群",
+    )
+    LAGROUP_OPERATION_MARKERS = (
+        "拉群主号",
+        "拉群拉手",
+        "拉群任务",
+        "拉群资源",
+        "进群人数",
+        "邀请链接",
+        "主号进群",
+        "经销代理",
+        "实时拉群",
+        "拉群协议方",
+        "号源",
+        "成群",
+        "任务流程",
+    )
+    PRIVATE_DOMAIN_MONETIZATION_MARKERS = (
+        "私域钩子",
+        "自动导流",
+        "精准用户导流",
+        "私域转化",
+        "微信个人号",
+        "企业微信群",
+        "私域日新增",
+        "私域成交",
+        "成交占比",
+        "月变现",
+        "后端卖",
+        "卖课程",
+        "卖工具",
+        "卖服务",
+        "矩阵",
+        "变现稳定",
+    )
+    PRIVATE_DOMAIN_TRAFFIC_PRIORITY_MARKERS = (
+        "私域导流",
+        "私域转化",
+        "精准用户导流",
+        "用户导流",
+        "后端卖",
+        "卖课程",
+        "卖工具",
+        "卖服务",
+        "私域成交",
+        "变现",
+        "导流",
+        "转化",
+        "拉新",
+        "开户链接",
+        "矩阵",
+    )
+    OPERATIONAL_TOOL_WORKFLOW_MARKERS = (
+        "sessions",
+        "session账号",
+        "session",
+        "广告文案",
+        "自动回复",
+        "群组群发",
+        "group.txt",
+        "程序设定",
+        "每20秒",
+        "发送1个群",
+        "目录下所有session",
+        "同时启动发送",
+        "采集群组",
+        "账号运行过程中",
+    )
+    PUBLIC_GROUP_SEND_TOOL_MARKERS = (
+        "群发插件",
+        "源代码",
+        "机器人吧",
+        "群发送",
+        "群成员",
+        "群临时会话",
+        "群发无忧",
+        "群发群",
+        "使用方法",
+        "设置页面",
+        "发送内容",
+        "选要发送的群",
+        "群发工具",
+        "群发模板",
+        "后台定时",
+        "循环发送",
+        "支持统计",
+    )
+    TOOL_DELIVERY_MARKERS = (
+        "群发器",
+        "豪迪群发器",
+        "豪迪软件",
+        "欢迎下载",
+        "下载",
+        "www.",
+        "http://",
+        "https://",
+    )
+    SECOND_HAND_ACCOUNT_SALE_MARKERS = (
+        "account for sale",
+        "for sale",
+        "buy",
+        "sellers",
+        "account online",
+        "sell account",
+        "account sale",
+        "verified account",
+    )
+    STRONG_TRANSACTION_INTENT_MARKERS = (
+        "出售",
+        "承接",
+        "接单",
+        "接任务",
+        "招募",
+        "上车",
+        "低价",
+        "报价",
+        "价格",
+        "下单",
+        "老板",
+        "担保",
+        "包量",
+        "量大",
+        "秒出",
+        "有需求",
+        "来盘",
+        "可谈",
+        "长期合作",
+        "for sale",
+        "buy now",
+        "wholesale",
+    )
+    DIRECT_CONTACT_INTENT_MARKERS = (
+        "contact",
+        "dm",
+        "pm",
+        "inbox",
+        "message me",
+        "联系",
+        "私聊",
+        "详聊",
+        "客服",
+        "咨询",
+        "对接",
+    )
+    REVIEW_RISK_MARKERS = (
+        "交易",
+        "出售",
+        "承接",
+        "接单",
+        "接任务",
+        "招募",
+        "上车",
+        "低价",
+        "报价",
+        "价格",
+        "下单",
+        "老板",
+        "担保",
+        "包量",
+        "量大",
+        "秒出",
+        "客服",
+        "咨询",
+        "私聊",
+        "详聊",
+        "进群",
+        "拉群",
+        "群发",
+        "私信",
+        "代发",
+        "代投",
+        "引流",
+        "导流",
+        "打粉",
+        "活粉",
+        "接码",
+        "验证码",
+        "群控",
+        "脚本",
+        "卡密",
+        "跑分",
+        "刷单",
+        "补单",
+        "返佣",
+        "垫付",
+    )
+    AFFILIATE_REBATE_TRAFFIC_MARKERS = (
+        "交易所",
+        "币圈",
+        "crypto",
+        "okx",
+        "币安",
+        "binance",
+        "polymarket",
+        "websea",
+        "反佣",
+        "返佣",
+        "高返佣",
+        "返佣高",
+        "返佣账号",
+        "高返佣账号",
+        "返利",
+        "高佣",
+        "吃返佣",
+        "拉人头",
+        "拉人注册",
+        "推广链接",
+        "ref码",
+        "开户链接",
+        "开户",
+        "交易量",
+        "合约交易量",
+        "合约",
+        "返点",
+        "跟单",
+        "保本跟单",
+        "特权码",
+        "理财",
+        "大户",
+        "赚个几百u",
+        "上千u",
+        "返上千u",
+    )
+    AFFILIATE_REBATE_TASK_EXCLUSION_MARKERS = (
+        "刷单",
+        "补单",
+        "垫付",
+        "做任务",
+        "点赞任务",
+        "关注任务",
+        "卡单",
+        "日结",
+        "兼职",
+        "手工单",
+        "做单",
+        "试岗单",
+        "寄拍",
+    )
+    CONTACT_MARKERS = ("tg:", "telegram:", "t.me/", "加v", "微信", "wechat", "wx:", "qq:", "@")
+
     def __init__(self, rule_registry: RuleRegistry | None = None) -> None:
         self.rule_registry = rule_registry or RuleRegistry()
         self.fast_classifier = RuleFastTrackClassifier(rule_registry=self.rule_registry)
@@ -293,8 +1038,18 @@ class FineGrainedIntentClassifier:
             category: {label: tuple(terms) for label, terms in labels.items()}
             for category, labels in configured_secondary.items()
         }
+        self.secondary_signal_terms = tuple(
+            dict.fromkeys(
+                term
+                for labels in self.secondary_rules.values()
+                for terms in labels.values()
+                for term in terms
+                if str(term).strip()
+            )
+        )
         polarity = self.rule_registry.load_context_polarity()
         self.defensive_context_markers = tuple(str(item) for item in polarity.get("defensive_markers", []) if str(item).strip())
+        self.generic_guide_markers = self.rule_registry.context_markers("generic_guide_markers")
         policy = self.rule_registry.classifier_policy()
         marker_groups = policy.get("promotion_marker_groups") if isinstance(policy.get("promotion_marker_groups"), Mapping) else {}
         self.crowd_promotion_markers = _as_tuple(marker_groups.get("crowd") if isinstance(marker_groups, Mapping) else ())
@@ -307,6 +1062,15 @@ class FineGrainedIntentClassifier:
                 [
                     *_as_tuple(marker_groups.get("solicitation") if isinstance(marker_groups, Mapping) else ()),
                     *[marker for markers in self.category_promotion_markers.values() for marker in markers],
+                ]
+            )
+        )
+        self.blackgray_review_markers = tuple(
+            dict.fromkeys(
+                [
+                    *self.solicitation_markers,
+                    *self.secondary_signal_terms,
+                    *self.REVIEW_RISK_MARKERS,
                 ]
             )
         )
@@ -369,13 +1133,59 @@ class FineGrainedIntentClassifier:
             text=match_text,
         )
 
+        benign_override_evidence = self._ordinary_public_context_override_evidence(
+            record=record,
+            text=match_text,
+            matched_keywords=matched_keywords,
+            matched_themes=matched_themes,
+            category_scores=category_scores,
+        )
+        if category_scores and benign_override_evidence:
+            return FineClassificationResult(
+                source_trace_id=trace_id,
+                risk_category=NORMAL_NOISE,
+                secondary_label="低相关",
+                confidence=0.76,
+                review_required=False,
+                review_bucket=REVIEW_BUCKET_LOW_RELEVANCE,
+                final_secondary_label="低相关",
+                candidate_secondary_labels=[],
+                conflict_status="RESOLVED",
+                conflict_categories=[],
+                evidence=benign_override_evidence,
+                review_decision_reason="ordinary_public_context_overrode_homonym_risk",
+            )
+
         if not category_scores:
+            benign_evidence = self._ordinary_public_information_evidence(
+                record=record,
+                text=match_text,
+                matched_keywords=matched_keywords,
+                matched_themes=matched_themes,
+                slang_analysis=slang_analysis,
+            )
+            if benign_evidence:
+                return FineClassificationResult(
+                    source_trace_id=trace_id,
+                    risk_category=NORMAL_NOISE,
+                    secondary_label="低相关",
+                    confidence=0.72,
+                    review_required=False,
+                    review_bucket=REVIEW_BUCKET_LOW_RELEVANCE,
+                    final_secondary_label="低相关",
+                    candidate_secondary_labels=[],
+                    conflict_status="RESOLVED",
+                    conflict_categories=[],
+                    evidence=benign_evidence,
+                    review_decision_reason="ordinary_public_information_no_risk_signal",
+                )
             return FineClassificationResult(
                 source_trace_id=trace_id,
                 risk_category=UNKNOWN,
                 secondary_label="待研判",
                 confidence=0.35,
                 review_required=True,
+                review_bucket=REVIEW_BUCKET_HUMAN_REVIEW_REQUIRED,
                 final_secondary_label=None,
                 candidate_secondary_labels=[],
                 conflict_status="UNKNOWN",
@@ -385,13 +1195,17 @@ class FineGrainedIntentClassifier:
             )
         topic_terms = [term for values in category_evidence.values() for term in values if not str(term).startswith("theme:")]
         polarity = self.polarity_scorer.score(text, topic_terms=topic_terms)
-        if self._is_defensive_context(match_text) or polarity.polarity == NEGATIVE_RISK_ASSERTION:
+        is_operational_tool_workflow = self._is_operational_tool_workflow(match_text)
+        if (
+            self._is_defensive_context(match_text) or polarity.polarity == NEGATIVE_RISK_ASSERTION
+        ) and not is_operational_tool_workflow:
             return FineClassificationResult(
                 source_trace_id=trace_id,
                 risk_category=NORMAL_NOISE,
                 secondary_label="研究讨论" if polarity.actor_intent == "research" else "防御语境",
                 confidence=max(0.8, polarity.confidence),
                 review_required=False,
+                review_bucket=REVIEW_BUCKET_LOW_RELEVANCE,
                 final_secondary_label=None,
                 candidate_secondary_labels=[],
                 conflict_status="NEGATIVE_RISK_ASSERTION",
@@ -406,6 +1220,12 @@ class FineGrainedIntentClassifier:
         )
         top_category, top_score = ordered[0]
         raw_conflicts = [category for category, score in ordered[1:] if score == top_score or (top_score - score <= 1 and score >= 2)]
+        raw_conflicts = self._account_tool_cross_conflicts(
+            raw_conflicts,
+            top_category=top_category,
+            category_scores=category_scores,
+            text=match_text,
+        )
         conflict_status = "RESOLVED"
         secondary_label, secondary_evidence, secondary_candidates = self._secondary_label(top_category, match_text, matched_keywords)
         supporting_evidence = self._ordered_unique((*category_evidence.get(top_category, []), *secondary_evidence))
@@ -420,6 +1240,12 @@ class FineGrainedIntentClassifier:
             category_evidence=category_evidence,
             text=match_text,
         )
+        if (
+            top_category == ACCOUNT_TRADING
+            and TOOL_TRADING not in conflicts
+            and self._is_account_tool_ambiguous_review_context(match_text, matched_themes=matched_themes)
+        ):
+            conflicts = [*conflicts, TOOL_TRADING]
 
         confidence = max(
             float(fast_data.get("confidence", 0.0) or 0.0),
@@ -456,6 +1282,15 @@ class FineGrainedIntentClassifier:
         ):
             review_required = False
             review_reason = "high_confidence_auto_clear"
+        if self._can_auto_clear_affiliate_rebate_review(
+            text=match_text,
+            secondary_label=secondary_label,
+            confidence=confidence,
+            has_conflict=bool(conflicts),
+            theme_only=theme_only,
+        ):
+            review_required = False
+            review_reason = "high_confidence_affiliate_rebate_auto_clear"
 
         return FineClassificationResult(
             source_trace_id=trace_id,
@@ -465,6 +1300,13 @@ class FineGrainedIntentClassifier:
             candidate_secondary_labels=secondary_candidates,
             confidence=round(confidence, 4),
             review_required=review_required,
+            review_bucket=review_bucket_for_classification(
+                risk_category=top_category,
+                review_required=review_required,
+                confidence=confidence,
+                secondary_label=secondary_label,
+                conflict_status=conflict_status,
+            ),
             conflict_status=conflict_status,
             conflict_categories=conflicts,
             evidence=supporting_evidence,
@@ -473,10 +1315,1402 @@ class FineGrainedIntentClassifier:
 
     def _is_defensive_context(self, text: str) -> bool:
         defensive_hits = self._marker_hits(text, self.defensive_context_markers)
-        if not defensive_hits:
+        if not defensive_hits and not self._is_risk_detection_research_context(text):
             return False
-        solicitation_hits = self._marker_hits(text, self.solicitation_markers)
+        solicitation_hits = [
+            marker
+            for marker in self._marker_hits(text, self.solicitation_markers)
+            if not self._is_locally_negated_marker(text, marker)
+        ]
         return len(solicitation_hits) == 0 or any(marker in text for marker in ("不提供", "不要参与", "切勿参与"))
+
+    def _is_risk_detection_research_context(self, text: str) -> bool:
+        if self._has_direct_contact_intent(text) or self._has_hard_transaction_evidence(text):
+            return False
+        detection_hits = self._marker_hits(
+            text,
+            (
+                "黑产识别",
+                "识别群控特征",
+                "识别风险",
+                "风控识别",
+                "模型识别",
+                "样本分析",
+                "安全研究",
+                "安全团队",
+                "检测规则",
+                "规则库",
+            ),
+        )
+        if not detection_hits:
+            return False
+        return any(marker in text for marker in ("群控", "黑产", "风险", "检测", "识别", "规则"))
+
+    def _ordinary_public_information_evidence(
+        self,
+        *,
+        record: Mapping[str, Any] | Any,
+        text: str,
+        matched_keywords: tuple[str, ...],
+        matched_themes: tuple[str, ...],
+        slang_analysis: SlangVariantAnalysis,
+    ) -> list[str]:
+        if not text.strip():
+            return []
+        if matched_keywords or matched_themes or any(candidate.category_hint for candidate in slang_analysis.confirmed_candidates):
+            return []
+        early_ordinary_context_ready = any(
+            (
+                self._is_ordinary_automation_technical_context(text),
+                self._is_ordinary_game_mod_discussion(text),
+                self._is_ordinary_consumer_verification_context(text),
+                self._is_ordinary_community_group_invite(text),
+            )
+        )
+        if self._has_blackgray_review_signal(text) and not early_ordinary_context_ready:
+            return []
+
+        source_context = " ".join(
+            normalize_text(str(get_record_field(record, field) or ""))
+            for field in ("source_name", "source_type", "source_url")
+        )
+        ordinary_hits = self._marker_hits(
+            text,
+            (
+                *self.ORDINARY_PUBLIC_INFO_MARKERS,
+                *self.ORDINARY_TECHNICAL_MARKERS,
+                *self.ORDINARY_AUTOMATION_TECH_DISCUSSION_MARKERS,
+                *self.ORDINARY_GAME_CONTEXT_MARKERS,
+                *self.ORDINARY_CONSUMER_VERIFICATION_MARKERS,
+                *self.ORDINARY_COMMUNITY_DISCUSSION_MARKERS,
+                *self.generic_guide_markers,
+            ),
+        )
+        software_update_hits = self._marker_hits(text, self.ORDINARY_SOFTWARE_UPDATE_MARKERS)
+        source_hits = self._marker_hits(source_context, self.ORDINARY_PUBLIC_SOURCE_MARKERS)
+        public_link_hits = self._marker_hits(text, self.PUBLIC_SOCIAL_LINK_MARKERS)
+        ordinary_context_ready = early_ordinary_context_ready
+        has_public_or_technical_context = bool(
+            ordinary_hits
+            or software_update_hits
+            or ordinary_context_ready
+            or (source_hits and public_link_hits)
+        )
+        if not has_public_or_technical_context:
+            return []
+        if self._has_direct_contact_intent(text):
+            return []
+        if self._has_contact_marker(text) and not (public_link_hits or software_update_hits or ordinary_context_ready):
+            return []
+
+        evidence = [
+            *(f"ordinary:{marker}" for marker in ordinary_hits[:3]),
+            *(f"software_update:{marker}" for marker in software_update_hits[:3]),
+            *(f"source:{marker}" for marker in source_hits[:2]),
+            *(f"public_link:{marker}" for marker in public_link_hits[:2]),
+        ]
+        if ordinary_context_ready:
+            evidence.append("ordinary_context:public_low_risk_discussion")
+        return self._ordered_unique(evidence or ["ordinary_public_information"])
+
+    def _ordinary_public_context_override_evidence(
+        self,
+        *,
+        record: Mapping[str, Any] | Any,
+        text: str,
+        matched_keywords: tuple[str, ...],
+        matched_themes: tuple[str, ...],
+        category_scores: Mapping[str, int],
+    ) -> list[str]:
+        if not text.strip() or not category_scores:
+            return []
+        if self._has_blackgray_business_operation_signal(
+            text=text,
+            matched_keywords=matched_keywords,
+            matched_themes=matched_themes,
+            category_scores=category_scores,
+        ):
+            return []
+
+        source_context = " ".join(
+            normalize_text(str(get_record_field(record, field) or ""))
+            for field in ("source_name", "source_type", "source_url")
+        )
+        evidence: list[str] = []
+        matched_hint = [*(f"keyword:{item}" for item in matched_keywords[:3]), *(f"theme:{item}" for item in matched_themes[:2])]
+
+        if self._is_public_addv_discussion(text):
+            evidence.extend(["ordinary_context:public_addv_discussion", *matched_hint])
+
+        if self._is_ordinary_health_private_domain_ad(text, source_context=source_context):
+            evidence.extend(["ordinary_context:health_private_domain_public_ad", *matched_hint])
+
+        if self._is_private_domain_book_discussion(text):
+            evidence.extend(["ordinary_context:private_domain_public_book_discussion", *matched_hint])
+
+        if self._is_public_private_domain_case_study(text):
+            evidence.extend(["ordinary_context:private_domain_public_case_study", *matched_hint])
+
+        if self._is_private_domain_concept_article(text):
+            evidence.extend(["ordinary_context:private_domain_public_concept_article", *matched_hint])
+
+        if self._is_ordinary_private_domain_reflection_or_critique(text):
+            evidence.extend(["ordinary_context:private_domain_public_reflection", *matched_hint])
+
+        if self._is_ordinary_remote_device_control_discussion(text):
+            evidence.extend(["ordinary_context:remote_device_control_discussion", *matched_hint])
+
+        if self._is_ordinary_sms_fee_or_office_group_send_discussion(text):
+            evidence.extend(["ordinary_context:sms_fee_or_office_group_send_discussion", *matched_hint])
+
+        if self._is_ordinary_group_chatter_complaint(text):
+            evidence.extend(["ordinary_context:group_chatter_complaint", *matched_hint])
+
+        if self._is_ordinary_health_or_payment_metaphor(text):
+            evidence.extend(["ordinary_context:health_or_payment_metaphor", *matched_hint])
+
+        if self._is_ordinary_payment_software_release_context(text):
+            evidence.extend(["ordinary_context:payment_software_release_notes", *matched_hint])
+
+        if self._is_ordinary_game_card_order_guide(text):
+            evidence.extend(["ordinary_context:game_card_order_guide", *matched_hint])
+
+        if self._is_ordinary_consumer_sms_autofill_article(text):
+            evidence.extend(["ordinary_context:consumer_sms_autofill_article", *matched_hint])
+
+        if self._is_ordinary_outreach_email_automation_discussion(text):
+            evidence.extend(["ordinary_context:outreach_email_automation_discussion", *matched_hint])
+
+        if self._is_public_contact_safety_discussion(text):
+            evidence.extend(["ordinary_context:public_contact_safety_discussion", *matched_hint])
+
+        if self._is_ordinary_ai_prompt_session_discussion(text):
+            evidence.extend(["ordinary_context:ai_prompt_session_discussion", *matched_hint])
+
+        if self._is_ordinary_technical_troubleshooting(text):
+            evidence.extend(["ordinary_context:technical_troubleshooting_discussion", *matched_hint])
+
+        if self._is_ordinary_automation_technical_context(text):
+            evidence.extend(["ordinary_context:automation_technical_discussion", *matched_hint])
+
+        if self._is_public_scam_discussion(text):
+            evidence.extend(["ordinary_context:public_scam_discussion", *matched_hint])
+
+        if self._is_ordinary_game_guide(text):
+            evidence.extend(["ordinary_context:game_guide_discussion", *matched_hint])
+
+        if self._is_ordinary_consumer_verification_context(text):
+            evidence.extend(["ordinary_context:consumer_verification_article", *matched_hint])
+
+        if self._is_ordinary_group_send_discussion(text):
+            evidence.extend(["ordinary_context:ordinary_group_send_discussion", *matched_hint])
+
+        if self._is_ordinary_community_group_invite(text):
+            evidence.extend(["ordinary_context:community_group_invite_discussion", *matched_hint])
+
+        if self._is_ordinary_finance_manual_order_context(text):
+            evidence.extend(["ordinary_context:finance_manual_order_article", *matched_hint])
+
+        if evidence:
+            ordinary_hits = self._marker_hits(
+                text,
+                (
+                    *self.ORDINARY_PUBLIC_INFO_MARKERS,
+                    *self.ORDINARY_HEALTH_PRIVATE_DOMAIN_AD_MARKERS,
+                    *self.ORDINARY_PUBLIC_ADDV_DISCUSSION_MARKERS,
+                    *self.ORDINARY_PRIVATE_DOMAIN_BOOK_DISCUSSION_MARKERS,
+                    *self.ORDINARY_PRIVATE_DOMAIN_CASE_STUDY_MARKERS,
+                    "公域",
+                    "全域",
+                    "数字化营销",
+                    "什么是私域",
+                    "私域",
+                    *self.ORDINARY_TECHNICAL_TROUBLESHOOTING_MARKERS,
+                    *self.ORDINARY_AUTOMATION_TECH_DISCUSSION_MARKERS,
+                    *self.ORDINARY_PUBLIC_SCAM_DISCUSSION_MARKERS,
+                    *self.ORDINARY_GAME_GUIDE_MARKERS,
+                    *self.ORDINARY_CONSUMER_VERIFICATION_MARKERS,
+                    *self.ORDINARY_GROUP_SEND_DISCUSSION_MARKERS,
+                    *self.ORDINARY_FINANCE_MANUAL_ORDER_MARKERS,
+                ),
+            )
+            source_hits = self._marker_hits(source_context, self.ORDINARY_PUBLIC_SOURCE_MARKERS)
+            evidence.extend(f"ordinary:{marker}" for marker in ordinary_hits[:3])
+            evidence.extend(f"source:{marker}" for marker in source_hits[:2])
+            return self._ordered_unique(evidence)
+
+        if self._has_disqualifying_solicitation(text):
+            return []
+
+        if "steam" in text.lower() and "验证码" in text and self._marker_hits(text, self.ORDINARY_STEAM_DISCUSSION_MARKERS):
+            evidence.extend(["ordinary_context:steam_account_safety_discussion", *matched_hint])
+
+        if "卡单" in text and self._marker_hits(text, self.ORDINARY_GAME_CONTEXT_MARKERS):
+            evidence.extend(["ordinary_context:gameplay_or_mod_discussion", *matched_hint])
+
+        game_hits = self._marker_hits(text, self.ORDINARY_GAME_CONTEXT_MARKERS)
+        if game_hits and any(marker in text.lower() for marker in ("automation", "脚本", "mod", "模组")):
+            evidence.extend(["ordinary_context:game_mod_automation_discussion", *matched_hint])
+
+        if self._marker_hits(text, self.ORDINARY_CONSUMER_PROMO_MARKERS) and any(marker in text for marker in ("返佣", "佣金", "优惠", "折上折")):
+            evidence.extend(["ordinary_context:consumer_promotion_article", *matched_hint])
+
+        if "拉群" in text and self._marker_hits(text, self.ORDINARY_NEWS_DISCUSSION_MARKERS):
+            evidence.extend(["ordinary_context:public_news_discussion", *matched_hint])
+
+        if self._marker_hits(text, self.ORDINARY_COMMUNITY_DISCUSSION_MARKERS) and any(marker in text for marker in ("拉新", "拉群", "邀请", "群二维码", "微信群")):
+            evidence.extend(["ordinary_context:community_operations_discussion", *matched_hint])
+
+        if self._is_ordinary_community_group_invite(text):
+            evidence.extend(["ordinary_context:community_group_invite_discussion", *matched_hint])
+
+        if self._is_private_domain_book_discussion(text):
+            evidence.extend(["ordinary_context:private_domain_public_book_discussion", *matched_hint])
+
+        if self._is_public_private_domain_case_study(text):
+            evidence.extend(["ordinary_context:private_domain_public_case_study", *matched_hint])
+
+        if self._is_private_domain_concept_article(text):
+            evidence.extend(["ordinary_context:private_domain_public_concept_article", *matched_hint])
+
+        if self._is_ordinary_private_domain_reflection_or_critique(text):
+            evidence.extend(["ordinary_context:private_domain_public_reflection", *matched_hint])
+
+        if self._is_ordinary_remote_device_control_discussion(text):
+            evidence.extend(["ordinary_context:remote_device_control_discussion", *matched_hint])
+
+        if self._is_ordinary_sms_fee_or_office_group_send_discussion(text):
+            evidence.extend(["ordinary_context:sms_fee_or_office_group_send_discussion", *matched_hint])
+
+        if self._is_ordinary_group_chatter_complaint(text):
+            evidence.extend(["ordinary_context:group_chatter_complaint", *matched_hint])
+
+        if self._is_ordinary_health_or_payment_metaphor(text):
+            evidence.extend(["ordinary_context:health_or_payment_metaphor", *matched_hint])
+
+        if self._is_ordinary_payment_software_release_context(text):
+            evidence.extend(["ordinary_context:payment_software_release_notes", *matched_hint])
+
+        if self._is_ordinary_game_card_order_guide(text):
+            evidence.extend(["ordinary_context:game_card_order_guide", *matched_hint])
+
+        if self._is_ordinary_consumer_sms_autofill_article(text):
+            evidence.extend(["ordinary_context:consumer_sms_autofill_article", *matched_hint])
+
+        if self._is_ordinary_outreach_email_automation_discussion(text):
+            evidence.extend(["ordinary_context:outreach_email_automation_discussion", *matched_hint])
+
+        if self._is_public_contact_safety_discussion(text):
+            evidence.extend(["ordinary_context:public_contact_safety_discussion", *matched_hint])
+
+        if self._is_ordinary_ai_prompt_session_discussion(text):
+            evidence.extend(["ordinary_context:ai_prompt_session_discussion", *matched_hint])
+
+        if self._is_ordinary_technical_troubleshooting(text):
+            evidence.extend(["ordinary_context:technical_troubleshooting_discussion", *matched_hint])
+
+        if self._is_ordinary_automation_technical_context(text):
+            evidence.extend(["ordinary_context:automation_technical_discussion", *matched_hint])
+
+        if self._is_public_scam_discussion(text):
+            evidence.extend(["ordinary_context:public_scam_discussion", *matched_hint])
+
+        if self._is_ordinary_game_guide(text):
+            evidence.extend(["ordinary_context:game_guide_discussion", *matched_hint])
+
+        if self._is_ordinary_consumer_verification_context(text):
+            evidence.extend(["ordinary_context:consumer_verification_article", *matched_hint])
+
+        if self._is_ordinary_group_send_discussion(text):
+            evidence.extend(["ordinary_context:ordinary_group_send_discussion", *matched_hint])
+
+        if self._is_ordinary_finance_manual_order_context(text):
+            evidence.extend(["ordinary_context:finance_manual_order_article", *matched_hint])
+
+        if evidence:
+            ordinary_hits = self._marker_hits(
+                text,
+                (
+                    *self.ORDINARY_PUBLIC_INFO_MARKERS,
+                    *self.ORDINARY_TECHNICAL_MARKERS,
+                    *self.ORDINARY_GAME_CONTEXT_MARKERS,
+                    *self.ORDINARY_CONSUMER_PROMO_MARKERS,
+                    *self.ORDINARY_NEWS_DISCUSSION_MARKERS,
+                    *self.ORDINARY_COMMUNITY_DISCUSSION_MARKERS,
+                    *self.ORDINARY_PRIVATE_DOMAIN_BOOK_DISCUSSION_MARKERS,
+                    *self.ORDINARY_PRIVATE_DOMAIN_CASE_STUDY_MARKERS,
+                    "公域",
+                    "全域",
+                    "数字化营销",
+                    "什么是私域",
+                    "私域",
+                    *self.ORDINARY_TECHNICAL_TROUBLESHOOTING_MARKERS,
+                    *self.ORDINARY_AUTOMATION_TECH_DISCUSSION_MARKERS,
+                    *self.ORDINARY_PUBLIC_SCAM_DISCUSSION_MARKERS,
+                    *self.ORDINARY_GAME_GUIDE_MARKERS,
+                    *self.ORDINARY_CONSUMER_VERIFICATION_MARKERS,
+                    *self.ORDINARY_GROUP_SEND_DISCUSSION_MARKERS,
+                    *self.ORDINARY_FINANCE_MANUAL_ORDER_MARKERS,
+                ),
+            )
+            source_hits = self._marker_hits(source_context, self.ORDINARY_PUBLIC_SOURCE_MARKERS)
+            evidence.extend(f"ordinary:{marker}" for marker in ordinary_hits[:3])
+            evidence.extend(f"source:{marker}" for marker in source_hits[:2])
+        return self._ordered_unique(evidence)
+
+    def _is_ordinary_health_private_domain_ad(self, text: str, *, source_context: str) -> bool:
+        if not self._marker_hits(text, self.ORDINARY_HEALTH_PRIVATE_DOMAIN_AD_MARKERS):
+            return False
+        if not any(marker in text for marker in ("私域", "运营", "投放", "广告", "客户管理", "社群运营")):
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        if self._marker_hits(text, self.PRIVATE_DOMAIN_MONETIZATION_MARKERS) and any(marker in text for marker in ("导流", "变现", "成交")):
+            return False
+        ordinary_public_hits = self._marker_hits(text, (*self.ORDINARY_PUBLIC_INFO_MARKERS, "白皮书", "资料", "案例", "普通"))
+        vertical_capability_hits = self._marker_hits(
+            text,
+            (
+                "全牌照",
+                "权威资质",
+                "科研技术",
+                "服务产品体系",
+                "专业医疗",
+                "医疗交付",
+                "社群运营吧",
+            ),
+        )
+        source_hits = self._marker_hits(source_context, self.ORDINARY_PUBLIC_SOURCE_MARKERS)
+        return bool(ordinary_public_hits or source_hits or len(vertical_capability_hits) >= 3)
+
+    def _is_public_addv_discussion(self, text: str) -> bool:
+        lowered = text.lower()
+        if "加v" not in lowered:
+            return False
+        if not self._marker_hits(text, self.ORDINARY_PUBLIC_ADDV_DISCUSSION_MARKERS):
+            return False
+        if not any(
+            marker in text
+            for marker in (
+                "没有",
+                "未",
+                "不涉及",
+                "只是",
+                "吐槽",
+                "讨论",
+                "门槛",
+                "下头",
+                "恋人未满",
+                "android 客户端",
+                "如何申请",
+                "申请条件",
+                "创作人认证",
+                "原创标签",
+                "是不是有问题",
+            )
+        ):
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        if any(marker in lowered for marker in ("http://", "https://", "t.me/", "tg:", "telegram:", "wx:", "wechat:")):
+            return False
+        if re.search(r"(?i)(?:微信|v|vx|wx)[:：]\s*[a-z0-9_\\-]{3,}", text):
+            return False
+        return True
+
+    def _is_private_domain_book_discussion(self, text: str) -> bool:
+        if "私域" not in text:
+            return False
+        if not self._marker_hits(text, self.ORDINARY_PRIVATE_DOMAIN_BOOK_DISCUSSION_MARKERS):
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        if any(marker in text.lower() for marker in ("http://", "https://", "t.me/", "tg:", "telegram:", "wx:", "wechat:")):
+            return False
+        return any(marker in text for marker in ("书籍", "读后", "阅读", "普通人能学会吗", "方法", "收获"))
+
+    def _is_public_private_domain_case_study(self, text: str) -> bool:
+        if "私域" not in text:
+            return False
+        hits = self._marker_hits(text, self.ORDINARY_PRIVATE_DOMAIN_CASE_STUDY_MARKERS)
+        if len(hits) < 4:
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        if any(marker in text.lower() for marker in ("t.me/", "tg:", "telegram:", "wx:", "wechat:", "开户链接")):
+            return False
+        if self._marker_hits(
+            text,
+            (
+                "后端卖",
+                "卖课程",
+                "卖工具",
+                "卖服务",
+                "变现",
+                "分成",
+                "矩阵",
+                "接单",
+                "代运营",
+                "精准用户导流",
+                "低价",
+                "价格",
+                "下单",
+            ),
+        ):
+            return False
+        return any(
+            marker in text
+            for marker in (
+                "案例拆解",
+                "运营范本",
+                "参考价值",
+                "零售行业",
+                "什么值得买",
+                "文章详细拆解",
+                "全渠道闭环",
+                "品牌增长",
+                "专柜",
+            )
+        )
+
+    def _is_private_domain_concept_article(self, text: str) -> bool:
+        if "私域" not in text:
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        if any(marker in text.lower() for marker in ("http://", "https://", "t.me/", "tg:", "telegram:", "wx:", "wechat:", "开户链接")):
+            return False
+        if self._marker_hits(
+            text,
+            (
+                "后端卖",
+                "卖课程",
+                "卖工具",
+                "卖服务",
+                "月入",
+                "实战打法",
+                "精准用户导流",
+                "私域成交",
+                "私域变现",
+                "净导流",
+                "接单",
+                "下单",
+                "代运营",
+                "分成",
+            ),
+        ):
+            return False
+        concept_hits = self._marker_hits(
+            text,
+            (
+                "公域",
+                "全域",
+                "数字化营销",
+                "什么是私域",
+                "什么是",
+                "代表什么",
+                "有何作用",
+                "介绍",
+                "理解",
+                "热门词汇",
+                "领域",
+            ),
+        )
+        return len(concept_hits) >= 3
+
+    def _is_ordinary_private_domain_reflection_or_critique(self, text: str) -> bool:
+        if "私域" not in text:
+            return False
+        if self._has_direct_contact_intent(text) or self._has_contact_marker(text):
+            return False
+        if self._marker_hits(
+            text,
+            (
+                "后端卖",
+                "卖课程",
+                "卖工具",
+                "卖服务",
+                "月入",
+                "实战打法",
+                "精准用户导流",
+                "私域导流",
+                "接单",
+                "开户链接",
+            ),
+        ):
+            return False
+        reflection_hits = self._marker_hits(
+            text,
+            (
+                "v2ex",
+                "分享些经验",
+                "大家一起学习",
+                "反思",
+                "没去实际操作",
+                "失败",
+                "复刻吗",
+                "程序员",
+                "割韭菜",
+                "圈私域流量",
+            ),
+        )
+        return len(reflection_hits) >= 2 and any(marker in text for marker in ("分享", "反思", "学习", "复刻", "割韭菜"))
+
+    def _is_ordinary_remote_device_control_discussion(self, text: str) -> bool:
+        lowered = text.lower()
+        if not self._marker_hits(text, ("群控软件", "远程桌面", "远程控制", "迷你 windows 主机", "安卓手机")):
+            return False
+        if self._has_direct_contact_intent(text) or self._has_hard_transaction_evidence(text):
+            return False
+        if self._marker_hits(text, ("出售", "报价", "授权价格", "联系客服", "批量注册", "接码", "群发器", "营销软件")):
+            return False
+        return "v2ex" in lowered and any(marker in text for marker in ("家里", "问答", "需求", "远程到家里", "迷你"))
+
+    def _is_ordinary_sms_fee_or_office_group_send_discussion(self, text: str) -> bool:
+        if "群发" not in text:
+            return False
+        if self._has_direct_contact_intent(text) or self._has_hard_transaction_evidence(text):
+            return False
+        ordinary_hits = self._marker_hits(
+            text,
+            (
+                "群发国际短信",
+                "被扣费",
+                "扣钱",
+                "话费",
+                "投诉",
+                "公司大群",
+                "领导的公司大群",
+                "撤回",
+                "公开邮箱",
+                "邮件服务器",
+                "postfix",
+                "smtp",
+                "spam assassin",
+                "bounce",
+                "spam",
+            ),
+        )
+        if len(ordinary_hits) < 2:
+            return False
+        return not self._marker_hits(text, ("接单", "代发", "报价", "价格", "客户包量", "投放", "广告投放"))
+
+    def _is_ordinary_group_chatter_complaint(self, text: str) -> bool:
+        if "拉群" not in text:
+            return False
+        if self._has_direct_contact_intent(text) or self._has_hard_transaction_evidence(text):
+            return False
+        hits = self._marker_hits(text, ("为什么喜欢疯狂拉群", "疯狂拉群", "群友", "问八百遍", "crypto", "美股", "a股"))
+        if len(hits) < 3:
+            return False
+        return not self._marker_hits(text, ("接单", "邀请链接", "进群人数", "拉群任务", "开户链接", "报价"))
+
+    def _is_ordinary_health_or_payment_metaphor(self, text: str) -> bool:
+        if not any(marker in text for marker in ("垫付", "分期付款")):
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        health_hits = self._marker_hits(text, ("身体", "颈椎", "肩周炎", "眼球", "侧躺", "飞蚊症", "放松"))
+        dispute_hits = self._marker_hits(text, ("工程款", "展会", "客户垫款", "退款收场", "进口商", "关税", "法院判了"))
+        if health_hits:
+            return len(health_hits) >= 2
+        if dispute_hits:
+            return len(dispute_hits) >= 2 and not self._marker_hits(text, ("兼职", "刷单", "返现", "先垫付", "做任务"))
+        return False
+
+    def _is_ordinary_payment_software_release_context(self, text: str) -> bool:
+        lowered = text.lower()
+        release_hits = self._marker_hits(
+            text,
+            (
+                "正式发布",
+                "版本重点更新",
+                "链上校验",
+                "收款地址",
+                "确认数",
+                "交易时间",
+                "订单安全性",
+                "商户系统稳定性",
+                "重发回调",
+            ),
+        )
+        if len(release_hits) < 3:
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        return "epusdt" in lowered or "v1." in lowered
+
+    def _is_ordinary_game_card_order_guide(self, text: str) -> bool:
+        if "卡单" not in text:
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        hits = self._marker_hits(text, ("游戏", "教程贴", "支付错误", "steam", "steam 钱包", "steam钱包", "点击继续", "价格暴涨"))
+        if len(hits) < 3:
+            return False
+        return not self._marker_hits(text, ("接单", "卖金商人", "下单不买", "恶意卡单", "刷单", "返佣", "兼职"))
+
+    def _is_ordinary_consumer_sms_autofill_article(self, text: str) -> bool:
+        if "验证码" not in text:
+            return False
+        if self._has_direct_contact_intent(text) or self._has_hard_transaction_evidence(text):
+            return False
+        hits = self._marker_hits(
+            text,
+            (
+                "短信找验证码",
+                "直接弹窗",
+                "智能手机系统",
+                "验证码自动识别",
+                "自动识别",
+                "填充功能",
+                "一键填入",
+                "登录账号",
+                "支付时",
+                "短信验证码",
+            ),
+        )
+        return len(hits) >= 3
+
+    def _is_ordinary_outreach_email_automation_discussion(self, text: str) -> bool:
+        lowered = text.lower()
+        if "群发模板" not in text:
+            return False
+        if self._has_direct_contact_intent(text) or self._has_hard_transaction_evidence(text):
+            return False
+        hits = self._marker_hits(text, ("v2ex", "外链", "outreach", "openclaw", "写邮件", "邮箱", "开源", "skill"))
+        return len(hits) >= 3 and any(marker in lowered for marker in ("v2ex", "openclaw", "outreach"))
+
+    def _is_public_contact_safety_discussion(self, text: str) -> bool:
+        if not self._marker_hits(text, ("骗子", "封号", "被封号", "封号?", "闲鱼", "买家私聊")):
+            return False
+        if self._has_hard_transaction_evidence(text):
+            return False
+        return any(marker in text for marker in ("加微信", "加v", "+v", "私聊")) and any(marker in text.lower() for marker in ("v2ex", "闲鱼", "骗子"))
+
+    def _is_ordinary_ai_prompt_session_discussion(self, text: str) -> bool:
+        lowered = text.lower()
+        if "session" not in lowered and "sessions" not in lowered:
+            return False
+        if self._has_hard_transaction_evidence(text):
+            return False
+        hits = self._marker_hits(text, ("codex", "prompt", "feedback", "memories", "chronicle", "subagent", "skill", "sessions"))
+        return len(hits) >= 3
+
+    def _is_ordinary_technical_troubleshooting(self, text: str) -> bool:
+        lowered = text.lower()
+        hits = self._marker_hits(text, self.ORDINARY_TECHNICAL_TROUBLESHOOTING_MARKERS)
+        if len(hits) < 3:
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        return any(marker in lowered for marker in ("automation license manager", "博途", "siemens", "service"))
+
+    def _is_ordinary_automation_technical_context(self, text: str) -> bool:
+        lowered = text.lower()
+        hits = self._marker_hits(text, self.ORDINARY_AUTOMATION_TECH_DISCUSSION_MARKERS)
+        if len(hits) < 2:
+            return False
+        if self._is_group_control_bot_context(text):
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        risk_hits = [
+            marker
+            for marker in self._marker_hits(text, ("出售", "低价", "价格", "报价", "卡密", "下单", "接码平台", "群控", "批量注册", "售后"))
+            if not self._is_locally_negated_marker(text, marker)
+        ]
+        if risk_hits and self._has_hard_transaction_evidence(text):
+            return False
+        return any(marker in lowered for marker in ("automation", "v2ex", "bot", "userbot", "software", "机器人", "频道"))
+
+    def _is_public_scam_discussion(self, text: str) -> bool:
+        if not self._marker_hits(text, self.ORDINARY_PUBLIC_SCAM_DISCUSSION_MARKERS):
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        if any(marker in text.lower() for marker in ("http://", "https://", "t.me/", "tg:", "telegram:", "wx:", "wechat:")):
+            return False
+        return any(marker in text for marker in ("骗局吗", "揭秘", "套路", "真假辨别", "辨别方法"))
+
+    def _is_ordinary_game_guide(self, text: str) -> bool:
+        hits = self._marker_hits(text, self.ORDINARY_GAME_GUIDE_MARKERS)
+        if len(hits) < 3:
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        return any(marker in text.lower() for marker in ("boss", "天赋", "技能", "攻略", "技巧"))
+
+    def _is_ordinary_consumer_verification_context(self, text: str) -> bool:
+        if not any(marker in text for marker in ("验证码", "短信验证", "账号安全")):
+            return False
+        hits = self._marker_hits(text, self.ORDINARY_CONSUMER_VERIFICATION_MARKERS)
+        if len(hits) < 3:
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        if any(marker in text for marker in ("接码平台", "虚拟号码", "国外验证码", "API二次开发", "sms-active", "HeroSMS")):
+            return False
+        return any(
+            marker in text
+            for marker in (
+                "自动填充",
+                "防偷窥",
+                "云闪付",
+                "安全验证机制",
+                "问题全解决",
+                "手机软件",
+                "验证码收不到",
+                "短信验证码收不到",
+                "接收不到",
+                "手机号未欠费",
+                "换手机",
+                "解决办法",
+                "怎么解决",
+                "登录不上去",
+                "没有拦截",
+                "没开拦截",
+                "战网",
+                "战网通行证",
+                "gaijin pass",
+                "战争雷霆",
+                "animate",
+                "lovelive",
+                "短信通知",
+                "验证密码",
+                "确认绑定",
+                "绑定成功",
+                "无法登录",
+                "修复账号",
+                "更改方法",
+                "手机短信",
+                "短信实时同步",
+            )
+        )
+
+    def _is_ordinary_group_send_discussion(self, text: str) -> bool:
+        if "群发" not in text:
+            return False
+        hits = self._marker_hits(text, self.ORDINARY_GROUP_SEND_DISCUSSION_MARKERS)
+        if len(hits) < 2:
+            return False
+        if self._has_direct_contact_intent(text) or self._has_contact_marker(text):
+            return False
+        risk_hits = [
+            marker
+            for marker in self._marker_hits(text, ("出售", "接单", "代发", "售后", "报价", "卡密", "低价", "价格", "下单"))
+            if not self._is_locally_negated_marker(text, marker)
+        ]
+        if risk_hits and self._has_hard_transaction_evidence(text):
+            return False
+        if self._marker_hits(text, ("群控", "脚本", "群发器")) and not self._marker_hits(text, ("功能更新说明", "配置文档", "使用教程", "参数含义", "说明")):
+            return False
+        return True
+
+    def _is_ordinary_community_group_invite(self, text: str) -> bool:
+        if not any(marker in text for marker in ("拉群", "邀请", "群聊", "群里", "扣1")):
+            return False
+        hits = self._marker_hits(text, self.ORDINARY_COMMUNITY_DISCUSSION_MARKERS)
+        if len(hits) < 2:
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        if self._marker_hits(
+            text,
+            (
+                "接单",
+                "报价",
+                "价格",
+                "低价",
+                "包量",
+                "拉群任务",
+                "进群人数",
+                "邀请链接",
+                "主号进群",
+                "号源",
+                "成群",
+                "任务流程",
+                "开户链接",
+            ),
+        ):
+            return False
+        return any(marker in text for marker in ("小圈", "交流", "学习成长", "找同好", "文明发言", "群友", "社区", "大家"))
+
+    def _is_ordinary_finance_manual_order_context(self, text: str) -> bool:
+        if "手工单" not in text:
+            return False
+        hits = self._marker_hits(text, self.ORDINARY_FINANCE_MANUAL_ORDER_MARKERS)
+        finance_market_context = self._marker_hits(
+            text,
+            (
+                "金融交易市场",
+                "主观手工单交易",
+                "空仓等待",
+                "资金管理",
+                "仓位控制",
+                "稳定盈利",
+                "m1图",
+                "M1图",
+                "美金",
+            ),
+        )
+        if len(hits) < 3 and not (
+            "量化" in text and any(marker in text for marker in ("代码规则", "情绪", "砍仓", "仓位", "交易"))
+        ) and not finance_market_context:
+            return False
+        if self._has_direct_contact_intent(text):
+            return False
+        if self._marker_hits(text, ("刷单", "补单", "垫付", "返佣", "日结", "兼职", "上车", "做任务", "卡单")):
+            return False
+        return any(marker in text.lower() for marker in ("量化", "ai", "交易策略", "行情", "追涨杀跌", "止损", "交易", "仓位", "美金", "m1", "空仓", "资金管理"))
+
+    def _has_blackgray_review_signal(self, text: str) -> bool:
+        hits = self._marker_hits(text, self.blackgray_review_markers)
+        if not hits:
+            return False
+        ordinary_hits = self._marker_hits(
+            text,
+            (
+                *self.ORDINARY_PUBLIC_INFO_MARKERS,
+                *self.ORDINARY_TECHNICAL_MARKERS,
+                *self.ORDINARY_SOFTWARE_UPDATE_MARKERS,
+                *self.PUBLIC_SOCIAL_LINK_MARKERS,
+            ),
+        )
+        risk_hits = [
+            hit
+            for hit in hits
+            if hit.lower() not in {marker.lower() for marker in self.TECHNICAL_HOMONYM_RISK_MARKERS}
+        ]
+        return bool(risk_hits or not ordinary_hits)
+
+    def _has_contact_marker(self, text: str) -> bool:
+        lowered_text = text.lower()
+        return any(marker.lower() in lowered_text for marker in self.CONTACT_MARKERS)
+
+    def _has_direct_contact_intent(self, text: str) -> bool:
+        lowered_text = text.lower()
+        if not self._has_contact_marker(text):
+            return False
+        english_markers = ("contact", "dm", "pm", "inbox")
+        if any(re.search(rf"\b{re.escape(marker)}\b", lowered_text) for marker in english_markers):
+            return True
+        if re.search(r"\bmessage\s+me\b", lowered_text):
+            return True
+        chinese_markers = ("联系", "私聊", "详聊", "客服", "咨询", "对接")
+        return any(marker in text for marker in chinese_markers)
+
+    def _has_disqualifying_solicitation(self, text: str) -> bool:
+        if self._has_direct_contact_intent(text):
+            return True
+        if self._has_contact_marker(text):
+            public_link_hits = self._marker_hits(text, self.PUBLIC_SOCIAL_LINK_MARKERS)
+            software_update_hits = self._marker_hits(text, self.ORDINARY_SOFTWARE_UPDATE_MARKERS)
+            if not (public_link_hits or software_update_hits):
+                if self._is_ordinary_platform_reference(text):
+                    return False
+                return True
+        if self._is_ordinary_game_mod_discussion(text):
+            solicitation_hits = self._marker_hits(text, self.STRONG_TRANSACTION_INTENT_MARKERS)
+            risky_hits = [hit for hit in solicitation_hits if hit not in {"招募"}]
+            return bool(risky_hits) and self._has_hard_transaction_evidence(text)
+        return self._has_hard_transaction_evidence(text)
+
+    def _has_hard_transaction_evidence(self, text: str) -> bool:
+        intent_hits = [
+            marker
+            for marker in self._marker_hits(text, self.STRONG_TRANSACTION_INTENT_MARKERS)
+            if not self._is_locally_negated_marker(text, marker)
+        ]
+        if not intent_hits:
+            return False
+        if self._has_direct_contact_intent(text) or self._has_contact_marker(text):
+            return True
+        support_hits = [
+            marker
+            for marker in self._marker_hits(
+                text,
+                (
+                    "报价",
+                    "价格",
+                    "低价",
+                    "月卡",
+                    "周卡",
+                    "日租",
+                    "包月",
+                    "包量",
+                    "量大",
+                    "秒出",
+                    "下单",
+                    "订单",
+                    "售后",
+                    "客服",
+                    "担保",
+                    "卡密",
+                    "发卡",
+                    "库存",
+                    "wholesale",
+                    "buy now",
+                ),
+            )
+            if not self._is_locally_negated_marker(text, marker)
+        ]
+        if support_hits:
+            return True
+        return bool(re.search(r"(?:¥|\$)?\s*\d+(?:\.\d+)?\s*(?:u|usdt|元|块|rmb|cny|usd|/月|/天|/周)", text, flags=re.IGNORECASE))
+
+    def _is_ordinary_platform_reference(self, text: str) -> bool:
+        if not self._marker_hits(text, self.ORDINARY_COMMUNITY_DISCUSSION_MARKERS):
+            return False
+        if any(marker in text.lower() for marker in ("wx:", "wechat:", "微信:", "微信号", "加微信", "加v", "联系微信")):
+            return False
+        return any(marker in text for marker in ("微信群", "交流群", "群二维码"))
+
+    def _is_ordinary_game_mod_discussion(self, text: str) -> bool:
+        lowered = text.lower()
+        if self._has_contact_marker(text):
+            return False
+        game_hits = self._marker_hits(text, self.ORDINARY_GAME_CONTEXT_MARKERS)
+        if not game_hits:
+            return False
+        return any(marker in lowered for marker in ("steam", "mod", "automation", "创意工坊", "游戏"))
+
+    def _is_group_control_bot_context(self, text: str) -> bool:
+        lowered = text.lower()
+        hits = self._marker_hits(text, self.GROUP_CONTROL_BOT_MARKERS)
+        if len(hits) < 2:
+            return False
+        if self._marker_hits(text, ("黑产识别", "识别群控特征", "必须要越狱", "是不是都得", "update your userbot", "turn on dynos")):
+            return False
+        operational_hits = self._marker_hits(
+            text,
+            (
+                "扫码加好友",
+                "自动加为好友",
+                "拉入",
+                "开放时间",
+                "短信群发云控",
+                "协议层",
+                "mtproto",
+                "userbot support",
+                "ai agents",
+                "群控机器人",
+                "云控系统",
+            ),
+        )
+        return bool(operational_hits) and any(marker in lowered for marker in ("群控", "vbot", "userbot", "云控", "机器人"))
+
+    def _is_account_stock_or_cultivation_context(self, text: str) -> bool:
+        lowered = text.lower()
+        hits = self._marker_hits(text, self.ACCOUNT_STOCK_MARKERS)
+        if len(hits) < 2:
+            return False
+        inventory_hits = self._marker_hits(
+            text,
+            (
+                "协议号",
+                "直登号",
+                "tdata",
+                "号码文件",
+                "号码包",
+                "号段",
+                "全球号段",
+                "自助取号",
+                "取号机器人",
+                "自动售号机器人",
+                "保首登",
+                "死号",
+                "发号",
+            ),
+        )
+        if not inventory_hits:
+            return False
+        delivery_hits = self._marker_hits(
+            text,
+            (
+                "自助下单",
+                "库存",
+                "购买",
+                "售后",
+                "客服",
+                "咨询",
+                "补货",
+                "发号",
+                "退款",
+                "余额",
+                "24小时不打烊",
+                "欲购从速",
+                "无效包补",
+                "保一手",
+                "保首登",
+            ),
+        )
+        has_contact_or_url = any(marker in lowered for marker in ("@", "tg:", "telegram", "http://", "https://"))
+        return bool(delivery_hits or has_contact_or_url or len(hits) >= 4)
+
+    def _has_blackgray_business_operation_signal(
+        self,
+        *,
+        text: str,
+        matched_keywords: tuple[str, ...],
+        matched_themes: tuple[str, ...],
+        category_scores: Mapping[str, int],
+    ) -> bool:
+        keyword_text = " ".join((*matched_keywords, *matched_themes, text))
+        if (
+            category_scores.get(ACCOUNT_TRADING, 0) > 0
+            and self._marker_hits(keyword_text, ("接码", "接码平台", "验证码"))
+            and len(self._marker_hits(text, self.SMS_PLATFORM_BUSINESS_MARKERS)) >= 2
+        ):
+            return True
+        if category_scores.get(ACCOUNT_TRADING, 0) > 0 and self._is_account_stock_or_cultivation_context(text):
+            return True
+        if category_scores.get(TOOL_TRADING, 0) > 0 and self._is_group_control_bot_context(text):
+            return True
+        if (
+            (category_scores.get(CROWD_SERVICE, 0) > 0 or category_scores.get(FRAUD_TRAFFIC, 0) > 0)
+            and "拉群" in text
+            and len(self._marker_hits(text, self.LAGROUP_OPERATION_MARKERS)) >= 2
+        ):
+            return True
+        if (
+            category_scores.get(FRAUD_TRAFFIC, 0) > 0
+            and "私域" in text
+            and "导流" in text
+            and len(self._marker_hits(text, self.PRIVATE_DOMAIN_MONETIZATION_MARKERS)) >= 2
+        ):
+            return True
+        return False
+
+    def _is_affiliate_rebate_traffic_context(self, text: str) -> bool:
+        if self._has_negated_affiliate_or_contact_reference(text):
+            return False
+        rebate_hits = self._marker_hits(text, ("反佣", "返佣", "高返佣", "返佣高", "返利", "高佣", "推广链接", "ref码", "开户链接", "返点"))
+        traffic_hits = self._marker_hits(
+            text,
+            (
+                "交易所",
+                "币圈",
+                "crypto",
+                "okx",
+                "币安",
+                "binance",
+                "polymarket",
+                "websea",
+                "bitget",
+                "wallet",
+                "web3",
+                "美股",
+                "现货",
+                "股票",
+                "xstocks",
+                "拉人头",
+                "拉人注册",
+                "开户",
+                "交易量",
+                "合约交易量",
+                "合约",
+                "返点",
+                "跟单",
+                "保本跟单",
+                "特权码",
+                "理财",
+                "大户",
+                "赚个几百u",
+                "上千u",
+                "返上千u",
+            ),
+        )
+        return bool(rebate_hits and traffic_hits) and not self._marker_hits(text, self.AFFILIATE_REBATE_TASK_EXCLUSION_MARKERS)
+
+    def _has_negated_affiliate_or_contact_reference(self, text: str) -> bool:
+        guard_hits = self._marker_hits(text, ("辟谣", "骗局", "请勿", "切勿", "不要", "未给出", "没有给出", "不提供"))
+        if not guard_hits:
+            return False
+        return any(
+            self._is_locally_negated_marker(text, marker)
+            for marker in ("tg", "telegram", "开户链接", "开户", "返佣", "接码", "验证码", "上车")
+        )
+
+    def _is_private_domain_traffic_context(self, text: str) -> bool:
+        if "私域" not in text:
+            return False
+        if not any(marker in text for marker in ("导流", "转化", "成交", "变现")):
+            return False
+        return len(self._marker_hits(text, self.PRIVATE_DOMAIN_TRAFFIC_PRIORITY_MARKERS)) >= 2
+
+    def _prioritize_private_domain_traffic_scores(
+        self,
+        score_map: dict[str, int],
+        evidence_map: dict[str, list[str]],
+        *,
+        text: str,
+    ) -> None:
+        if not self._is_private_domain_traffic_context(text):
+            return
+        hits = self._marker_hits(text, self.PRIVATE_DOMAIN_TRAFFIC_PRIORITY_MARKERS)
+        score_map[FRAUD_TRAFFIC] = max(score_map.get(FRAUD_TRAFFIC, 0), score_map.get(CROWD_SERVICE, 0) + 2, 4)
+        evidence_map[FRAUD_TRAFFIC].extend(f"private_domain_traffic:{marker}" for marker in hits[:4])
+
+        crowd_evidence = self._normalized_non_theme_evidence(evidence_map.get(CROWD_SERVICE, []))
+        generic_operation_evidence = {
+            "代运营",
+            "矩阵",
+            "运营",
+            "分成",
+            "转化",
+            "导流",
+            "服务",
+            "工具",
+        }
+        if crowd_evidence and crowd_evidence <= generic_operation_evidence:
+            score_map.pop(CROWD_SERVICE, None)
+            evidence_map.pop(CROWD_SERVICE, None)
+
+    def _is_operational_tool_workflow(self, text: str) -> bool:
+        if self._is_group_control_bot_context(text):
+            return True
+        hits = self._marker_hits(text, self.OPERATIONAL_TOOL_WORKFLOW_MARKERS)
+        if len(hits) < 3:
+            return self._is_public_group_send_tool_context(text)
+        return any(marker in text for marker in ("群发", "自动回复", "session", "Sessions", "程序设定"))
+
+    def _is_public_group_send_tool_context(self, text: str) -> bool:
+        if "群发" not in text:
+            return False
+        hits = self._marker_hits(text, self.PUBLIC_GROUP_SEND_TOOL_MARKERS)
+        if len(hits) < 3:
+            return False
+        if self._marker_hits(text, ("群发的邮件", "全部回复", "收件人", "办公邮件")):
+            return False
+        return True
+
+    def _apply_operational_tool_workflow_scores(
+        self,
+        score_map: dict[str, int],
+        evidence_map: dict[str, list[str]],
+        *,
+        text: str,
+    ) -> None:
+        if not self._is_operational_tool_workflow(text):
+            return
+        hits = _ordered_unique(
+            [
+                *self._marker_hits(text, self.OPERATIONAL_TOOL_WORKFLOW_MARKERS),
+                *self._marker_hits(text, self.PUBLIC_GROUP_SEND_TOOL_MARKERS),
+                *self._marker_hits(text, self.GROUP_CONTROL_BOT_MARKERS),
+            ]
+        )
+        score_map[TOOL_TRADING] = max(score_map.get(TOOL_TRADING, 0), score_map.get(CROWD_SERVICE, 0) + 2, 4)
+        evidence_map[TOOL_TRADING].extend(f"tool_workflow:{marker}" for marker in hits[:4])
+
+        crowd_evidence = self._normalized_non_theme_evidence(evidence_map.get(CROWD_SERVICE, []))
+        if crowd_evidence and (
+            crowd_evidence <= {"群发", "广告", "代发", "群组"} or self._is_public_group_send_tool_context(text)
+        ):
+            score_map.pop(CROWD_SERVICE, None)
+            evidence_map.pop(CROWD_SERVICE, None)
+
+    def _is_tool_delivery_context(self, text: str) -> bool:
+        hits = self._marker_hits(text, self.TOOL_DELIVERY_MARKERS)
+        return "群发器" in text and len(hits) >= 2
+
+    def _apply_tool_delivery_scores(
+        self,
+        score_map: dict[str, int],
+        evidence_map: dict[str, list[str]],
+        *,
+        text: str,
+    ) -> None:
+        if not self._is_tool_delivery_context(text):
+            return
+        hits = self._marker_hits(text, self.TOOL_DELIVERY_MARKERS)
+        score_map[TOOL_TRADING] = max(score_map.get(TOOL_TRADING, 0), score_map.get(CROWD_SERVICE, 0) + 2, 4)
+        evidence_map[TOOL_TRADING].extend(f"tool_delivery:{marker}" for marker in hits[:4])
+        crowd_evidence = self._normalized_non_theme_evidence(evidence_map.get(CROWD_SERVICE, []))
+        if crowd_evidence and crowd_evidence <= {"群发"}:
+            score_map.pop(CROWD_SERVICE, None)
+            evidence_map.pop(CROWD_SERVICE, None)
+
+    def _is_second_hand_account_sale_context(self, text: str) -> bool:
+        lowered = text.lower()
+        if "account" not in lowered:
+            return False
+        hits = self._marker_hits(text, self.SECOND_HAND_ACCOUNT_SALE_MARKERS)
+        return len(hits) >= 2 and any(marker in lowered for marker in ("for sale", "buy", "sell", "sellers"))
+
+    def _apply_second_hand_account_sale_scores(
+        self,
+        score_map: dict[str, int],
+        evidence_map: dict[str, list[str]],
+        *,
+        text: str,
+    ) -> None:
+        if not self._is_second_hand_account_sale_context(text):
+            return
+        hits = self._marker_hits(text, self.SECOND_HAND_ACCOUNT_SALE_MARKERS)
+        score_map[ACCOUNT_TRADING] = max(score_map.get(ACCOUNT_TRADING, 0), 4)
+        evidence_map[ACCOUNT_TRADING].extend(f"second_hand_account_sale:{marker}" for marker in hits[:4])
+
+    def _apply_account_stock_scores(
+        self,
+        score_map: dict[str, int],
+        evidence_map: dict[str, list[str]],
+        *,
+        text: str,
+    ) -> None:
+        if not self._is_account_stock_or_cultivation_context(text):
+            return
+        hits = self._marker_hits(text, self.ACCOUNT_STOCK_MARKERS)
+        score_map[ACCOUNT_TRADING] = max(score_map.get(ACCOUNT_TRADING, 0), score_map.get(TOOL_TRADING, 0) + 2, 5)
+        evidence_map[ACCOUNT_TRADING].extend(f"account_stock:{marker}" for marker in hits[:5])
+
+        hard_tool_hits = self._marker_hits(
+            text,
+            (
+                "群控",
+                "脚本",
+                "群发",
+                "群发器",
+                "云控后台",
+                "软件功能下载",
+                "接码平台",
+                "卡密",
+                "后台",
+            ),
+        )
+        if not hard_tool_hits:
+            score_map.pop(TOOL_TRADING, None)
+            evidence_map.pop(TOOL_TRADING, None)
+
+    def _is_sms_platform_secondary_context(self, text: str) -> bool:
+        if "接码" not in text:
+            return False
+        hits = self._marker_hits(text, self.SMS_PLATFORM_BUSINESS_MARKERS)
+        if len(hits) >= 2:
+            return True
+        if "接码平台" in text and any(marker in text.lower() for marker in ("注册账号", "账号", "客服", "网址", "http://", "https://", "@")):
+            return True
+        return any(marker in text for marker in ("手机码", "接的码", "验证码", "虚拟号码", "在线接收", "二次使用"))
+
+    def _apply_affiliate_rebate_traffic_scores(
+        self,
+        score_map: dict[str, int],
+        evidence_map: dict[str, list[str]],
+        *,
+        text: str,
+    ) -> None:
+        if not self._is_affiliate_rebate_traffic_context(text):
+            return
+        hits = self._marker_hits(text, self.AFFILIATE_REBATE_TRAFFIC_MARKERS)
+        if not hits:
+            return
+        score_map[FRAUD_TRAFFIC] = score_map.get(FRAUD_TRAFFIC, 0) + min(5, 2 + len(self._ordered_unique(hits)))
+        evidence_map[FRAUD_TRAFFIC].extend(f"affiliate_rebate:{marker}" for marker in hits[:4])
+
+    def _suppress_affiliate_rebate_category_confusion(
+        self,
+        score_map: dict[str, int],
+        evidence_map: dict[str, list[str]],
+        *,
+        text: str,
+    ) -> None:
+        if not score_map.get(FRAUD_TRAFFIC) or not self._is_affiliate_rebate_traffic_context(text):
+            return
+        if self._marker_hits(text, self.AFFILIATE_REBATE_TASK_EXCLUSION_MARKERS):
+            return
+
+        click_evidence = self._normalized_non_theme_evidence(evidence_map.get(CLICK_FARMING, []))
+        if click_evidence and click_evidence <= {"返佣"}:
+            score_map.pop(CLICK_FARMING, None)
+            evidence_map.pop(CLICK_FARMING, None)
+
+        crowd_evidence = self._normalized_non_theme_evidence(evidence_map.get(CROWD_SERVICE, []))
+        if crowd_evidence and crowd_evidence <= {"拉人", "量大"}:
+            score_map.pop(CROWD_SERVICE, None)
+            evidence_map.pop(CROWD_SERVICE, None)
+
+    def _normalized_non_theme_evidence(self, evidence: Iterable[str]) -> set[str]:
+        prefixes = (
+            "click:",
+            "service:",
+            "order:",
+            "tool:",
+            "tool_update:",
+            "affiliate_rebate:",
+            "private_domain_traffic:",
+            "tool_workflow:",
+            "tool_delivery:",
+            "second_hand_account_sale:",
+            "account_stock:",
+        )
+        normalized: set[str] = set()
+        for item in evidence:
+            value = str(item).strip()
+            if not value or value.startswith("theme:"):
+                continue
+            for prefix in prefixes:
+                if value.startswith(prefix):
+                    value = value[len(prefix) :]
+                    break
+            if value:
+                normalized.add(value)
+        return normalized
+
+    def _suppress_affiliate_rebate_click_confusion(
+        self,
+        score_map: dict[str, int],
+        evidence_map: dict[str, list[str]],
+        *,
+        text: str,
+    ) -> None:
+        if not score_map.get(FRAUD_TRAFFIC) or not score_map.get(CLICK_FARMING):
+            return
+        if self._marker_hits(text, self.AFFILIATE_REBATE_TASK_EXCLUSION_MARKERS):
+            return
+        fraud_hits = self._marker_hits(text, ("交易所", "okx", "币安", "binance", "api", "开户链接", "开户", "拉新", "高佣", "返利", "合约", "节点"))
+        click_evidence = {
+            str(item).replace("click:", "").strip()
+            for item in evidence_map.get(CLICK_FARMING, [])
+            if str(item).strip()
+        }
+        if fraud_hits and click_evidence and click_evidence <= {"返佣"}:
+            score_map.pop(CLICK_FARMING, None)
+            evidence_map.pop(CLICK_FARMING, None)
+
+    def _account_tool_cross_conflicts(
+        self,
+        raw_conflicts: list[str],
+        *,
+        top_category: str,
+        category_scores: Mapping[str, int],
+        text: str,
+    ) -> list[str]:
+        if top_category not in {ACCOUNT_TRADING, TOOL_TRADING}:
+            return raw_conflicts
+        other = ACCOUNT_TRADING if top_category == TOOL_TRADING else TOOL_TRADING
+        if other in raw_conflicts:
+            return raw_conflicts
+        if not category_scores.get(other):
+            return raw_conflicts
+        lowered = text.lower()
+        account_hits = self._marker_hits(text, ("注册账号", "账号", "接码", "验证码", "手机码"))
+        tool_hits = self._marker_hits(text, ("接码平台", "卡密", "用户端", "电脑端", "网址", "后台"))
+        has_contact_or_url = any(marker in lowered for marker in ("@", "tg:", "telegram", "http://", "https://", "客服", "联系"))
+        if account_hits and tool_hits and has_contact_or_url:
+            return [*raw_conflicts, other]
+        return raw_conflicts
+
+    def _is_account_tool_ambiguous_review_context(self, text: str, *, matched_themes: tuple[str, ...]) -> bool:
+        if not any(theme == TOOL_TRADING for theme in matched_themes):
+            return False
+        if not self._is_account_stock_or_cultivation_context(text):
+            return False
+        if "接码" not in text:
+            return False
+        if not any(marker in text.lower() for marker in ("@", "tg:", "telegram", "客服", "联系")):
+            return False
+        return bool(self._marker_hits(text, ("协议号软件", "软件带接码功能", "用协议号接码", "直登号接码")))
 
     def _signal_terms(self, record: Mapping[str, Any] | Any, field_name: str) -> tuple[str, ...]:
         values = get_record_field(record, field_name) or ()
@@ -563,6 +2797,15 @@ class FineGrainedIntentClassifier:
             score_map[CLICK_FARMING] = score_map.get(CLICK_FARMING, 0) + min(2, len(click_core_markers))
             evidence_map[CLICK_FARMING].extend(f"click:{marker}" for marker in click_core_markers[:2])
 
+        self._apply_affiliate_rebate_traffic_scores(score_map, evidence_map, text=text)
+        self._prioritize_private_domain_traffic_scores(score_map, evidence_map, text=text)
+        self._apply_operational_tool_workflow_scores(score_map, evidence_map, text=text)
+        self._apply_tool_delivery_scores(score_map, evidence_map, text=text)
+        self._apply_second_hand_account_sale_scores(score_map, evidence_map, text=text)
+        self._apply_account_stock_scores(score_map, evidence_map, text=text)
+        self._suppress_affiliate_rebate_category_confusion(score_map, evidence_map, text=text)
+        self._suppress_affiliate_rebate_click_confusion(score_map, evidence_map, text=text)
+
         theme_only_scores = {
             category: all(item.startswith("theme:") for item in evidence_map.get(category, []))
             for category in score_map
@@ -582,7 +2825,7 @@ class FineGrainedIntentClassifier:
             return
         normalized_terms = {candidate.normalized for candidate in confirmed}
         has_contact_or_url = any(marker in text.lower() for marker in ("tg:", "telegram", "http://", "https://", "hxxp://", "hxxps://", "@", "加v", "微信"))
-        has_trade_or_recruit = bool(set(slang_analysis.context_hits).intersection({"出售", "卖", "接单", "招募", "上车", "拉群", "进群", "联系", "咨询", "短链", "暗号", "口令", "邀请码", "code:"}))
+        has_trade_or_recruit = bool(set(slang_analysis.context_hits).intersection({"出售", "卖", "买", "接单", "招募", "上车", "拉群", "进群", "联系", "咨询", "私聊", "低价", "价格", "卡密", "短链", "暗号", "口令", "邀请码", "code:"}))
         for candidate in confirmed:
             if candidate.category_hint:
                 score_map[candidate.category_hint] = score_map.get(candidate.category_hint, 0) + 1
@@ -590,11 +2833,125 @@ class FineGrainedIntentClassifier:
         if has_contact_or_url and has_trade_or_recruit and normalized_terms.intersection({"抖音", "加v", "群组", "账号资料", "Telegram"}):
             score_map[FRAUD_TRAFFIC] = score_map.get(FRAUD_TRAFFIC, 0) + 3
             evidence_map.setdefault(FRAUD_TRAFFIC, []).append("slang_context:contact_or_url_plus_recruiting")
+        if has_contact_or_url and has_trade_or_recruit and "Telegram" in normalized_terms and self._platform_account_trade_context(text):
+            score_map[ACCOUNT_TRADING] = score_map.get(ACCOUNT_TRADING, 0) + 4
+            evidence_map.setdefault(ACCOUNT_TRADING, []).append("slang_context:platform_account_trade")
         if normalized_terms.intersection({"群控", "脚本", "卡密"}) and has_trade_or_recruit:
             score_map[TOOL_TRADING] = score_map.get(TOOL_TRADING, 0) + 2
             evidence_map.setdefault(TOOL_TRADING, []).append("slang_context:tool_trade")
 
+    def _platform_account_trade_context(self, text: str) -> bool:
+        lowered = text.lower()
+        trade_hits = ("低价", "价格", "出售", "卖", "买", "号", "账号", "卡密", "可谈")
+        contact_hits = ("@", "tg:", "telegram", "联系", "私聊", "客服", "咨询")
+        return any(marker in lowered for marker in trade_hits) and any(marker in lowered for marker in contact_hits)
+
     def _secondary_label(self, category: str, text: str, matched_keywords: tuple[str, ...]) -> tuple[str, list[str], list[dict[str, Any]]]:
+        if category == FRAUD_TRAFFIC and self._is_private_domain_traffic_context(text):
+            hits = self._ordered_unique(self._marker_hits(text, self.PRIVATE_DOMAIN_TRAFFIC_PRIORITY_MARKERS))
+            return (
+                "私域导流",
+                hits,
+                [
+                    {
+                        "label": "私域导流",
+                        "confidence": round(min(0.92, 0.58 + 0.06 * len(hits)), 4),
+                        "evidence": hits,
+                        "reason": "private_domain_traffic_context",
+                    }
+                ],
+            )
+        if category == FRAUD_TRAFFIC and self._is_affiliate_rebate_traffic_context(text):
+            hits = self._ordered_unique(self._marker_hits(text, self.AFFILIATE_REBATE_TRAFFIC_MARKERS))
+            if hits:
+                return (
+                    "返利引流",
+                    hits,
+                    [
+                        {
+                            "label": "返利引流",
+                            "confidence": round(min(0.92, 0.58 + 0.06 * len(hits)), 4),
+                            "evidence": hits,
+                            "reason": "affiliate_rebate_context",
+                        }
+                    ],
+                )
+        if category == TOOL_TRADING and self._is_operational_tool_workflow(text):
+            hits = self._ordered_unique(
+                [
+                    *self._marker_hits(text, self.OPERATIONAL_TOOL_WORKFLOW_MARKERS),
+                    *self._marker_hits(text, self.PUBLIC_GROUP_SEND_TOOL_MARKERS),
+                    *self._marker_hits(text, self.GROUP_CONTROL_BOT_MARKERS),
+                ]
+            )
+            return (
+                "群控脚本",
+                hits,
+                [
+                    {
+                        "label": "群控脚本",
+                        "confidence": round(min(0.92, 0.58 + 0.06 * len(hits)), 4),
+                        "evidence": hits,
+                        "reason": "operational_tool_workflow",
+                    }
+                ],
+            )
+        if category == TOOL_TRADING and self._is_tool_delivery_context(text):
+            hits = self._ordered_unique(self._marker_hits(text, self.TOOL_DELIVERY_MARKERS))
+            return (
+                "群控脚本",
+                hits,
+                [
+                    {
+                        "label": "群控脚本",
+                        "confidence": round(min(0.92, 0.58 + 0.06 * len(hits)), 4),
+                        "evidence": hits,
+                        "reason": "tool_delivery_context",
+                    }
+                ],
+            )
+        if category == ACCOUNT_TRADING and self._is_account_stock_or_cultivation_context(text):
+            hits = self._ordered_unique(self._marker_hits(text, self.ACCOUNT_STOCK_MARKERS))
+            return (
+                "账号养号",
+                hits,
+                [
+                    {
+                        "label": "账号养号",
+                        "confidence": round(min(0.92, 0.58 + 0.06 * len(hits)), 4),
+                        "evidence": hits,
+                        "reason": "account_stock_context",
+                    }
+                ],
+            )
+        if category == ACCOUNT_TRADING and self._is_sms_platform_secondary_context(text):
+            hits = self._ordered_unique(self._marker_hits(text, ("接码", *self.SMS_PLATFORM_BUSINESS_MARKERS)))
+            return (
+                "接码注册",
+                hits,
+                [
+                    {
+                        "label": "接码注册",
+                        "confidence": round(min(0.92, 0.58 + 0.06 * len(hits)), 4),
+                        "evidence": hits,
+                        "reason": "sms_platform_context",
+                    }
+                ],
+            )
+        if category == ACCOUNT_TRADING and self._is_second_hand_account_sale_context(text):
+            hits = self._ordered_unique(self._marker_hits(text, self.SECOND_HAND_ACCOUNT_SALE_MARKERS))
+            return (
+                "实名账号买卖",
+                hits,
+                [
+                    {
+                        "label": "实名账号买卖",
+                        "confidence": round(min(0.92, 0.58 + 0.06 * len(hits)), 4),
+                        "evidence": hits,
+                        "reason": "second_hand_account_sale_context",
+                    }
+                ],
+            )
         candidates: list[tuple[str, list[str], bool]] = []
         matched_keyword_set = {value.lower() for value in matched_keywords}
         for label, keywords in self.secondary_rules.get(category, {}).items():
@@ -621,6 +2978,18 @@ class FineGrainedIntentClassifier:
             }
             for label, hits, has_entity_context in candidates
         ]
+        if category == TOOL_TRADING and self._is_sms_platform_secondary_context(text):
+            existing_labels = {str(item.get("label") or "") for item in candidate_payloads}
+            hits = self._ordered_unique(self._marker_hits(text, ("接码", *self.SMS_PLATFORM_BUSINESS_MARKERS)))
+            if hits and "接码注册" not in existing_labels:
+                candidate_payloads.append(
+                    {
+                        "label": "接码注册",
+                        "confidence": round(min(0.92, 0.58 + 0.06 * len(hits)), 4),
+                        "evidence": hits,
+                        "reason": "cross_category_sms_platform_context",
+                    }
+                )
         label, hits, has_entity_context = max(
             candidates,
             key=lambda item: (len(item[1]), item[2], item[0]),
@@ -637,6 +3006,22 @@ class FineGrainedIntentClassifier:
             and hits
             and has_entity_context
         )
+
+    def _can_auto_clear_affiliate_rebate_review(
+        self,
+        *,
+        text: str,
+        secondary_label: str,
+        confidence: float,
+        has_conflict: bool,
+        theme_only: bool,
+    ) -> bool:
+        if secondary_label != "返利引流" or has_conflict or theme_only:
+            return False
+        if confidence < 0.82 or not self._is_affiliate_rebate_traffic_context(text):
+            return False
+        hits = self._ordered_unique(self._marker_hits(text, self.AFFILIATE_REBATE_TRAFFIC_MARKERS))
+        return len(hits) >= 3
 
     def _can_auto_clear_review(
         self,
@@ -738,6 +3123,30 @@ class FineGrainedIntentClassifier:
     def _marker_hits(self, text: str, markers: Iterable[str]) -> list[str]:
         lowered_text = text.lower()
         return [marker for marker in markers if marker.lower() in lowered_text]
+
+    def _is_locally_negated_marker(self, text: str, marker: str) -> bool:
+        lowered_text = text.lower()
+        needle = marker.lower()
+        start = lowered_text.find(needle)
+        while start >= 0:
+            window = lowered_text[max(0, start - 12) : start + len(needle) + 8]
+            if any(
+                negation in window
+                for negation in (
+                    "无",
+                    "未",
+                    "没有",
+                    "不提供",
+                    "未给出",
+                    "没有给出",
+                    "请勿",
+                    "切勿",
+                    "不要",
+                )
+            ):
+                return True
+            start = lowered_text.find(needle, start + len(needle))
+        return False
 
     def _matches_any(self, text: str, matched_keyword_set: set[str], keywords: Iterable[str]) -> bool:
         lowered_text = text.lower()
@@ -907,7 +3316,7 @@ class AdvancedEntityExtractor:
                 value = match.group(group_index) if group_index is not None else match.group(0)
                 start = match.start(group_index) if group_index is not None else match.start()
                 add(entity_type, value, start, start + len(value), method=method, confidence=0.84)
-        return sorted(entities, key=lambda item: (item.source_trace_id, item.start_offset, item.entity_type))
+        return filter_and_order_entities(entities, record)
 
 
 def _first_group_index(match: re.Match[str]) -> int | None:

@@ -279,6 +279,7 @@ class InvestigationPhaseMixin:
                     runtime_context=self.phase_engine.runtime_prompt_context(
                         label=self._runtime_context_label(run_state.intent_payload),
                         include_candidates=True,
+                        include_gray=True,
                     ),
                     max_rewrite_sources=int(run_state.budget.get("max_query_rewrite_sources") or 0),
                     budget=run_state.budget_controller,
@@ -568,6 +569,10 @@ class InvestigationPhaseMixin:
                 "flow_decision_traces": [dict(item) for item in run_state.flow_decision_traces],
                 "orchestration_route": orchestration_route,
                 "live_collection_reasons": live_state.live_collection_reasons,
+                "selected_source_classes": [
+                    self._source_diversity_class(source)
+                    for source in live_state.selected_sources
+                ],
                 "safety_traces": [
                     dict(item)
                     for item in live_state.collection_runs
@@ -594,6 +599,11 @@ class InvestigationPhaseMixin:
                 "exploration_hypothesis_count": len(refinement_state.exploration_hypotheses),
                 "collection_layers_executed": [
                     str(item.get("collection_layer") or "")
+                    for item in live_state.collection_runs
+                    if item.get("fetched_count", 0) > 0
+                ],
+                "collection_source_classes_executed": [
+                    self._source_diversity_class(item)
                     for item in live_state.collection_runs
                     if item.get("fetched_count", 0) > 0
                 ],

@@ -6,8 +6,10 @@ import json
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
+from src.classifier.nlp_rule_matcher import review_bucket_for_classification
 from src.backend import LLMGateway
 from src.domain import ClassificationResolution, ExtractedEntity, IntelRecord, PipelineItem, RiskClassification
+from src.intelligence.entity_postprocessor import filter_and_order_entities
 from src.pipeline.classification_resolution import resolve_classification
 from src.safety import OutputValidator, PromptGuard
 from src.safety.prompt_sanitizer import sanitize_entity_for_llm, stable_json_dumps
@@ -197,11 +199,13 @@ class LLMEnrichStage:
         raw_entities = parsed.get("enhanced_entities")
         normalized_entities = _normalized_entities(raw_entities, trace_id=str(payload.get("source_trace_id") or payload.get("trace_id") or "unknown"))
         payload.setdefault("rule_entities", [dict(entity) for entity in (payload.get("entities") or []) if isinstance(entity, Mapping)])
+        llm_entities: list[dict[str, Any]] = []
         if normalized_entities:
             existing = [dict(entity) for entity in (payload.get("entities") or []) if isinstance(entity, Mapping)]
-            payload["entities"] = _merge_entities(existing, normalized_entities)
-            payload["llm_entities"] = normalized_entities
-            payload["enhanced_entities"] = normalized_entities
+            llm_entities = _filter_entities_for_delivery(normalized_entities, payload)
+            payload["entities"] = _filter_entities_for_delivery(_merge_entities(existing, llm_entities), payload)
+            payload["llm_entities"] = llm_entities
+            payload["enhanced_entities"] = llm_entities
             payload["entity_count"] = len(payload["entities"])
             entity_types = {str(entity.get("entity_type") or "").lower() for entity in payload["entities"]}
             payload["has_contact"] = bool(entity_types.intersection({"contact", "account"}))
@@ -211,7 +215,7 @@ class LLMEnrichStage:
         payload["llm_enrichment"] = {
             "llm_ok": bool(parsed),
             "used_enhanced_classification": usable_classification,
-            "used_enhanced_entities": bool(normalized_entities),
+            "used_enhanced_entities": bool(llm_entities),
             "preserved_rule_classification": "rule_classification" in payload,
             "preserved_rule_entities": "rule_entities" in payload,
             "classification_resolution": dict(payload.get("classification_resolution") or {}),
@@ -235,6 +239,7 @@ class LLMEnrichStage:
                     conflict_status=_optional_str(final.get("conflict_status")),
                     evidence=[str(value) for value in (final.get("evidence") or [])],
                     review_required=bool(final.get("review_required")),
+                    review_bucket=str(final.get("review_bucket") or "human_review_required"),
                     classifier_version=str(final.get("classifier_version") or "unknown"),
                 ),
                 "classification_resolution": typed_resolution,
@@ -242,7 +247,7 @@ class LLMEnrichStage:
                 "llm_enrichment": dict(payload.get("llm_enrichment") or {}),
             }
         )
-        return _sync_item_payload(_item_with_payload(current, payload)), not (usable_classification or normalized_entities)
+        return _sync_item_payload(_item_with_payload(current, payload)), not (usable_classification or llm_entities)
 
     def _trace_call(
         self,
@@ -310,7 +315,7 @@ def _record_card(item: Mapping[str, Any] | PipelineItem) -> dict[str, Any]:
         "quality_score": payload.get("quality_score"),
         "classification": {
             key: final_classification.get(key)
-            for key in ("risk_category", "secondary_label", "confidence", "review_required", "conflict_status", "evidence")
+            for key in ("risk_category", "secondary_label", "confidence", "review_required", "review_bucket", "conflict_status", "evidence")
             if final_classification.get(key) not in (None, "")
         },
         "entities": entities[:12],
@@ -325,6 +330,17 @@ def _normalized_classification(payload: Mapping[str, Any], *, fallback: Mapping[
         "secondary_label": str(payload.get("secondary_label") or fallback.get("secondary_label") or "待研判"),
         "confidence": round(max(0.0, min(confidence, 0.99)), 4),
         "review_required": _bool(payload.get("review_required"), default=bool(fallback.get("review_required", True))),
+        "review_bucket": str(
+            payload.get("review_bucket")
+            or fallback.get("review_bucket")
+            or review_bucket_for_classification(
+                risk_category=str(payload.get("risk_category") or fallback.get("risk_category") or "unknown"),
+                review_required=_bool(payload.get("review_required"), default=bool(fallback.get("review_required", True))),
+                confidence=confidence,
+                secondary_label=str(payload.get("secondary_label") or fallback.get("secondary_label") or ""),
+                conflict_status=str(payload.get("conflict_status") or fallback.get("conflict_status") or ""),
+            )
+        ),
         "evidence": [str(item) for item in payload.get("evidence", []) if str(item).strip()] if isinstance(payload.get("evidence"), list) else list(fallback.get("evidence") or []),
         "classifier_version": "llm_enrich_v1",
     }
@@ -372,6 +388,10 @@ def _merge_entities(existing: list[dict[str, Any]], enhanced: list[dict[str, Any
     return merged
 
 
+def _filter_entities_for_delivery(entities: Iterable[Any], payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [dict(entity) for entity in filter_and_order_entities(entities, payload) if isinstance(entity, Mapping)]
+
+
 def _coerce_pipeline_item(item: Mapping[str, Any] | PipelineItem) -> PipelineItem:
     if isinstance(item, PipelineItem):
         return _sync_item_payload(item)
@@ -406,6 +426,7 @@ def _coerce_pipeline_item(item: Mapping[str, Any] | PipelineItem) -> PipelineIte
             conflict_status=_optional_str(final.get("conflict_status")),
             evidence=[str(value) for value in (final.get("evidence") or [])],
             review_required=bool(final.get("review_required")),
+            review_bucket=str(final.get("review_bucket") or "human_review_required"),
             classifier_version=str(final.get("classifier_version") or "unknown"),
         )
     return _sync_item_payload(

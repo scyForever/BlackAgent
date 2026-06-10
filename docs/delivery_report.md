@@ -1,178 +1,181 @@
-# 交付汇报（2026-05-26）
+# 交付汇报（当前快照）
 
-## 1. 本轮完成内容
+本文档汇总当前 `data/collection_phase_delivery.db` 及其派生产物。旧版报告中的历史局部 run 数字不再作为交付口径，本版以当前已复跑产物为准。最终答辩验收只引用 `data/final_acceptance_summary.json` 中列出的当前有效产物；`data/eval_report.json` 如存在，只作为 stale/non-authoritative 历史文件处理。
 
-本轮围绕 BlackAgent 的现有 `data/collection_phase_delivery.db`，完成了四件事：
+## 1. 数据与来源
 
-1. 将阶段说明整理为**可直接汇报**的交付口径。
-2. 在采集阶段产物之上，正式跑通**分类 / 抽取阶段**。
-3. 对“众包任务”主题做了一轮**更激进的去噪清洗**。
-4. 补齐了**众包服务**标签体系，吃掉了分类阶段原先的 `unknown=759`，再把后续残留的 `未细分=82` 压到 `0`，并继续把 `拉人获客=469` 拆成更稳定的业务亚型。
+当前采集底库：
 
----
-
-## 2. 交付结果概览
-
-### 2.1 采集阶段原始底库保持不变
-
-- 原始底库：`data/collection_phase_delivery.db`
-- 原始记录总量：`4042`
-- 本轮没有重跑全量采集，而是在现有底库上完成：
-  - relevance 重标
-  - 众包任务去噪
-  - 分类 / 抽取阶段重跑
-
-### 2.2 “众包任务”主题激进去噪已完成
-
-- 清洗前 `众包任务`：`2814`
-- 清洗后 `众包任务`：`536`
-- 本轮共移除“众包任务”噪声：`2278`
-- 压降幅度：`81.0%`
-
-主要被剥离的噪声来源：
-
-- `telegram_public_delivery:Automationforum`：`2059`
-- `telegram_public_delivery:moonuserbot`：`50`
-- `telegram_public_delivery:Dragon_Userbot`：`46`
-- `telegram_public_delivery:thunderuserbot`：`40`
-
-### 2.3 当前采集阶段有效主题分布（清洗后）
-
-| 主题 | 条数 |
+| 指标 | 数值 |
 | --- | ---: |
-| 接码 | 547 |
-| 众包任务 | 536 |
-| 账号交易 | 466 |
-| 诈骗引流 | 349 |
-| 工具交易 | 340 |
-| 刷单作弊 | 100 |
+| raw 记录 | 4163 |
+| cleaned 记录 | 3464 |
+| source 数 | 83 |
+| source access type | public_compliant |
 
-补充说明：
+全量 raw 来源结构仍然 IM / 群组占主导：
 
-- 当前未命中六类主题的记录：`2287`
-- 这批记录仍保留在底库中，便于后续复核与规则继续迭代。
+| source_class | 条数 |
+| --- | ---: |
+| `im_or_group` | 3786 |
+| `social_or_forum` | 356 |
+| `vertical_or_technical` | 21 |
 
-### 2.4 分类 / 抽取阶段已重跑并完成标签升级
+为答辩和抽检额外交付严格均衡样本 `data/collection_phase_defense_quota_balanced_sample.jsonl`。该样本是答辩/防御评估视图，不代表全量 raw 的天然来源分布：
 
-基于清洗后的主题结果，本轮已对仍具主题标签的 `1755` 条记录执行分类 / 抽取：
+| source_class | 样本条数 |
+| --- | ---: |
+| `im_or_group` | 94 |
+| `social_or_forum` | 94 |
+| `vertical_or_technical` | 21 |
 
-- 分类样本数：`1755`
-- 抽取实体数：`4597`
-- 需要人工复核的分类数：`739`
-- 原先 `unknown=759`：**已压到 `0`**
-- 本轮继续处理 `secondary_label=未细分`：**`82 -> 0`**
+严格样本总数 `209`，manifest warnings 为 `[]`。
 
-分类结果分布：
+## 2. 清洗结果
+
+当前 `data/cleaning_phase_summary.json`：
+
+| 指标 | 数值 |
+| --- | ---: |
+| 输入 raw | 4163 |
+| cleaned | 3464 |
+| dropped | 699 |
+| high risk | 1095 |
+| duplicate dropped | 650 |
+| average quality score | 0.7568 |
+| average risk score | 0.422 |
+
+对应产物：
+
+- `data/cleaning_phase_cleaned_corpus.jsonl`：3464 行
+- `data/cleaning_phase_high_risk_corpus.jsonl`：1095 行
+
+## 3. 分类与抽取
+
+### 3.1 全量 cleaned 视图
+
+当前 `data/classification_extraction_phase_summary.json`：
+
+| 指标 | 数值 |
+| --- | ---: |
+| 分类输入 | 3464 |
+| 分类完成 | 3464 |
+| 实体抽取 | 21774 |
+| 需人工复核 | 970 |
+
+一级分类：
 
 | 一级分类 | 条数 |
 | --- | ---: |
-| 账号交易 | 688 |
-| 工具交易 | 466 |
-| 众包服务 | 405 |
-| 诈骗引流 | 103 |
-| 刷单作弊 | 93 |
+| 正常业务白噪声 | 1744 |
+| 账号交易 | 513 |
+| 工具交易 | 333 |
+| 众包服务 | 304 |
+| 诈骗引流 | 302 |
+| unknown | 190 |
+| 刷单作弊 | 78 |
 
-高频二级标签：
+二级标签仍有 `待研判=398`、`低相关=1737`、`未细分=30`。因此当前可以说“明显公开/技术类白噪声已大幅归入正常业务白噪声”，但不能说全量未知已清零。
 
-- `群控脚本`：`461`
-- `接码注册`：`424`
-- `实名账号买卖`：`231`
-- `代投服务`：`221`
-- `拉群获客`：`172`
-- `私域导流`：`74`
-- `刷单返佣`：`33`
-- `账号养号`：`33`
-- `垫付兼职`：`22`
-- `打粉卖量`：`12`
+### 3.2 高危高质量视图
 
-其中，原先的 `拉人获客=469` 已进一步拆开为：
+当前 `data/classification_extraction_phase_high_risk_summary.json`：
 
-- `代投服务`：`221`
-- `拉群获客`：`172`
-- `打粉卖量`：`12`
+| 指标 | 数值 |
+| --- | ---: |
+| 输入 | 1061 |
+| 分类完成 | 1061 |
+| 实体抽取 | 4698 |
+| 需人工复核 | 461 |
 
-高频实体类型：
+一级分类：
 
-- `contact`：`1445`
-- `tool_name`：`1365`
-- `url`：`810`
-- `slang_term`：`605`
-- `settlement`：`265`
+| 一级分类 | 条数 |
+| --- | ---: |
+| 账号交易 | 360 |
+| 工具交易 | 270 |
+| 众包服务 | 240 |
+| 诈骗引流 | 117 |
+| 刷单作弊 | 46 |
+| 正常业务白噪声 | 28 |
 
----
+高危高质量视图里没有一级 `unknown`；但二级标签仍有 `待研判=90`、`未细分=19`。
 
-## 3. 交付物清单
+## 4. 增强项落地
 
-### 汇报 / 说明文档
+已落地：
 
-- `docs/delivery_report.md`（本文件）
-- `docs/collection_phase_delivery.md`
-- `docs/phase2_phase3_delivery.md`
+- `storage/entity_graph.py` 的时间窗口查询支持注入 `now`，默认 pytest 不再受当前日期影响。
+- 分类器增加普通公开资料 / 技术资料白噪声兜底，同时保留交易、联系方式、弱风险样本的复核边界。
+- `scripts/export_delivery_corpora.py` 支持严格来源均衡样本，避免评估样本被单一 Telegram 来源主导。
+- OCR 主链保留 `content_modality`、`ocr_text`、`ocr_confidence`、`ocr_engine_confidences`、`ocr_confidence_details`。
+- `scripts/build_slang_candidate_report.py` 从 pending 样本生成黑话候选报告，候选需人工确认后才能激活。
+- `src/enhancement/clue_quality.py` 的线索质量评估加入新鲜度和误报风险，不再只看分类 F1。
+- 人工 held-out 已完成 193 条 confirmed/corrected gold，7 条 rejected，并通过 `validate_manual_heldout.py --min-records 100`。
 
-### 采集阶段统计产物
+## 5. 评测与边界
 
-- `data/collection_phase_delivery.db`
-- `data/collection_phase_delivery_stats.json`
-- `data/collection_phase_theme_counts.csv`
-- `data/collection_phase_source_counts.csv`
-- `data/collection_phase_theme_source_counts.csv`
+OCR hard set：
 
-### 分类 / 抽取阶段产物
+| 指标 | 数值 |
+| --- | ---: |
+| 记录数 | 20 |
+| primary classification F1 | 1.0 |
+| secondary classification F1 | 0.8 |
+| hierarchical classification F1 | 0.8 |
+| entity F1 | 0.9677 |
 
-- `data/classification_extraction_phase_summary.json`
-- `data/classification_extraction_phase_classifications.jsonl`
-- `data/classification_extraction_phase_entities.jsonl`
+人工 held-out：
 
----
+| 指标 | 数值 |
+| --- | ---: |
+| seeded review rows | 200 |
+| review task rows | 200 |
+| min target confirmed rows | 100 |
+| confirmed manual gold rows | 193 |
+| rejected rows | 7 |
+| claim status | human_confirmed_gold_ready |
+| primary classification F1 | 0.8662 |
+| secondary classification F1 | 0.8258 |
+| hierarchical classification F1 | 0.7929 |
+| entity F1 | 0.9484 |
+| clue F1 | 1.0 |
+| clue recall | 1.0 |
+| object clue F1 | 1.0 |
+| evidence chain precision | 0.9583 |
+| evidence chain recall | 0.9583 |
+| evidence reviewability rate | 1.0 |
+| false positive rate | 0.0504 |
+| classification review rate | 0.1865 |
 
-## 4. 本轮规则修正点
+黑话候选：
 
-### 4.1 relevance 清洗层
+| 指标 | 数值 |
+| --- | ---: |
+| pending 输入 | 970 |
+| candidate count | 80 |
+| min count | 3 |
 
-1. **英文短词边界匹配**：`dm` 不再误命中 `admin / dashboard`。
-2. **弱“众包任务”词兜底收紧**：`automation / userbot / telethon / pyrogram / marketing / lead / dm` 不再单独触发“众包任务”。
-3. **保留真正业务型众包信号**：只有同时出现 `拉人 / 群发 / 采集群成员 / 接单 / 工作室 / 客服 / 报价` 等服务语义时，才继续保留“众包任务”。
+当前不能声称：
 
-### 4.2 分类层
+- 全量 cleaned 语料 `unknown / 待研判 / 未细分` 已清零。
+- 线索召回代表线上开放域泛化；当前 `clue_recall=1.0` 只证明本地 `manual_heldout_clue_gold` 上的对象级线索、证据链和可复核性。
+- 人工 held-out 代表线上生产泛化；当前只证明本地公开 / 授权 held-out split。
+- OCR hard set 代表外部生产 OCR 泛化质量。
+- 黑话候选已经自动进入正式词库；当前需先在 `data/manual_review/slang_candidate_review_template.csv` 记录人工确认，再进入 review/gray_rollout/activate 生命周期。
 
-1. 新增一级类：`众包服务`
-2. 在原有服务标签基础上继续拆分：
-   - `拉群获客`
-   - `打粉卖量`
-   - `代投服务`
-   - 保留 `代运营`
-3. 继续吃掉残留 `未细分=82`，补出：
-   - `拉群语义`
-   - `打粉引流`
-   - `订单卡单`
-   - `卡单玩法`
-   - `手工做单`
-4. 同步增强旧类覆盖：
-   - `接码注册`
-   - `群控脚本`
-   - `私域导流`
-5. 分类阶段开始联合使用：
-   - 原始文本
-   - `matched_keywords`
-   - `matched_themes`
-   而不是只看一层文本命中。
+## 6. 主要复跑命令
 
----
+```powershell
+python scripts/export_delivery_corpora.py --db data/collection_phase_delivery.db --raw-jsonl-out data/collection_phase_raw_dataset.jsonl --quota-jsonl-out data/collection_phase_quota_balanced_sample.jsonl --defense-quota-jsonl-out data/collection_phase_defense_quota_balanced_sample.jsonl --manifest-out data/collection_phase_delivery_manifest.json
 
-## 5. 当前结论与下一步建议
+python scripts/run_cleaning_phase.py --db data/collection_phase_delivery.db --summary-out data/cleaning_phase_summary.json --cleaned-jsonl data/cleaning_phase_cleaned_corpus.jsonl --high-risk-jsonl data/cleaning_phase_high_risk_corpus.jsonl --persist-cleaned
 
-### 当前结论
+python scripts/run_classification_extraction_phase.py --db data/collection_phase_delivery.db --source cleaned --summary-out data/classification_extraction_phase_summary.json --classifications-jsonl data/classification_extraction_phase_classifications.jsonl --entities-jsonl data/classification_extraction_phase_entities.jsonl
 
-- 采集底库已经具备继续推进的规模基础。
-- “众包任务”主题污染已被明显压降。
-- 分类 / 抽取链路已经跑通，且这轮把原先 `unknown=759` 完整压到 `0`。
-- 这轮继续把 `secondary_label=未细分` 从 `82` 压到 `0`，当前分类结果已不存在“未细分”桶。
-- 这轮已把原先 `拉人获客=469` 进一步拆成 `拉群获客 / 打粉卖量 / 代投服务`，同时把一批明显“更新 / 教程 / 软件”文案重新推回 `工具交易 / 群控脚本`。
-- 当前新的主要缺口不再是 `unknown / 未细分 / 拉人获客`，而是**`代投服务=221` 这类仍然偏宽的服务履约桶**，以及 `拉群语义 / 订单卡单 / 卡单玩法 / 手工做单` 这些 review-only 标签仍需后续复盘。
+python scripts/run_classification_extraction_phase.py --db data/collection_phase_delivery.db --source cleaned --high-risk-only --min-quality-score 0.7 --summary-out data/classification_extraction_phase_high_risk_summary.json --classifications-jsonl data/classification_extraction_phase_high_risk_classifications.jsonl --entities-jsonl data/classification_extraction_phase_high_risk_entities.jsonl
 
-### 建议下一步
+python scripts/build_slang_candidate_report.py --records data/cleaning_phase_cleaned_corpus.jsonl --classifications data/classification_extraction_phase_classifications.jsonl --output data/slang_candidate_report.json --min-count 3 --max-candidates 80
 
-优先补齐以下两件事：
-
-1. 继续细分 `众包服务=405`，优先拆 `代投服务=221`，把“私信代发 / 群发代发 / SEO排名 / 采集投放”继续拉开。
-2. 对当前 review-only 的 `拉群语义 / 订单卡单 / 卡单玩法 / 手工做单` 样本做模板复盘，继续压缩边界宽、置信低的标签区间。
+python scripts/run_acceptance_gate.py
+```

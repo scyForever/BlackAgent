@@ -53,6 +53,7 @@ routing_profiles:
 
   high_recall:
     max_elapsed_seconds: 180
+    llm_stage_deadline_ms: 30000
     max_sources: 5
     max_raw_records: 20000
     max_candidate_clues: 200

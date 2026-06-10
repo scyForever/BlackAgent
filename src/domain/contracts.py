@@ -47,6 +47,7 @@ class RiskClassification(DomainModel):
     conflict_status: str | None = None
     evidence: list[str] = Field(default_factory=list)
     review_required: bool = False
+    review_bucket: Literal["explicit_risk", "low_relevance", "human_review_required"] = "human_review_required"
     classifier_version: str = "unknown"
 
 
@@ -80,6 +81,7 @@ class CandidateClue(DomainModel):
     entity_values: list[str] = Field(default_factory=list)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     weak_reason: str = ""
+    evidence_reviewability: dict[str, Any] = Field(default_factory=dict)
 
 
 class ActionableClue(CandidateClue):

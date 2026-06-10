@@ -1,4 +1,6 @@
 import json
+from argparse import Namespace
+from http.client import IncompleteRead
 from io import BytesIO
 from urllib.error import HTTPError
 
@@ -6,9 +8,11 @@ import pytest
 
 from src.collector import HTTPFeedCollector, HTTPFeedConfig, NetworkCollectionDisabled, SourceAuthorizationError, load_source_catalog
 from src.collector.base_collector import model_dump
+from src.collector.source_config import quota_balanced_source_slice
 from src.config_loader import Settings
 from src.local_runtime import LocalAgentRuntime
 from storage.sql_backend import connect
+from scripts.collect_public_sources import selected_sources_from_args
 import src.collector.http_feed_collector as http_feed_collector_module
 
 
@@ -124,6 +128,41 @@ def test_http_feed_collector_fetches_authorized_html_snapshot():
     assert rows[0]["feed_row_index"] == 1
 
 
+def test_http_feed_collector_uses_partial_body_on_incomplete_read():
+    class PartialHTTPResponse:
+        headers = {"Content-Type": "text/plain; charset=utf-8"}
+        status = 200
+
+        def read(self):
+            raise IncompleteRead(b"risk line TG:core01\n", 100)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    collector = HTTPFeedCollector(
+        HTTPFeedConfig(
+            source_url="https://feed.example/intel.txt",
+            source_name="partial-feed",
+            source_type="IM",
+            legal_basis="PUBLIC_COMPLIANT_DATA",
+            feed_format="txt",
+            include_keywords=("TG",),
+            network_enabled=True,
+            allowed_domains=("feed.example",),
+        ),
+        opener=lambda request, timeout: PartialHTTPResponse(),
+    )
+
+    rows = [model_dump(item) for item in collector.collect()]
+
+    assert len(rows) == 1
+    assert rows[0]["source_name"] == "partial-feed"
+    assert rows[0]["content_text"] == "risk line TG:core01"
+
+
 def test_http_feed_collector_filters_to_blackgray_rows_and_keeps_keyword_evidence():
     collector = HTTPFeedCollector(
         HTTPFeedConfig(
@@ -234,6 +273,97 @@ def test_http_feed_collector_splits_duckduckgo_search_snapshot_into_result_rows(
     assert rows[0]["query_term_stage"] == "variant"
     assert rows[0]["query_variant_index"] == 5
     assert rows[0]["content_text"].startswith("接码平台资源汇总 接码 平台 TG 招募")
+
+
+def test_http_feed_collector_splits_direct_duckduckgo_html_results():
+    html = """
+    <html>
+      <body>
+        <div class="result">
+          <h2 class="result__title">
+            <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.v2ex.com%2Ft%2F1085916">做了一个小工具：小红书加微引导图生成器</a>
+          </h2>
+          <a class="result__url" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.v2ex.com%2Ft%2F1085916">www.v2ex.com/t/1085916</a>
+          <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.v2ex.com%2Ft%2F1085916">群控脚本和引流图片讨论，联系 TG:risk01</a>
+        </div>
+        <div class="result">
+          <h2 class="result__title">
+            <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fnews.example%2Fanti-fraud">警方通报</a>
+          </h2>
+          <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fnews.example%2Fanti-fraud">警方通报 反诈 宣传</a>
+        </div>
+      </body>
+    </html>
+    """
+
+    collector = HTTPFeedCollector(
+        HTTPFeedConfig(
+            source_url="https://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+            source_name="direct-ddg-v2ex",
+            source_type="Forum",
+            legal_basis="PUBLIC_COMPLIANT_DATA",
+            feed_format="html",
+            network_enabled=True,
+            allowed_domains=("html.duckduckgo.com",),
+            include_keywords=("群控", "脚本", "引流"),
+            exclude_keywords=("警方通报",),
+            query_term="群控",
+            query_term_stage="core",
+        ),
+        opener=lambda request, timeout: FakeHTTPResponse(html, "text/html; charset=utf-8"),
+    )
+
+    rows = [model_dump(item) for item in collector.collect()]
+
+    assert len(rows) == 1
+    assert rows[0]["source_url"] == "https://www.v2ex.com/t/1085916"
+    assert rows[0]["search_query_url"].startswith("https://html.duckduckgo.com/html/")
+    assert rows[0]["result_title"] == "做了一个小工具：小红书加微引导图生成器"
+    assert rows[0]["content_text"] == "做了一个小工具：小红书加微引导图生成器 群控脚本和引流图片讨论，联系 TG:risk01"
+    assert rows[0]["query_term"] == "群控"
+
+
+def test_http_feed_collector_splits_bing_html_results():
+    html = """
+    <html>
+      <body>
+        <ol id="b_results">
+          <li class="b_algo">
+            <h2><a href="https://www.v2ex.com/t/1085916">小红书加微引导图生成器</a></h2>
+            <div class="b_caption"><p>群控脚本和引流图片讨论，联系 TG:risk01</p></div>
+          </li>
+          <li class="b_algo">
+            <h2><a href="https://news.example/anti-fraud">警方通报</a></h2>
+            <div class="b_caption"><p>警方通报 反诈 宣传</p></div>
+          </li>
+        </ol>
+      </body>
+    </html>
+    """
+
+    collector = HTTPFeedCollector(
+        HTTPFeedConfig(
+            source_url="https://www.bing.com/search?q=site%3Awww.v2ex.com+%E7%BE%A4%E6%8E%A7",
+            source_name="bing-v2ex",
+            source_type="Forum",
+            legal_basis="PUBLIC_COMPLIANT_DATA",
+            feed_format="html",
+            network_enabled=True,
+            allowed_domains=("www.bing.com",),
+            include_keywords=("群控", "脚本", "引流"),
+            exclude_keywords=("警方通报",),
+            query_term="群控",
+        ),
+        opener=lambda request, timeout: FakeHTTPResponse(html, "text/html; charset=utf-8"),
+    )
+
+    rows = [model_dump(item) for item in collector.collect()]
+
+    assert len(rows) == 1
+    assert rows[0]["source_url"] == "https://www.v2ex.com/t/1085916"
+    assert rows[0]["search_query_url"].startswith("https://www.bing.com/search")
+    assert rows[0]["result_title"] == "小红书加微引导图生成器"
+    assert rows[0]["content_text"] == "小红书加微引导图生成器 群控脚本和引流图片讨论，联系 TG:risk01"
 
 
 def test_http_feed_collector_drops_duckduckgo_block_page_instead_of_persisting_it():
@@ -463,6 +593,59 @@ def test_source_collect_runtime_fetches_and_persists_real_feed_shape(monkeypatch
     backend.close()
 
 
+def test_source_collect_runtime_preserves_public_account_article_metadata(monkeypatch, tmp_path):
+    body = json.dumps(
+        {
+            "items": [
+                {
+                    "title": "公众号文章：Telegram 群控风险观察",
+                    "url": "https://mp.weixin.qq.com/s/article-demo",
+                    "published_at": "2026-06-01T08:00:00+08:00",
+                    "content_text": "公开文章提到 TG:core01 和群控脚本风险样例",
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    def _open(request, timeout):
+        assert request.full_url == "https://article.example/feed.json"
+        return FakeHTTPResponse(body)
+
+    monkeypatch.setattr("src.collector.http_feed_collector.urllib_request.urlopen", _open)
+    settings = Settings(
+        network={"enabled": True, "allowed_domains": ["article.example"], "max_records_per_fetch": 5},
+        storage={"backend": "sql", "dsn": f"sqlite:///{(tmp_path / 'articles.db').as_posix()}", "auto_create_schema": True},
+    )
+    runtime = LocalAgentRuntime(settings)
+    try:
+        payload = runtime.collect_source(
+            {
+                "source_name": "wechat_public_telegram_risk_articles",
+                "source_type": "Public_Account",
+                "platform": "wechat_public",
+                "source_url": "https://article.example/feed.json",
+                "feed_format": "json",
+                "legal_basis": "PUBLIC_COMPLIANT_DATA",
+                "text_fields": ["content_text", "title"],
+            },
+            persist_raw=True,
+        )
+    finally:
+        runtime.close()
+
+    row = payload["raw_records"][0]
+    assert row["source_name"] == "wechat_public_telegram_risk_articles"
+    assert row["source_type"] == "Public_Account"
+    assert row["platform"] == "wechat_public"
+    assert row["source_url"] == "https://mp.weixin.qq.com/s/article-demo"
+    assert row["raw_payload_uri"] == "https://article.example/feed.json"
+    assert row["title"] == "公众号文章：Telegram 群控风险观察"
+    assert row["published_at"] == "2026-06-01T08:00:00+08:00"
+    assert row["publish_time"] == "2026-06-01T08:00:00+08:00"
+    assert row["source_class"] == "social_or_forum"
+
+
 def test_load_source_catalog_normalizes_allowed_domains_and_text_fields(tmp_path):
     catalog_path = tmp_path / "source_catalog.yaml"
     catalog_path.write_text(
@@ -591,6 +774,196 @@ sources:
     assert sources[7]["query_term"] == "进裙"
     assert sources[8]["query_term"] == "加微"
     assert sources[9]["query_term"] == "加威"
+
+
+def test_quota_balanced_source_slice_satisfies_non_im_minimums_before_telegram_overflow():
+    sources = [
+        {
+            "source_name": "telegram-public-big",
+            "source_type": "IM",
+            "source_class": "im_or_group",
+            "source_url": "https://telegram.example/feed.json",
+        },
+        {
+            "source_name": "telegram-public-big",
+            "source_type": "IM",
+            "source_class": "im_or_group",
+            "source_url": "https://telegram.example/feed-2.json",
+        },
+        {
+            "source_name": "vertical-market",
+            "source_type": "Vertical",
+            "source_url": "https://vertical.example/feed.json",
+        },
+        {
+            "source_name": "wechat-risk-articles",
+            "source_type": "Public_Account",
+            "platform": "wechat_public",
+            "source_url": "https://article.example/feed.json",
+        },
+        {
+            "source_name": "secondhand-market",
+            "source_type": "Marketplace",
+            "source_class": "secondhand_market",
+            "source_url": "https://market.example/feed.json",
+        },
+        {
+            "source_name": "crowd-platform",
+            "source_type": "Crowdsourcing",
+            "source_class": "crowdsourcing_platform",
+            "source_url": "https://crowd.example/feed.json",
+        },
+    ]
+
+    selected = quota_balanced_source_slice(
+        sources,
+        max_sources=5,
+        minimum_quotas={
+            "vertical_or_technical": 1,
+            "public_account_or_article": 1,
+            "secondhand_market": 1,
+            "crowdsourcing_platform": 1,
+        },
+    )
+
+    selected_names = [source["source_name"] for source in selected]
+    assert selected_names[:4] == [
+        "vertical-market",
+        "wechat-risk-articles",
+        "secondhand-market",
+        "crowd-platform",
+    ]
+    assert selected_names.count("telegram-public-big") == 1
+
+
+def test_collect_public_sources_applies_granular_source_minimum_quotas(tmp_path):
+    catalog_path = tmp_path / "source_catalog_quota.yaml"
+    catalog_path.write_text(
+        """
+sources:
+  - source_name: telegram-public-big
+    source_type: IM
+    source_class: im_or_group
+    source_url: https://telegram.example/feed.json
+  - source_name: telegram-public-big
+    source_type: IM
+    source_class: im_or_group
+    source_url: https://telegram.example/feed-2.json
+  - source_name: vertical-market
+    source_type: Vertical
+    source_url: https://vertical.example/feed.json
+  - source_name: wechat-risk-articles
+    source_type: Public_Account
+    platform: wechat_public
+    source_url: https://article.example/feed.json
+  - source_name: secondhand-market
+    source_type: Vertical
+    platform: second_hand_market
+    source_url: https://market.example/feed.json
+  - source_name: crowd-platform
+    source_type: Vertical
+    platform: crowdsourcing
+    source_url: https://crowd.example/feed.json
+        """.strip(),
+        encoding="utf-8",
+    )
+    args = Namespace(
+        source_class=[],
+        max_sources=5,
+        source_min_quota=[],
+        disable_source_min_quotas=False,
+        source_name_max_quota=2,
+    )
+
+    selected, summary = selected_sources_from_args(args, catalog_path)
+
+    selected_names = [source["source_name"] for source in selected or []]
+    assert selected_names[:4] == [
+        "vertical-market",
+        "wechat-risk-articles",
+        "secondhand-market",
+        "crowd-platform",
+    ]
+    assert selected_names.count("telegram-public-big") == 1
+    assert summary["source_quota_warnings"] == []
+    assert summary["selected_source_quota_counts"]["vertical_or_technical"] == 1
+    assert summary["selected_source_quota_counts"]["public_account_or_article"] == 1
+    assert summary["selected_source_quota_counts"]["secondhand_market"] == 1
+    assert summary["selected_source_quota_counts"]["crowdsourcing_platform"] == 1
+
+
+def test_collect_public_sources_allows_configurable_source_name_quota(tmp_path):
+    catalog_path = tmp_path / "source_catalog_name_quota.yaml"
+    catalog_path.write_text(
+        """
+sources:
+  - source_name: repeated-search
+    query_url_template: https://search.example/?q={query}
+    query_seed_terms: [site:example.com]
+    query_global_terms: [a, b, c, d]
+    source_type: Forum
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    allowed_domain: search.example
+        """.strip(),
+        encoding="utf-8",
+    )
+    args = Namespace(
+        source_class=[],
+        max_sources=4,
+        source_min_quota=[],
+        disable_source_min_quotas=True,
+        source_name_max_quota=4,
+    )
+
+    selected, summary = selected_sources_from_args(args, catalog_path)
+
+    assert len(selected or []) == 4
+    assert summary["source_name_max_quota"] == 4
+    assert summary["selected_source_name_counts"]["repeated-search"] == 4
+    assert summary["source_name_quota_warnings"] == []
+
+
+def test_quota_balanced_source_slice_preserves_broad_class_diversity_after_quota_fill():
+    sources = [
+        {
+            "source_name": "telegram-a",
+            "source_type": "IM",
+            "source_class": "im_or_group",
+            "source_url": "https://telegram.example/a.json",
+            "search_query": "接码",
+        },
+        {
+            "source_name": "telegram-b",
+            "source_type": "IM",
+            "source_class": "im_or_group",
+            "source_url": "https://telegram.example/b.json",
+            "search_query": "群控",
+        },
+        {
+            "source_name": "forum-a",
+            "source_type": "Forum",
+            "source_url": "https://forum.example/a.json",
+            "search_query": "接码",
+        },
+        {
+            "source_name": "vertical-tool-a",
+            "source_type": "Vertical",
+            "source_url": "https://vertical.example/a.json",
+            "search_query": "automation",
+        },
+    ]
+
+    selected = quota_balanced_source_slice(
+        sources,
+        max_sources=3,
+        minimum_quotas={"vertical_or_technical": 1},
+    )
+
+    selected_names = {source["source_name"] for source in selected}
+    assert len(selected) == 3
+    assert "vertical-tool-a" in selected_names
+    assert "forum-a" in selected_names
+    assert {"telegram-a", "telegram-b"} & selected_names
 
 
 def test_batch_source_collect_runtime_aggregates_multi_platform_sources(monkeypatch, tmp_path):

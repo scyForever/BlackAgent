@@ -25,6 +25,7 @@ REQUIRED_HUMAN_FIELDS = (
     "annotator",
     "review_date",
     "conflict_handling",
+    "typical_error",
 )
 
 
@@ -41,7 +42,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--output", default="tests/evaluation/manual_heldout_classification.jsonl", help="Confirmed manual held-out JSONL to write.")
     parser.add_argument("--report", default="data/manual_heldout_report.json", help="Validation report JSON.")
-    parser.add_argument("--min-records", type=int, default=50, help="Minimum confirmed rows required for defense-ready status.")
+    parser.add_argument("--min-records", type=int, default=100, help="Minimum confirmed rows required for defense-ready status.")
     return parser.parse_args(argv)
 
 
@@ -68,7 +69,7 @@ def validate_records(records: Iterable[Mapping[str, Any]], *, min_records: int =
             continue
 
         missing = [field for field in REQUIRED_HUMAN_FIELDS if not str(review.get(field) or "").strip()]
-        final_categories = _non_empty_list(review.get("final_risk_categories"))
+        final_categories = _split_labels(review.get("final_risk_categories"))
         if not final_categories:
             missing.append("final_risk_categories")
         if missing:
@@ -77,7 +78,7 @@ def validate_records(records: Iterable[Mapping[str, Any]], *, min_records: int =
 
         materialized = dict(record)
         materialized["expected_risk_categories"] = final_categories
-        materialized["expected_secondary_labels"] = _non_empty_list(review.get("final_secondary_labels"))
+        materialized["expected_secondary_labels"] = _split_labels(review.get("final_secondary_labels"))
         materialized["annotation_source"] = "human_confirmed"
         materialized["dataset_kind"] = "manual_heldout_public_authorized"
         materialized["annotation_note"] = "Human-confirmed held-out label; see human_review for annotator/date/conflict handling."
@@ -93,12 +94,22 @@ def validate_records(records: Iterable[Mapping[str, Any]], *, min_records: int =
         "input_record_count": sum(status_counter.values()),
         "confirmed_record_count": len(confirmed),
         "min_required_records": max(1, int(min_records)),
+        "confirmed_record_gap": max(0, max(1, int(min_records)) - len(confirmed)),
         "human_review_status_counts": dict(status_counter),
         "annotator_counts": dict(annotator_counter),
         "conflict_handling_counts": dict(conflict_counter),
         "typical_error_counts": dict(typical_error_counter),
         "issue_count": len(issues),
         "issues": issues[:50],
+        "manual_gold_claim": {
+            "can_claim_manual_gold": len(confirmed) >= max(1, int(min_records)),
+            "claim_status": "human_confirmed_gold_ready"
+            if len(confirmed) >= max(1, int(min_records))
+            else "review_package_only",
+            "required_next_step": "Collect analyst-filled review_csv rows with confirmed/corrected status and required human fields."
+            if len(confirmed) < max(1, int(min_records))
+            else "Use output JSONL as manual held-out gold with the report attached.",
+        },
         "claim_boundary": (
             "Only rows with human_review.status in confirmed/corrected and required annotator/date/conflict fields "
             "are emitted as manual held-out gold."

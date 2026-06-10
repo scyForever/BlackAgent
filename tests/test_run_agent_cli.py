@@ -137,3 +137,62 @@ def test_cli_demo_sample_without_query_uses_default_query(monkeypatch, capsys):
 
     assert exit_code == 0
     assert DEFAULT_DEMO_QUERY in captured.out
+
+
+def test_cli_parses_collect_telegram_mode():
+    args = parse_args(
+        [
+            "--collect-telegram",
+            "--telegram-config",
+            "config/telegram_watch.example.yaml",
+            "--telegram-history-limit",
+            "5",
+            "--telegram-username-limit",
+            "2",
+            "--telegram-once",
+        ]
+    )
+
+    assert args.collect_telegram is True
+    assert args.telegram_config == "config/telegram_watch.example.yaml"
+    assert args.telegram_history_limit == 5
+    assert args.telegram_username_limit == 2
+    assert args.telegram_once is True
+
+
+def test_cli_collect_telegram_delegates_to_collector(monkeypatch, capsys):
+    calls = []
+
+    def fake_collect(argv):
+        calls.append(argv)
+        print('{"status":"completed","persisted_count":0}')
+        return 0
+
+    monkeypatch.setattr("blackagent.interfaces.cli.main.run_telegram_collection_cli", fake_collect)
+
+    exit_code = main(
+        [
+            "--collect-telegram",
+            "--telegram-config",
+            "config/telegram_watch.example.yaml",
+            "--telegram-history-limit",
+            "5",
+            "--telegram-username-limit",
+            "2",
+            "--telegram-once",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        [
+            "--config",
+            "config/telegram_watch.example.yaml",
+            "--once",
+            "--username-limit",
+            "2",
+            "--history-limit",
+            "5",
+        ]
+    ]
+    assert "completed" in capsys.readouterr().out

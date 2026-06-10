@@ -37,7 +37,7 @@ python scripts/serve_demo_api.py --host 0.0.0.0 --port 8765
 ## 4. 复跑验收命令
 
 ```powershell
-python scripts\build_heldout_eval.py --limit 60 --per-category 12 --output tests\evaluation\heldout_classification.jsonl
+python scripts\build_heldout_eval.py --limit 200 --per-category 50 --output tests\evaluation\heldout_classification.jsonl
 python scripts\evaluate_pipeline.py --gold tests\evaluation\heldout_classification.jsonl --classification-granularity auto --dataset-kind heldout_public_authorized_seed --profile fast --output data\eval_heldout_report.json
 python scripts\run_cross_source_graph_demo.py --output data\cross_source_graph_demo_report.json
 python scripts\generate_ops_dashboard.py --classification-summary data\classification_extraction_phase_high_risk_summary.json --review-records data\cleaning_phase_high_risk_corpus.jsonl --review-limit 393 --output data\ops_dashboard_report.json

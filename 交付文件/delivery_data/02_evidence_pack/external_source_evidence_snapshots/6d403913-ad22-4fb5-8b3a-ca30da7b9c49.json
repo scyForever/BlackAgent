@@ -1,0 +1,8 @@
+{
+  "trace_id": "6d403913-ad22-4fb5-8b3a-ca30da7b9c49",
+  "source_name": "direct_technical_forum_search",
+  "source_url": "https://blog.csdn.net/weixin_43951166/article/details/120552791",
+  "crawl_time": "2026-06-08T17:04:22.901549Z",
+  "raw_payload_uri": "https://www.bing.com/search?q=site%3Awww.v2ex.com%20%E5%8D%8F%E8%AE%AE%E5%8F%B7",
+  "content_text": "csdn.net https://blog.csdn.net › article › details › ... 2021年9月29日 · 本文详细解读了IP协议号的范围，包括0到255的各个编号及其对应的主要网络协议，如ICMP、TCP、UDP等，并介绍了各种专业协议的应用场景。"
+}

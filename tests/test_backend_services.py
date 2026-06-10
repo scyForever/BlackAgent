@@ -143,6 +143,7 @@ def test_llm_gateway_builds_openai_compatible_urllib_request(monkeypatch):
                 {
                     "id": "chatcmpl-test",
                     "model": "adapter-model",
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 30, "total_tokens": 42},
                     "choices": [
                         {
                             "message": {
@@ -188,6 +189,7 @@ def test_llm_gateway_builds_openai_compatible_urllib_request(monkeypatch):
     assert response.ok is True
     assert response.network_attempted is True
     assert response.parsed_json == {"answer": "ok"}
+    assert gateway.stats()[0]["actual_usage_tokens"] == 42
 
 
 def test_llm_gateway_supports_provider_specific_headers_and_payload(monkeypatch):

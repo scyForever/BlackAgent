@@ -142,13 +142,37 @@ def test_entity_graph_persists_assets_observations_and_query_apis(tmp_path):
         assert obs1.entity_id == obs2.entity_id
         assert len(second.observations_for_entity(obs1.entity_id)) == 2
         assert second.cross_source_entities(min_sources=2)[0].entity_id == obs1.entity_id
-        assert second.entities_seen_since(days=7)
+        assert second.entities_seen_since(days=7, now="2026-06-01T00:00:00+00:00")
         assert second.related_clues(obs1.entity_id)
         neighborhood = second.neighborhood(obs1.entity_id, depth=1)
         assert neighborhood["entities"][0]["entity_id"] == obs1.entity_id
         assert {item["trace_id"] for item in neighborhood["observations"]} == {"run-1", "run-2"}
     finally:
         second.close()
+
+
+def test_entity_graph_orders_seen_times_by_instant_not_iso_string(tmp_path):
+    from storage.entity_graph import EntityGraphStore
+
+    graph = EntityGraphStore(db_path=tmp_path / "timezone-order.db")
+    try:
+        first = graph.add_observation(
+            {"entity_type": "contact", "entity_value": "TG:tz01", "normalized_value": "tg:tz01"},
+            {"trace_id": "tz-a", "source_name": "tg-a", "publish_time": "2026-06-01T00:30:00+08:00"},
+        )
+        second = graph.add_observation(
+            {"entity_type": "contact", "entity_value": "TG:tz01", "normalized_value": "tg:tz01"},
+            {"trace_id": "tz-b", "source_name": "forum-b", "publish_time": "2026-05-31T17:00:00+00:00"},
+        )
+
+        asset = graph.snapshot()["entities"][0]
+
+        assert first.entity_id == second.entity_id
+        assert asset["first_seen"] == "2026-06-01T00:30:00+08:00"
+        assert asset["last_seen"] == "2026-05-31T17:00:00+00:00"
+        assert graph.entities_seen_since(days=0, now="2026-05-31T16:45:00+00:00")
+    finally:
+        graph.close()
 
 
 def test_entity_graph_close_releases_sqlite_file_for_windows_cleanup(tmp_path):

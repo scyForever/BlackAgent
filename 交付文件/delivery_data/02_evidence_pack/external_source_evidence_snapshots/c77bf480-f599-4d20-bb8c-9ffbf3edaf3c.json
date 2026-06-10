@@ -1,0 +1,8 @@
+{
+  "trace_id": "c77bf480-f599-4d20-bb8c-9ffbf3edaf3c",
+  "source_name": "tech_forum_blackgray_search",
+  "source_url": "https://www.v2ex.com/t/958855",
+  "crawl_time": "2026-05-26T02:31:13.089534Z",
+  "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20userbot",
+  "content_text": "大神多，一百元茶钱求解决 tg 邀请链接的问题 - V2EX Image 2www.v2ex.com/t/958855 没实际做过但作为 telegram 用户，说下我的看法： 1. 用 **userbot** ，这个肯定能实现逻辑，但是未必没有限制 2. 已知私聊 bot 肯定能实现邀请码机制，参考那些社工库 bot ；已知公共群可以接入防 spambot ；这两个结合起来应该就能实现你需要的逻辑"
+}

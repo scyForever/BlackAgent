@@ -240,20 +240,28 @@ class PhaseTwoThreeEngine:
                     break
         return ordered
 
-    def runtime_slang_terms(self, *, include_candidates: bool = False) -> tuple[str, ...]:
-        return tuple(self.lifecycle_manager.runtime_terms_mapping(include_candidates=include_candidates).keys())
+    def runtime_slang_terms(self, *, include_candidates: bool = False, include_gray: bool = False) -> tuple[str, ...]:
+        return tuple(self.lifecycle_manager.runtime_terms_mapping(include_candidates=include_candidates, include_gray=include_gray).keys())
 
-    def runtime_slang_mapping(self, *, include_candidates: bool = False) -> dict[str, str]:
-        return self.lifecycle_manager.runtime_terms_mapping(include_candidates=include_candidates)
+    def runtime_slang_mapping(self, *, include_candidates: bool = False, include_gray: bool = False) -> dict[str, str]:
+        return self.lifecycle_manager.runtime_terms_mapping(include_candidates=include_candidates, include_gray=include_gray)
 
     def runtime_prompt_context(
         self,
         *,
         label: str | None = None,
         include_candidates: bool = False,
+        include_gray: bool = False,
     ) -> dict[str, Any]:
-        prompt_context = self.lifecycle_manager.prompt_context(label=label, include_candidates=include_candidates)
-        prompt_context["slang_terms_mapping"] = self.runtime_slang_mapping(include_candidates=include_candidates)
+        prompt_context = self.lifecycle_manager.prompt_context(
+            label=label,
+            include_candidates=include_candidates,
+            include_gray=include_gray,
+        )
+        prompt_context["slang_terms_mapping"] = self.runtime_slang_mapping(
+            include_candidates=include_candidates,
+            include_gray=include_gray,
+        )
         prompt_context["slang_term_values"] = list(prompt_context.get("slang_terms_mapping", {}).keys())
         return prompt_context
 
@@ -282,7 +290,7 @@ class PhaseTwoThreeEngine:
                 self.graph_repo.add_edge(playbook_id, f"clue:{clue_id}", "COMPOSED_OF")
 
     def _refresh_runtime_slang_dictionary(self) -> None:
-        mapping = self.lifecycle_manager.runtime_terms_mapping(include_candidates=False)
+        mapping = self.lifecycle_manager.runtime_terms_mapping(include_candidates=False, include_gray=False)
         if not mapping:
             if isinstance(getattr(self.entity_extractor, "slang_dictionary", None), SlangDictionary):
                 return

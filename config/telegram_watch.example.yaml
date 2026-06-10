@@ -6,6 +6,12 @@ telegram:
   db: data/blackagent_telegram.db
   legal_basis: AUTHORIZED_PARTNER
   source_name_prefix: telegram_watch
+  proxy:
+    enabled: true
+    type: socks5
+    host: 127.0.0.1
+    port: 7890
+    rdns: true
   watch:
     keywords:
       - 接码
@@ -20,11 +26,30 @@ telegram:
       - 白号
       - 接单
     usernames:
-      - pythonzh
+      - haoshangmashang
+      - haoshango00
+      - tgzs88
+      - huzige1916
+      - quannenghao
+      - TGchengpin
+      - chaojiyun88
+      - jiema010101
+      - inoprjiema
+      - jiemaD2
+      - sifangsms
+      - thesupersms
+      - tiger_sms_china
+      - paopaopayment
+      - xieyihao89
+      - dongdongtgyinliu
+      - heimayunkong1
+      - pidanruanjian
+      - laren_a2
+      - tgheji66
     invite_links: []
   collection:
-    search_limit_per_keyword: 20
-    history_limit_per_chat: 200
+    search_limit_per_keyword: 8
+    history_limit_per_chat: 50
     poll_seconds: 15
     download_media: false
     include_themes:

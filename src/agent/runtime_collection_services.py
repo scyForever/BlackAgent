@@ -8,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterable, Mapping
 
 from src.config_loader import InvestigationConfig, InvestigationPolicyOverride
+from src.collector.source_quota import apply_source_min_quotas
+from src.collector.source_metadata import source_class_for_record
 from src.domain import RunPolicyContext
 from src.scheduling.layered_collection import (
     group_sources_by_collection_layer,
@@ -49,6 +51,30 @@ def _normalize_source_pref(value: Any) -> str:
     if text in {"threat_intel", "threat-intel", "feed", "intel", "情报源"}:
         return "threat_intel"
     return text
+
+
+def _source_diversity_class(source: Mapping[str, Any]) -> str:
+    return source_class_for_record(source)
+
+
+def _source_identity(source: Mapping[str, Any]) -> str:
+    return "|".join(
+        str(source.get(field) or "").strip().lower()
+        for field in ("source_name", "source_url", "search_query")
+    )
+
+
+def _available_class_count(scored_sources: Iterable[tuple[int, Mapping[str, Any]]]) -> int:
+    return len({_source_diversity_class(source) for _score, source in scored_sources})
+
+
+DEFAULT_INVESTIGATION_SOURCE_MIN_QUOTAS: dict[str, int] = {
+    "vertical_or_technical": 1,
+    "public_account_or_article": 1,
+    "secondhand_market": 1,
+    "crowdsourcing_platform": 1,
+}
+
 
 class InvestigationCollectionMixin:
     """Extracted helper group; state is supplied by InvestigationRuntime."""
@@ -105,7 +131,10 @@ class InvestigationCollectionMixin:
             if max_sources is None or max_sources >= len(fallback):
                 selected = fallback
             else:
-                chosen = [dict(source) for score, source in scored if score > 0][:max_sources]
+                chosen = self._diverse_source_slice(
+                    [(score, source) for score, source in scored if score > 0],
+                    max_sources=max_sources,
+                )
                 if chosen:
                     selected = chosen
                 else:
@@ -116,6 +145,54 @@ class InvestigationCollectionMixin:
                 preferred_source_types=preferred_types,
                 selected_source_names=selected_names,
             )
+
+
+    @staticmethod
+    def _diverse_source_slice(scored_sources: list[tuple[int, Mapping[str, Any]]], *, max_sources: int | None) -> list[dict[str, Any]]:
+            if max_sources is None or max_sources <= 0:
+                return [dict(source) for _score, source in scored_sources]
+            limit = int(max_sources)
+            quota_selection = apply_source_min_quotas(
+                (source for _score, source in scored_sources),
+                max_sources=limit,
+                minimum_quotas=DEFAULT_INVESTIGATION_SOURCE_MIN_QUOTAS,
+            )
+            if quota_selection.selected:
+                return quota_selection.selected
+            selected: list[dict[str, Any]] = []
+            selected_keys: set[str] = set()
+            selected_classes: set[str] = set()
+    
+            def add(source: Mapping[str, Any]) -> None:
+                key = _source_identity(source)
+                if key in selected_keys or len(selected) >= limit:
+                    return
+                selected.append(dict(source))
+                selected_keys.add(key)
+                selected_classes.add(_source_diversity_class(source))
+    
+            # First pass: keep the score order, but reserve slots for distinct
+            # source classes so a Telegram-heavy catalog does not crowd out
+            # forum/vertical evidence when the budget allows more than one source.
+            for _score, source in scored_sources:
+                source_class = _source_diversity_class(source)
+                if source_class in selected_classes and len(selected_classes) < _available_class_count(scored_sources):
+                    continue
+                add(source)
+                if len(selected) >= limit:
+                    return selected
+    
+            # Second pass: fill the remaining budget by the original score order.
+            for _score, source in scored_sources:
+                add(source)
+                if len(selected) >= limit:
+                    break
+            return selected
+
+
+    @staticmethod
+    def _source_diversity_class(source: Mapping[str, Any]) -> str:
+            return _source_diversity_class(source)
 
 
     @staticmethod

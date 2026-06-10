@@ -1,0 +1,57 @@
+sources:
+  - source_name: acceptance_telegramnav_public_directory
+    source_type: IM
+    platform: telegram_directory
+    source_url: https://telegramnav.github.io/?q=%E6%8E%A5%E7%A0%81%20%E7%BE%A4%E6%8E%A7
+    query_url_template: https://telegramnav.github.io/?q={query}
+    query_seed_terms: ["telegram", "公开群组"]
+    query_global_terms: ["接码 群控", "账号交易", "群控脚本"]
+    query_themes: [接码, 账号交易, 工具交易, 诈骗引流, 众包任务]
+    query_term_limit: 2
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: txt
+    allowed_domain: telegramnav.github.io
+    include_keywords: [接码, 群控, 脚本, 账号, 卖号, 号商, 协议号, TG, Telegram, 群发, 引流, dm]
+    include_themes: [接码, 账号交易, 工具交易, 诈骗引流, 众包任务]
+    min_keyword_hits: 1
+    rate_limit_per_minute: 6
+
+  - source_name: acceptance_tieba_public_search
+    source_type: Forum
+    platform: tieba
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E6%8E%A5%E7%A0%81%20%E7%BE%A4%E6%8E%A7
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:tieba.baidu.com/p"]
+    query_global_terms: ["接码 群控", "卖号 账号交易", "拉群 引流"]
+    query_themes: [接码, 账号交易, 工具交易, 诈骗引流, 众包任务]
+    query_term_limit: 2
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [接码, 群控, 脚本, 账号, 卖号, 收号, 拉群, 引流, TG, Telegram, 联系, 客服]
+    include_themes: [接码, 账号交易, 工具交易, 诈骗引流, 众包任务]
+    exclude_keywords: [警方通报, 反诈, 安全通告, 曝光, 辟谣, 普法, 教程, 指南, 评测]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+    rate_limit_per_minute: 3
+
+  - source_name: acceptance_crowdsourcing_public_search
+    source_type: Vertical
+    platform: crowdsourcing
+    source_url: http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.freelancer.com%2Fjobs%20telegram%20automation%20scraper
+    query_url_template: http://r.jina.ai/http://html.duckduckgo.com/html/?q={query}
+    query_seed_terms: ["site:www.freelancer.com/jobs"]
+    query_global_terms: ["telegram automation", "bulk account scraper", "telegram marketing bot"]
+    query_themes: [众包任务, 工具交易, 账号交易]
+    query_term_limit: 2
+    legal_basis: PUBLIC_COMPLIANT_DATA
+    feed_format: html
+    allowed_domain: r.jina.ai
+    include_keywords: [telegram, automation, scraper, bulk, account, marketing, bot, userbot, telethon, pyrogram]
+    include_themes: [众包任务, 工具交易, 账号交易]
+    exclude_keywords: [anti-spam, moderation, security research, tutorial, open-source, guideline]
+    min_keyword_hits: 1
+    robots_allowed: true
+    terms_allow_security_research: true
+    rate_limit_per_minute: 3

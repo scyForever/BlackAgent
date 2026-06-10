@@ -9,6 +9,7 @@ from typing import Any, Callable, Iterable, Mapping
 from src.agent.budget_controller import BudgetController, RuntimeBudget
 from src.domain import RunPolicyContext
 from src.enhancement.llm_clue_refiner import LLMClueRefiner
+from src.enhancement.clue_quality import build_evidence_reviewability
 from src.agent.clue_ranker import ClueRanker
 from src.agent.model_router import ModelRouter
 from src.intelligence.entity_graph_retrieval import EntityGraphRetrievalService
@@ -53,6 +54,7 @@ class ClueMergeService:
                 existing[field] = sorted(dict.fromkeys(values))
             existing["quality_score"] = max(float(existing.get("quality_score") or 0.0), float(item.get("quality_score") or 0.0))
             existing["confidence"] = max(float(existing.get("confidence") or 0.0), float(item.get("confidence") or 0.0))
+            existing["evidence_reviewability"] = build_evidence_reviewability(existing)
         return list(merged.values())
 
 
@@ -552,6 +554,7 @@ def _merge_preflight_clues(
         existing["confidence"] = max(float(existing.get("confidence") or 0.0), float(clue.get("confidence") or 0.0))
         if clue.get("risk_profile") and not existing.get("risk_profile"):
             existing["risk_profile"] = clue["risk_profile"]
+        existing["evidence_reviewability"] = build_evidence_reviewability(existing)
     output = list(merged.values())
     output.sort(
         key=lambda item: (

@@ -1,0 +1,9 @@
+{
+  "trace_id": "b1c61904-10fd-4d71-8714-97e893ac51ca",
+  "source_name": "direct_technical_forum_search",
+  "source_url": "https://baike.baidu.com/item/%E8%84%9A%E6%9C%AC/1697005",
+  "crawl_time": "2026-06-08T17:04:18.875663Z",
+  "raw_payload_uri": "https://www.bing.com/search?q=site%3Awww.v2ex.com%20%E8%84%9A%E6%9C%AC",
+  "original_capture_snapshot_uri": "",
+  "content_text": "baidu.com https://baike.baidu.com › item › 脚本 作为一种动态编程语言，脚本语言具备跨平台特性，常见的有JavaScript、Python、Shell等，广泛应用于软件控制、自动化任务及测试工具开发。 在应用程序中，脚本可通过菜单调用或路径安装执行，支 …"
+}

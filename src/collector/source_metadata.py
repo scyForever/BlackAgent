@@ -29,8 +29,54 @@ SOURCE_ACCESS_TYPES = {
 
 SOURCE_CLASS_ALIASES: dict[str, set[str]] = {
     "im_or_group": {"im", "group", "telegram", "tg"},
-    "social_or_forum": {"social", "forum", "news", "blog", "tieba", "short_video", "x", "twitter"},
+    "social_or_forum": {
+        "social",
+        "forum",
+        "news",
+        "blog",
+        "tieba",
+        "short_video",
+        "x",
+        "twitter",
+        "article",
+        "public_account",
+        "wechat_public",
+        "wechat_public_account",
+        "wechat",
+        "rss",
+        "html_article",
+    },
     "vertical_or_technical": {"vertical", "threat_intel", "technical", "techforum", "technical_community"},
+}
+
+ARTICLE_SOURCE_MARKERS = {
+    "article",
+    "public_account",
+    "wechat_public",
+    "wechat_public_account",
+    "wechat",
+    "rss",
+    "html_article",
+}
+
+SECONDHAND_SOURCE_MARKERS = {
+    "secondhand",
+    "second_hand",
+    "used_goods",
+    "marketplace",
+    "二手",
+    "闲鱼",
+    "交易市场",
+}
+
+CROWDSOURCING_SOURCE_MARKERS = {
+    "crowdsourcing",
+    "crowd",
+    "task_platform",
+    "task_market",
+    "众包",
+    "任务平台",
+    "接单平台",
 }
 
 TOOL_MARKERS = {
@@ -181,17 +227,24 @@ def normalize_source_access_type(
 def source_class_for_record(record: Mapping[str, Any]) -> str:
     """Map a row/source definition to the collection quota class."""
 
+    existing = str(record.get("source_class") or "").strip().lower()
+    if existing in SOURCE_CLASS_ALIASES or existing == "other_authorized":
+        return existing
     source_type = str(record.get("source_type") or record.get("type") or "").strip().lower()
     platform = str(record.get("platform") or "").strip().lower()
     source_name = str(record.get("source_name") or record.get("name") or "").strip().lower()
     if platform in {"x", "twitter"} or source_name.startswith("x_") or "x_blackgray" in source_name:
         return "social_or_forum"
-    if platform in {"telegram", "tg"} or "telegram" in source_name:
+    if is_article_source_record(record):
+        return "social_or_forum"
+    if platform in {"telegram", "tg"}:
         return "im_or_group"
     markers = {source_type, platform}
     for source_class, aliases in SOURCE_CLASS_ALIASES.items():
         if markers & aliases:
             return source_class
+    if "telegram" in source_name:
+        return "im_or_group"
     if "tg_" in source_name or source_name.startswith("tg"):
         return "im_or_group"
     if any(marker in source_name for marker in ("forum", "tieba", "x_blackgray", "social")):
@@ -199,6 +252,55 @@ def source_class_for_record(record: Mapping[str, Any]) -> str:
     if any(marker in source_name for marker in ("tech", "vertical", "market", "threat")):
         return "vertical_or_technical"
     return "other_authorized"
+
+
+def is_article_source_record(record: Mapping[str, Any]) -> bool:
+    """Return True for stable public article/public-account intake sources."""
+
+    source_type = str(record.get("source_type") or record.get("type") or "").strip().lower()
+    platform = str(record.get("platform") or "").strip().lower()
+    return bool({source_type, platform} & ARTICLE_SOURCE_MARKERS)
+
+
+def source_quota_groups_for_record(record: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return granular source quota groups while preserving broad source classes."""
+
+    explicit = record.get("source_quota_groups") or record.get("quota_groups") or record.get("source_quota_group")
+    groups: list[str] = []
+    if isinstance(explicit, str):
+        groups.extend(item.strip() for item in explicit.split(","))
+    elif explicit:
+        try:
+            groups.extend(str(item).strip() for item in explicit)
+        except TypeError:
+            groups.append(str(explicit).strip())
+
+    existing_class = str(record.get("source_class") or "").strip().lower()
+    if existing_class in {
+        "public_account_or_article",
+        "public_account_article",
+        "secondhand_market",
+        "crowdsourcing_platform",
+    }:
+        groups.append(existing_class)
+
+    text = " ".join(
+        str(record.get(field) or "").strip().lower()
+        for field in ("source_type", "type", "platform", "source_name", "name", "source_url", "url")
+    )
+    has_granular_non_vertical = any(marker in text for marker in SECONDHAND_SOURCE_MARKERS | CROWDSOURCING_SOURCE_MARKERS)
+    if source_class_for_record(record) == "vertical_or_technical" and not has_granular_non_vertical:
+        groups.append("vertical_or_technical")
+    if source_class_for_record(record) == "social_or_forum":
+        groups.append("social_or_forum")
+    if is_article_source_record(record):
+        groups.append("public_account_or_article")
+        groups.append("public_account_article")
+    if any(marker in text for marker in SECONDHAND_SOURCE_MARKERS):
+        groups.append("secondhand_market")
+    if any(marker in text for marker in CROWDSOURCING_SOURCE_MARKERS):
+        groups.append("crowdsourcing_platform")
+    return tuple(dict.fromkeys(group for group in groups if group))
 
 
 def classify_collection_failure(exc_or_text: Any) -> str:
@@ -233,10 +335,15 @@ def _duplicate_probability(record: Mapping[str, Any]) -> float:
 
 
 __all__ = [
+    "ARTICLE_SOURCE_MARKERS",
     "SOURCE_ACCESS_TYPES",
+    "CROWDSOURCING_SOURCE_MARKERS",
+    "SECONDHAND_SOURCE_MARKERS",
     "build_collection_metadata",
     "build_collection_quality_profile",
     "classify_collection_failure",
+    "is_article_source_record",
     "normalize_source_access_type",
+    "source_quota_groups_for_record",
     "source_class_for_record",
 ]

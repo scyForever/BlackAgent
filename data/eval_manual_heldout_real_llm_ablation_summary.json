@@ -1,0 +1,78 @@
+{
+  "dataset": {
+    "dataset_fingerprint": "f373310647e0e06e",
+    "same_dataset_fingerprint": true,
+    "input_counts": {
+      "classification_records": 193,
+      "entity_records": 193,
+      "clue_records": 24,
+      "hard_negative_records": 0
+    }
+  },
+  "rows": [
+    {
+      "scenario": "fast_off",
+      "provider": "off",
+      "calls": 0,
+      "actual_tokens": null,
+      "estimated_tokens": 0,
+      "p95_ms": 2598.02,
+      "hier_f1": 0.7929,
+      "entity_f1": 0.9484,
+      "clue_f1": 0.75,
+      "clue_recall": 0.6,
+      "clue_f1_delta_vs_fast": null,
+      "clue_recall_delta_vs_fast": null,
+      "tokens_per_f1_gain": null,
+      "latency_ms_per_f1_gain": null
+    },
+    {
+      "scenario": "balanced_mock",
+      "provider": "mock",
+      "calls": 6,
+      "actual_tokens": null,
+      "estimated_tokens": 9699,
+      "p95_ms": 2610.03,
+      "hier_f1": 0.7929,
+      "entity_f1": 0.9484,
+      "clue_f1": 1.0,
+      "clue_recall": 1.0,
+      "clue_f1_delta_vs_fast": 0.25,
+      "clue_recall_delta_vs_fast": 0.4,
+      "tokens_per_f1_gain": 38796.0,
+      "latency_ms_per_f1_gain": 48.04
+    },
+    {
+      "scenario": "balanced_real_or_configured_fallback",
+      "provider": "real",
+      "calls": 3,
+      "actual_tokens": 6109,
+      "estimated_tokens": 5061,
+      "p95_ms": 36491.38,
+      "hier_f1": 0.7929,
+      "entity_f1": 0.9484,
+      "clue_f1": 1.0,
+      "clue_recall": 1.0,
+      "clue_f1_delta_vs_fast": 0.25,
+      "clue_recall_delta_vs_fast": 0.4,
+      "tokens_per_f1_gain": 24436.0,
+      "latency_ms_per_f1_gain": 135573.44
+    },
+    {
+      "scenario": "high_recall_real_or_configured_fallback",
+      "provider": "real",
+      "calls": 16,
+      "actual_tokens": 30989,
+      "estimated_tokens": 27098,
+      "p95_ms": 189326.47,
+      "hier_f1": 0.7929,
+      "entity_f1": 0.9484,
+      "clue_f1": 1.0,
+      "clue_recall": 1.0,
+      "clue_f1_delta_vs_fast": 0.25,
+      "clue_recall_delta_vs_fast": 0.4,
+      "tokens_per_f1_gain": 123956.0,
+      "latency_ms_per_f1_gain": 746913.8
+    }
+  ]
+}

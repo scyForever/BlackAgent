@@ -174,7 +174,7 @@ class IntelligencePipeline:
         enriched = [_payload_from_item(item) for item in enriched_items]
         classifications = [_final_classification_from_item(item) for item in enriched_items if _classification_available(item)]
         entities = [_legacy_entity_payload(entity) for item in enriched_items for entity in item.entities]
-        stage_context = {**context, "classifications": classifications, "entities": entities}
+        stage_context = {**context, "classifications": classifications, "entities": entities, "records": enriched}
         correlated = self.correlate_stage.run_batch(enriched_items, routed=routed, context=stage_context)
         promoted = self.clue_promotion_stage.run_batch(correlated, context=stage_context)
         scored = self.score_stage.run_batch(promoted, context=stage_context)
@@ -496,6 +496,9 @@ def _candidate_clue_from_payload(payload: Mapping[str, Any]) -> CandidateClue:
         entity_values=_string_list(payload.get("entity_values")),
         confidence=_bounded_float(payload.get("confidence"), 0.0),
         weak_reason=str(payload.get("weak_reason") or payload.get("threshold_reason") or ""),
+        evidence_reviewability=dict(payload.get("evidence_reviewability") or {})
+        if isinstance(payload.get("evidence_reviewability"), Mapping)
+        else {},
     )
 
 
@@ -542,6 +545,7 @@ def _risk_classification_from_payload(payload: Mapping[str, Any]) -> dict[str, A
         conflict_status=_optional_str(final.get("conflict_status")),
         evidence=[str(value) for value in (final.get("evidence") or [])],
         review_required=bool(final.get("review_required")),
+        review_bucket=str(final.get("review_bucket") or "human_review_required"),
         classifier_version=str(final.get("classifier_version") or final.get("decision_version") or "unknown"),
     ).model_dump()
 

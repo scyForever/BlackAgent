@@ -12,6 +12,7 @@ from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
 
+
 @dataclass(frozen=True)
 class EntityAsset:
     entity_id: str
@@ -123,7 +124,21 @@ class EntityGraphStore:
         canonical_hash = _hash(f"{entity_type}:{value}")
         entity_id = f"entity:{entity_type}:{canonical_hash[:16]}"
         existing = self._entities.get(entity_id)
-        aliases = sorted({*(existing.aliases if existing else []), str(entity.get("entity_value") or entity.get("raw_value") or value)})
+        aliases = sorted(
+            {
+                *(existing.aliases if existing else []),
+                *[
+                    str(item)
+                    for item in (
+                        entity.get("normalized_value"),
+                        entity.get("entity_value"),
+                        entity.get("raw_value"),
+                        value,
+                    )
+                    if str(item or "").strip()
+                ],
+            }
+        )
         timestamp = seen_at or _utc_now()
         asset = EntityAsset(
             entity_id=entity_id,
@@ -132,8 +147,8 @@ class EntityGraphStore:
             masked_display_value=str(entity.get("masked_value") or entity.get("normalized_value") or entity.get("entity_value") or value),
             aliases=aliases,
             sensitivity_level=str(entity.get("sensitivity_level") or existing.sensitivity_level if existing else entity.get("sensitivity_level") or "normal"),
-            first_seen=min([item for item in [existing.first_seen if existing else None, timestamp] if item]) if existing else timestamp,
-            last_seen=max([item for item in [existing.last_seen if existing else None, timestamp] if item]) if existing else timestamp,
+            first_seen=_earliest_time_string(existing.first_seen if existing else None, timestamp) if existing else timestamp,
+            last_seen=_latest_time_string(existing.last_seen if existing else None, timestamp) if existing else timestamp,
         )
         self._entities[entity_id] = asset
         self._persist_entity(asset)
@@ -234,8 +249,9 @@ class EntityGraphStore:
             ],
         }
 
-    def entities_seen_since(self, days: int = 7) -> list[EntityAsset]:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=max(0, int(days or 0)))
+    def entities_seen_since(self, days: int = 7, *, now: datetime | str | None = None) -> list[EntityAsset]:
+        current_time = _coerce_time(now) or datetime.now(timezone.utc)
+        cutoff = current_time - timedelta(days=max(0, int(days or 0)))
         output: list[EntityAsset] = []
         for asset in self._entities.values():
             seen_at = _parse_time(asset.last_seen or asset.first_seen)
@@ -297,6 +313,8 @@ class EntityGraphStore:
     def generate_clues(self) -> list[dict[str, Any]]:
         """Generate graph-view clues from persisted/cross-source entity facts."""
 
+        from src.enhancement.clue_quality import build_evidence_reviewability
+
         clues: list[dict[str, Any]] = []
         for asset in self.cross_source_entities():
             observations = self.observations_for_entity(asset.entity_id)
@@ -307,33 +325,53 @@ class EntityGraphStore:
             profile = self.risk_profile(asset.entity_id)
             related_ids = sorted(_related_entity_ids(asset.entity_id, self._relations.values()))
             related_types = {self._entities[item].entity_type for item in related_ids if item in self._entities}
+            entity_values = _ordered_strings(
+                [
+                    _asset_display_value(asset),
+                    *[
+                        _asset_display_value(self._entities[item])
+                        for item in related_ids
+                        if item in self._entities
+                    ],
+                ]
+            )
             risk_category = _dominant_risk_category(profile.risk_categories)
             clue_type = _graph_clue_type(asset.entity_type, related_types, risk_category)
-            clues.append(
-                {
-                    "clue_id": f"graph_clue_{uuid4().hex[:12]}",
-                    "clue_type": clue_type,
-                    "key": asset.entity_id,
-                    "risk_category": risk_category,
-                    "risk_score": profile.risk_score,
-                    "key_entity_id": asset.entity_id,
-                    "related_entity_ids": related_ids,
-                    "evidence_trace_ids": traces,
-                    "evidence_observation_ids": [item.observation_id for item in observations],
-                    "source_names": sources,
-                    "entity_values": [asset.masked_display_value],
-                    "confidence": round(min(0.96, 0.58 + 0.07 * len(traces) + 0.04 * len(sources)), 4),
-                    "threshold_reason": "entity_graph_cross_source_observations_with_risk_profile",
-                    "reason": _graph_reason(asset.entity_type, related_types, risk_category),
-                    "entity_asset_id": asset.entity_id,
-                    "entity_observation_refs": [item.observation_id for item in observations],
-                    "entity_graph_backend": "entity_graph_store",
-                    "first_seen": profile.first_seen,
-                    "last_seen": profile.last_seen,
-                    "source_count": profile.source_count,
-                    "risk_profile": profile.model_dump(),
-                }
+            clue = {
+                "clue_id": f"graph_clue_{uuid4().hex[:12]}",
+                "clue_type": clue_type,
+                "key": _asset_display_value(asset),
+                "risk_category": risk_category,
+                "risk_score": profile.risk_score,
+                "key_entity_id": asset.entity_id,
+                "related_entity_ids": related_ids,
+                "evidence_trace_ids": traces,
+                "evidence_observation_ids": [item.observation_id for item in observations],
+                "source_names": sources,
+                "entity_values": entity_values,
+                "confidence": round(min(0.96, 0.58 + 0.07 * len(traces) + 0.04 * len(sources)), 4),
+                "threshold_reason": "entity_graph_cross_source_observations_with_risk_profile",
+                "reason": _graph_reason(asset.entity_type, related_types, risk_category),
+                "entity_asset_id": asset.entity_id,
+                "entity_observation_refs": [item.observation_id for item in observations],
+                "entity_graph_backend": "entity_graph_store",
+                "first_seen": profile.first_seen,
+                "last_seen": profile.last_seen,
+                "source_count": profile.source_count,
+                "risk_profile": profile.model_dump(),
+            }
+            clue["evidence_reviewability"] = build_evidence_reviewability(
+                clue,
+                entities=[
+                    {
+                        "source_trace_id": observation.trace_id,
+                        "entity_type": asset.entity_type,
+                        "normalized_value": _asset_display_value(asset),
+                    }
+                    for observation in observations
+                ],
             )
+            clues.append(clue)
         return clues
 
     def _init_db(self) -> None:
@@ -550,6 +588,8 @@ def _related_entity_ids(entity_id: str, relations: Iterable[EntityRelation]) -> 
 def _graph_clue_type(entity_type: str, related_types: set[str], risk_category: str) -> str:
     if risk_category == "工具交易" and entity_type in {"contact", "account"} and related_types.intersection({"tool_name", "domain", "url", "price"}):
         return "entity_graph_tool_trade_cluster"
+    if entity_type in {"contact", "account"} and related_types.intersection({"tool_name", "domain", "url", "settlement"}):
+        return "entity_graph_account_tool_overlap"
     if entity_type in {"contact", "account", "invite_code"}:
         return "graph_shared_contact_cross_source"
     return "graph_shared_entity_cross_source"
@@ -558,11 +598,46 @@ def _graph_clue_type(entity_type: str, related_types: set[str], risk_category: s
 def _graph_reason(entity_type: str, related_types: set[str], risk_category: str) -> str:
     if risk_category == "工具交易" and entity_type in {"contact", "account"} and related_types.intersection({"tool_name", "domain", "url", "price"}):
         return "同一联系方式关联工具、域名或价格实体并跨来源重复出现"
+    if entity_type in {"contact", "account"} and related_types.intersection({"tool_name", "domain", "url", "settlement"}):
+        return "同一账号或联系方式与工具、域名或结算实体形成跨来源重叠"
     return "同一实体跨来源重复出现并形成可追溯观察链"
+
+
+def _asset_display_value(asset: EntityAsset) -> str:
+    for value in asset.aliases:
+        text = str(value or "").strip()
+        if ":" in text or text.startswith(("http://", "https://")):
+            return text
+    for value in asset.aliases:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return asset.masked_display_value
+
+
+def _ordered_strings(values: Iterable[Any]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        output.append(text)
+    return output
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _coerce_time(value: datetime | str | None) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return _parse_time(value)
 
 
 def _parse_time(value: str | None) -> datetime | None:
@@ -573,6 +648,29 @@ def _parse_time(value: str | None) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _earliest_time_string(*values: str | None) -> str | None:
+    return _pick_time_string(values, earliest=True)
+
+
+def _latest_time_string(*values: str | None) -> str | None:
+    return _pick_time_string(values, earliest=False)
+
+
+def _pick_time_string(values: Iterable[str | None], *, earliest: bool) -> str | None:
+    candidates = [value for value in values if value]
+    if not candidates:
+        return None
+
+    def sort_key(value: str) -> tuple[datetime, str]:
+        parsed = _parse_time(value)
+        if parsed is None:
+            fallback = datetime.min.replace(tzinfo=timezone.utc) if earliest else datetime.max.replace(tzinfo=timezone.utc)
+            return fallback, value
+        return parsed.astimezone(timezone.utc), value
+
+    return min(candidates, key=sort_key) if earliest else max(candidates, key=sort_key)
 
 
 __all__ = [

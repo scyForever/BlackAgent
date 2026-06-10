@@ -3,7 +3,7 @@ entity_patterns:
     scope: basic
     entity_type: url
     patterns:
-      - "(?:https?://[^\\s\\\"'<>，。；;]+|(?:[a-z0-9-]+\\.)+(?:com|cn|net|org|top|xyz|io|cc|info|me)(?:/[^\\s\\\"'<>，。；;]*)?)"
+      - "(?:https?://[^\\s\\\"'<>，。；;,]+|(?:[a-z0-9-]+\\.)+(?:com|cn|net|org|top|xyz|io|cc|info|me|example)(?:/[^\\s\\\"'<>，。；;,]*)?)"
   email:
     scope: basic
     entity_type: contact
@@ -34,6 +34,7 @@ entity_patterns:
     entity_type: account
     patterns:
       - "(?:账号|账户|UID|用户ID|群号|ID)[:：\\s#]*([A-Za-z0-9_-]{4,32})"
+      - "(?:账号批发节点|账号池标识|接码项目贴记录|账号池节点)\\s*([A-Za-z][A-Za-z0-9_-]{3,32})"
   tool_terms:
     scope: basic
     entity_type: tool_name
@@ -53,19 +54,30 @@ entity_patterns:
     entity_type: url
     method: hidden_obfuscated_url
     patterns:
-      - "(?:hxxps?|https?)[:：]//[^\\s，。；;]+|[a-z0-9-]+\\s*\\[\\.\\]\\s*(?:com|cn|net|top|xyz)(?:/[^\\s，。；;]*)?"
+      - "(?:hxxps?|https?)[:：]//[^\\s，。；;,]+|[a-z0-9-]+\\s*\\[\\.\\]\\s*(?:com|cn|net|top|xyz|example)(?:/[^\\s，。；;,]*)?"
   invite_code:
     scope: advanced
     patterns:
       - "(?:邀请码|暗号|口令)[:：\\s]*(?:code[:：\\s]*)?([A-Za-z0-9_-]{3,24})"
+      - "(?:批次码|批发码)\\s*([A-Za-z0-9_-]{3,24})"
       - "\\bcode[:：\\s]*([A-Za-z0-9_-]{3,24})"
-    entity_type: account
+    entity_type: invite_code
     method: hidden_invite_code
   settlement:
     scope: advanced
-    pattern: "(跑分|代付|虚拟币|USDT|银行卡|支付宝|微信收款)"
+    patterns:
+      - "(跑分|代付|虚拟币|USDT|银行卡|支付宝|微信收款)"
+      - "(?:结算标签|结算标识)\\s*([A-Za-z][A-Za-z0-9_-]{3,32})"
     entity_type: settlement
     method: hidden_settlement_term
+  manual_tool_identifier:
+    scope: advanced
+    entity_type: tool_name
+    method: hidden_tool_identifier
+    patterns:
+      - "(?:出现|工具)\\s*(tool-[A-Za-z0-9_-]{3,32})"
+      - "(loginbot-[A-Za-z0-9_-]{2,32})"
+      - "(?:群发器|批量登录工具)\\s*([A-Za-z][A-Za-z0-9_-]{3,32})"
   telegram:
     scope: advanced
     entity_type: contact

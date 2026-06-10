@@ -7,6 +7,7 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from src.backend import LLMGateway
+from src.enhancement.clue_quality import build_evidence_reviewability
 from src.safety import OutputValidator, PIIMasker, PromptGuard
 from src.safety.prompt_sanitizer import sanitize_clue_for_llm, stable_clue_card_id, stable_clue_refine_cache_key, stable_json_dumps
 
@@ -92,6 +93,7 @@ class LLMClueRefiner:
         enriched = dict(clue)
         enriched["refinement"] = refined.model_dump()
         enriched["confidence"] = final_confidence
+        enriched.setdefault("evidence_reviewability", build_evidence_reviewability(enriched))
         trace = {
             "stage": "clue_refine",
             "clue_id": refined.clue_id,
@@ -211,6 +213,7 @@ class LLMClueRefiner:
             enriched = dict(clue)
             enriched["refinement"] = refined.model_dump()
             enriched["confidence"] = final_confidence
+            enriched.setdefault("evidence_reviewability", build_evidence_reviewability(enriched))
             enriched_items.append(enriched)
             traces.append(
                 {

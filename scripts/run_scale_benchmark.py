@@ -18,9 +18,19 @@ from src.agent.model_router import ModelRouter
 from src.enhancement.text_intelligence import AdvancedEntityExtractor, FineGrainedIntentClassifier
 
 
+DEFAULT_DEFENSE_SCALES = (1_000, 10_000, 100_000)
+ESTIMATED_LLM_COST_PER_1K_TOKENS_USD = 0.00015
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Benchmark BlackAgent core pipeline at 10k/100k scale.")
-    parser.add_argument("--sample-sizes", nargs="+", type=int, default=[10_000, 100_000], help="Record counts to benchmark.")
+    parser = argparse.ArgumentParser(description="Benchmark BlackAgent core pipeline at 1k/10k/100k scale.")
+    parser.add_argument(
+        "--sample-sizes",
+        nargs="+",
+        type=int,
+        default=list(DEFAULT_DEFENSE_SCALES),
+        help="Record counts to benchmark. Defaults to 1000 10000 100000.",
+    )
     parser.add_argument("--batch-size", type=int, default=2_000, help="Batch size used for latency sampling.")
     parser.add_argument("--profile", default="fast", choices=["fast", "balanced", "high_recall"], help="Routing profile.")
     parser.add_argument("--output", default="data/scale_benchmark_report.json", help="Where to write JSON report.")
@@ -29,7 +39,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def run_benchmark(
     *,
-    sample_sizes: Iterable[int] = (10_000, 100_000),
+    sample_sizes: Iterable[int] = DEFAULT_DEFENSE_SCALES,
     batch_size: int = 2_000,
     profile: str = "fast",
 ) -> dict[str, Any]:
@@ -39,6 +49,7 @@ def run_benchmark(
     extractor = AdvancedEntityExtractor()
     router = _router_for_profile(profile)
     scenarios = []
+    previous_recall_proxy: float | None = None
     for sample_size in sample_sizes:
         if sample_size <= 0:
             raise ValueError("sample sizes must be positive")
@@ -73,6 +84,14 @@ def run_benchmark(
                     estimated_tokens += int(decision.max_tokens)
             batch_latencies_ms.append((time.perf_counter() - batch_started) * 1000.0 / max(count, 1))
         elapsed_seconds = time.perf_counter() - started
+        clue_recall_proxy = _clue_recall_proxy(
+            classified_count=classified_count,
+            entity_count=entity_count,
+            review_required_count=review_required_count,
+            llm_call_count=llm_call_count,
+        )
+        recall_change = None if previous_recall_proxy is None else round(clue_recall_proxy - previous_recall_proxy, 6)
+        previous_recall_proxy = clue_recall_proxy
         scenarios.append(
             {
                 "sample_size": sample_size,
@@ -87,6 +106,12 @@ def run_benchmark(
                 "llm_calls_per_1000_records": round(llm_call_count / max(classified_count, 1) * 1000.0, 4),
                 "estimated_llm_tokens": estimated_tokens,
                 "estimated_tokens_per_1000_records": round(estimated_tokens / max(classified_count, 1) * 1000.0, 4),
+                "estimated_llm_cost_usd": round(
+                    estimated_tokens / 1000.0 * ESTIMATED_LLM_COST_PER_1K_TOKENS_USD,
+                    8,
+                ),
+                "clue_recall_proxy": clue_recall_proxy,
+                "recall_change_vs_previous_scale": recall_change,
                 "route_reasons": dict(sorted(route_reasons.items())),
             }
         )
@@ -95,10 +120,12 @@ def run_benchmark(
         "run_type": "scale_benchmark_core_routing",
         "profile": profile,
         "batch_size": batch_size,
+        "default_defense_scales": list(DEFAULT_DEFENSE_SCALES),
         "scenarios": scenarios,
         "claim_boundary": (
-            "Benchmark covers deterministic classification, entity extraction, and model-routing token budget. "
-            "It intentionally excludes external live collection, LLM network latency, and entity-graph aggregation."
+            "Benchmark is a deterministic local throughput and routing-cost proof covering classification, "
+            "entity extraction, and model-routing token budget. It is not a live LLM latency or live LLM cost proof, "
+            "and intentionally excludes external live collection and entity-graph aggregation."
         ),
     }
 
@@ -150,6 +177,21 @@ def _percentile(values: list[float], percentile: float) -> float:
     ordered = sorted(values)
     index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * percentile))))
     return ordered[index]
+
+
+def _clue_recall_proxy(
+    *,
+    classified_count: int,
+    entity_count: int,
+    review_required_count: int,
+    llm_call_count: int,
+) -> float:
+    if classified_count <= 0:
+        return 0.0
+    entity_coverage = min(1.0, entity_count / (classified_count * 3.0))
+    review_coverage = min(1.0, review_required_count / classified_count)
+    routing_coverage = min(1.0, llm_call_count / classified_count)
+    return round((entity_coverage * 0.6) + (review_coverage * 0.3) + (routing_coverage * 0.1), 6)
 
 
 def _project_path(path: str | Path) -> Path:

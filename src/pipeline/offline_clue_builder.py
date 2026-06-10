@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
-from src.enhancement.clue_quality import ClueQualityEvaluator
+from src.enhancement.clue_quality import ClueQualityEvaluator, build_evidence_reviewability
 from src.enhancement.engine import PhaseTwoThreeEngine
 from src.enhancement.strategy import RiskClue
 from src.domain import RunPolicyContext
@@ -101,6 +101,13 @@ class OfflineClueBuilder:
                 "policy": self.run_policy.model_dump(),
             },
         )
+        actionable_clues = [_dump_mapping(item) for item in pipeline_result.clues]
+        archived_weak_clues = [_dump_mapping(item) for item in getattr(pipeline_result, "archived_weak_clues", [])]
+        for clue in actionable_clues:
+            clue.setdefault("clue_stage", "actionable")
+        for clue in archived_weak_clues:
+            clue.setdefault("clue_stage", "archived_weak")
+        review_pool_clues = _dedupe_clues_by_id([*actionable_clues, *archived_weak_clues])
         payload = {
             "status": "completed",
             "mode": "intelligence_pipeline",
@@ -117,7 +124,9 @@ class OfflineClueBuilder:
             "strategy_count": 0,
             "classifications": pipeline_result.classified,
             "entities": pipeline_result.entities,
-            "risk_clues": pipeline_result.clues,
+            "risk_clues": actionable_clues,
+            "archived_weak_clues": archived_weak_clues,
+            "review_pool_clues": review_pool_clues,
             "pipeline_summary": pipeline_result.execution_summary.model_dump(),
             "no_clue_reason": None if pipeline_result.clues else "aggregation_threshold_not_met",
         }
@@ -140,7 +149,8 @@ class OfflineClueBuilder:
         by_id = {item.clue_id: item for item in assessments}
         saved: list[dict[str, Any]] = []
         high_quality_count = 0
-        for clue in payload.get("risk_clues", []):
+        actionable_ids = {str(clue.get("clue_id") or "") for clue in payload.get("risk_clues", [])}
+        for clue in payload.get("review_pool_clues", []):
             enriched = dict(clue)
             assessment = by_id.get(str(clue.get("clue_id") or ""))
             if assessment is not None:
@@ -165,9 +175,17 @@ class OfflineClueBuilder:
             if publish_times:
                 enriched["first_seen"] = min(publish_times)
                 enriched["last_seen"] = max(publish_times)
+            enriched["evidence_reviewability"] = build_evidence_reviewability(
+                enriched,
+                assessment=assessment,
+                classifications=payload.get("classifications", []),
+                entities=payload.get("entities", []),
+                records=materialized_records,
+            )
+            enriched["evidence_cards"] = enriched["evidence_reviewability"].get("evidence_cards") or []
             self.clue_repo.save(enriched)
             saved.append(enriched)
-            if assessment is not None and assessment.pass_threshold:
+            if str(clue.get("clue_id") or "") in actionable_ids and assessment is not None and assessment.pass_threshold:
                 high_quality_count += 1
         return OfflineClueBuildResult(
             status="completed",
@@ -224,6 +242,17 @@ def _to_risk_clues(items: Iterable[Mapping[str, Any] | Any]) -> list[RiskClue]:
             clue_kwargs["created_at"] = str(payload.get("created_at"))
         risk_clues.append(RiskClue(**clue_kwargs))
     return risk_clues
+
+
+def _dedupe_clues_by_id(items: Iterable[Mapping[str, Any] | Any]) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    for item in items:
+        clue = _dump_mapping(item)
+        clue_id = str(clue.get("clue_id") or "")
+        if not clue_id:
+            continue
+        deduped[clue_id] = clue
+    return list(deduped.values())
 
 
 def _dump_mapping(value: Mapping[str, Any] | Any) -> dict[str, Any]:

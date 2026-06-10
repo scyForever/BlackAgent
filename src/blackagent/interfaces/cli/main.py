@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from blackagent.config import load_project_env_file, load_settings
+from blackagent.config import PROJECT_ROOT, load_project_env_file, load_settings, resolve_project_path
 
 DEFAULT_LOCAL_CORPUS_PATH = "data/cleaning_phase_high_risk_corpus.jsonl"
 DEFAULT_LOCAL_CORPUS_LIMIT = 200
@@ -62,6 +62,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run BlackAgent investigation agent from CLI.")
     parser.add_argument("--config", default=None, help="Optional config YAML path.")
     parser.add_argument("--query", "-q", default="", help="Investigation request. If omitted, CLI prompts for input.")
+    parser.add_argument("--collect-telegram", action="store_true", help="Run Telegram user-state collection and exit.")
+    parser.add_argument("--telegram-config", default="config/telegram_watch.example.yaml", help="Telegram collector config path.")
+    parser.add_argument("--telegram-db", default="", help="Optional Telegram collector DB path override.")
+    parser.add_argument("--telegram-jsonl-path", default="", help="Optional Telegram collector JSONL output path override.")
+    parser.add_argument("--telegram-once", action="store_true", help="Backfill once and exit.")
+    parser.add_argument("--telegram-fresh-state", action="store_true", help="Delete Telegram collector state before running.")
+    parser.add_argument("--telegram-username-limit", type=int, default=0, help="Limit configured Telegram usernames for smoke runs.")
+    parser.add_argument("--telegram-search-limit", type=int, default=0, help="Override Telegram search limit per keyword.")
+    parser.add_argument("--telegram-history-limit", type=int, default=0, help="Override Telegram history limit per chat.")
     parser.add_argument("--fixture-path", help="JSON or JSONL records to pass as fixture_items.")
     parser.add_argument(
         "--local-corpus-path",
@@ -161,7 +170,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def load_fixture_records(path: str | Path) -> list[dict[str, Any]]:
     fixture_path = Path(path)
     if not fixture_path.is_absolute():
-        fixture_path = PROJECT_ROOT / fixture_path
+        fixture_path = resolve_project_path(fixture_path)
     if not fixture_path.exists():
         raise FileNotFoundError(f"fixture file not found: {fixture_path}")
 
@@ -178,14 +187,14 @@ def load_fixture_records(path: str | Path) -> list[dict[str, Any]]:
 
 def discover_source_config_path(
     *,
-    config_dir: str | Path = PROJECT_ROOT / "config",
+    config_dir: str | Path = resolve_project_path("config"),
     candidates: tuple[str, ...] = DEFAULT_SOURCE_CONFIG_CANDIDATES,
 ) -> tuple[str | None, dict[str, Any]]:
     """Find the best project source catalog for a bare investigation query."""
 
     config_path = Path(config_dir)
     if not config_path.is_absolute():
-        config_path = PROJECT_ROOT / config_path
+        config_path = resolve_project_path(config_path)
     context: dict[str, Any] = {
         "mode": "source_config_auto_discovery",
         "source_config_auto_discovered": False,
@@ -197,7 +206,7 @@ def discover_source_config_path(
     for candidate in candidates:
         path = Path(candidate)
         if not path.is_absolute():
-            path = config_path / path.name if path.parts and path.parts[0] == "config" else PROJECT_ROOT / path
+            path = config_path / path.name if path.parts and path.parts[0] == "config" else resolve_project_path(path)
         ordered_paths.append(path)
     if config_path.exists():
         for path in sorted(config_path.glob("intel_sources*.yaml")):
@@ -262,7 +271,7 @@ def load_local_corpus_records(
 
     path = Path(corpus_path)
     if not path.is_absolute():
-        path = PROJECT_ROOT / path
+        path = resolve_project_path(path)
     context: dict[str, Any] = {
         "mode": "local_corpus_auto_seed",
         "corpus_path": str(path),
@@ -640,9 +649,36 @@ def print_summary(payload: dict[str, Any], *, show_clues: bool) -> None:
                 print(f"summary: {summary}")
 
 
+def telegram_collector_argv_from_args(args: argparse.Namespace) -> list[str]:
+    argv = ["--config", args.telegram_config]
+    if args.telegram_once or args.collect_telegram:
+        argv.append("--once")
+    if args.telegram_db:
+        argv.extend(["--db", args.telegram_db])
+    if args.telegram_jsonl_path:
+        argv.extend(["--jsonl-path", args.telegram_jsonl_path])
+    if args.telegram_fresh_state:
+        argv.append("--fresh-state")
+    if args.telegram_username_limit:
+        argv.extend(["--username-limit", str(args.telegram_username_limit)])
+    if args.telegram_search_limit:
+        argv.extend(["--search-limit", str(args.telegram_search_limit)])
+    if args.telegram_history_limit:
+        argv.extend(["--history-limit", str(args.telegram_history_limit)])
+    return argv
+
+
+def run_telegram_collection_cli(argv: list[str]) -> int:
+    from scripts.telegram_telethon_collector import main as telegram_main
+
+    return telegram_main(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     load_project_env_file()
+    if args.collect_telegram:
+        return run_telegram_collection_cli(telegram_collector_argv_from_args(args))
     settings = load_settings(args.config)
     apply_runtime_overrides(settings, args)
 
@@ -719,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.output:
         output_path = Path(args.output)
         if not output_path.is_absolute():
-            output_path = PROJECT_ROOT / output_path
+            output_path = resolve_project_path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(response_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"saved: {output_path}")

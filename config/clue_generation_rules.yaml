@@ -1,15 +1,17 @@
 clue_generation_rules:
   clue_promotion:
     shared_contact_48h:
-      match_clue_types: [shared_contact_48h, graph_shared_contact_cross_source]
+      match_clue_types: [shared_contact_48h, graph_shared_contact_cross_source, shared_invite_code_multi_source]
       match_clue_type_contains: [contact, account, invite]
       require_any:
         - min_sources: 2
-        - min_observations: 3
+        - min_observations: 2
+        - any_entity_type: [invite_code]
+      require_any_entity: [contact, account, invite_code]
       actionability_bonus:
         sensitive_entity: 0.18
-      pass_reason: contact_account_cross_source_or_three_observations
-      fail_reason: contact_account_requires_two_sources_or_three_observations
+      pass_reason: contact_account_cross_source_or_two_observations
+      fail_reason: contact_account_requires_two_sources_or_two_observations
     shared_domain_multi_source:
       match_clue_types: [shared_domain_multi_source, graph_shared_entity_cross_source]
       match_clue_type_contains: [domain, url]
@@ -19,13 +21,30 @@ clue_generation_rules:
       pass_reason: domain_url_cross_source_with_contact_or_tool
       fail_reason: domain_url_requires_two_sources_and_contact_or_tool
     tool_slang:
-      match_clue_types: [tool_slang, entity_graph_tool_trade_cluster]
+      match_clue_types: [tool_slang, entity_graph_tool_trade_cluster, entity_graph_account_tool_overlap]
       match_clue_type_contains: [tool, slang]
       require_any:
         - any_entity_type: [contact, account, price, url, domain, tool_name]
         - min_sources: 2
       pass_reason: tool_slang_has_transaction_or_cross_source_support
       fail_reason: tool_slang_requires_contact_price_url_or_cross_source_support
+    shared_tool_multi_source:
+      match_clue_types: [shared_tool_multi_source]
+      require_all:
+        - min_sources: 2
+        - any_entity_type: [tool_name]
+      reject_risk_categories: [normal_noise, 正常业务白噪声]
+      reject_reason: shared_tool_rejected_risk_category
+      pass_reason: tool_name_cross_source_non_defensive
+      fail_reason: shared_tool_requires_two_sources_and_tool_entity
+    shared_settlement_multi_source:
+      match_clue_types: [shared_settlement_multi_source]
+      require_any:
+        - min_sources: 2
+        - min_observations: 2
+      require_any_entity: [settlement]
+      pass_reason: settlement_cross_source_or_two_observations
+      fail_reason: settlement_requires_two_sources_or_two_observations
     high_frequency_template:
       match_clue_type_contains: [template]
       require_all:
@@ -33,12 +52,19 @@ clue_generation_rules:
       reject_risk_categories: [normal_noise, 正常业务白噪声]
       pass_reason: template_repeated_three_times_non_defensive
       fail_reason: template_requires_three_non_defensive_repetitions
+    shared_template_multi_source:
+      match_clue_types: [shared_template_multi_source]
+      require_all:
+        - min_sources: 2
+      reject_risk_categories: [normal_noise, 正常业务白噪声]
+      pass_reason: template_cross_source_non_defensive
+      fail_reason: shared_template_requires_two_sources_non_defensive
   shared_contact_48h:
-    min_observations: 3
+    min_observations: 2
     window_hours: 48
     promotion:
       require_min_sources: 2
-      require_min_observations: 3
+      require_min_observations: 2
   shared_domain_multi_source:
     min_sources: 2
     promotion:
@@ -50,3 +76,12 @@ clue_generation_rules:
   tool_slang:
     promotion:
       require_any_entity: [contact, account, price, url, domain]
+  shared_tool_multi_source:
+    min_sources: 2
+    promotion:
+      require_any_entity: [tool_name]
+      reject_risk_categories: [normal_noise, 正常业务白噪声]
+  shared_template_multi_source:
+    min_sources: 2
+    promotion:
+      reject_risk_categories: [normal_noise, 正常业务白噪声]

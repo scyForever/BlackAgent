@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -10,6 +11,20 @@ from collections import Counter, defaultdict
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+import yaml
+
+
+def configure_stdout_utf8() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
+
+configure_stdout_utf8()
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -19,7 +34,11 @@ from src.pipeline import IntelligencePipeline
 from src.domain import RunPolicyContext
 from src.agent.budget_controller import BudgetController, RuntimeBudget
 from src.backend import LLMGateway, LLMGatewayConfig
+from src.classifier.nlp_rule_matcher import review_bucket_for_classification
 from src.evaluation.llm_ablation import LLMValueGate, write_latest_llm_value_report
+
+
+NON_RISK_SECONDARY_LABELS = {"低相关", "防御语境", "研究讨论", "正常业务白噪声", "待研判"}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -56,6 +75,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Run fast/off, high_recall/off, and high_recall/mock and report LLM marginal value.",
     )
     parser.add_argument(
+        "--profile-curve",
+        action="store_true",
+        help="Run fast, balanced, and high_recall and report quality/cost/latency tradeoff curves.",
+    )
+    parser.add_argument(
         "--ablation-include-real",
         action="store_true",
         help="Also run high_recall/real in ablation; requires a configured real LLM gateway.",
@@ -73,6 +97,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-entity-f1", type=float, default=None, help="Fail if entity F1 is below this threshold.")
     parser.add_argument("--max-hard-negative-fpr", type=float, default=None, help="Fail if hard-negative false-positive rate is above this threshold.")
     parser.add_argument("--max-llm-calls-per-1000", type=float, default=None, help="Fail if profile LLM calls per 1000 records exceed this threshold.")
+    parser.add_argument("--min-clue-recall", type=float, default=None, help="Fail if clue recall is below this threshold.")
+    parser.add_argument("--min-object-clue-recall", type=float, default=None, help="Fail if object-level clue recall is below this threshold.")
     parser.add_argument("--max-clue-overgeneration-ratio", type=float, default=None, help="Fail if actual clue count greatly exceeds expected count.")
     parser.add_argument("--max-review-load-per-100-records", type=float, default=None, help="Fail if actionable clue review load is above this threshold.")
     parser.add_argument("--max-classification-review-rate", type=float, default=None, help="Fail if classification review_required rate is above this threshold.")
@@ -146,10 +172,14 @@ def evaluate(
     entity_metrics = evaluate_entities(entity_eval_records, entity_result.entities)
     clue_metrics = evaluate_clues(clue_eval_records, clue_result.clues if clue_result is not None else [])
     llm_budget = budget_controller.snapshot() if budget_controller is not None else {}
+    llm_gateway_stats = _gateway_stats(gateway)
+    actual_usage_tokens = _sum_actual_usage_tokens(llm_gateway_stats)
+    gateway_request_estimated_tokens = _sum_gateway_estimated_tokens(llm_gateway_stats)
     llm_calls = int((llm_budget or {}).get("llm_calls") or classification_result.execution_summary.get("llm_enrich_trace_count") or 0)
     llm_calls_per_1000 = round(llm_calls / max(len(classification_records) + len(hard_negative_records), 1) * 1000, 4)
     valid_clues = max(1, clue_metrics["overall"]["tp"])
     pipeline_summary = classification_result.execution_summary.model_dump()
+    estimated_tokens = int((llm_budget or {}).get("estimated_tokens") or classification_result.execution_summary.get("estimated_tokens") or 0)
     report = {
         "status": "completed",
         "dataset": dataset_profile(
@@ -200,6 +230,12 @@ def evaluate(
             else "disabled_for_ablation_measurement"
         ),
         "estimated_tokens_per_valid_clue": round(float((llm_budget or {}).get("estimated_tokens") or classification_result.execution_summary.get("estimated_tokens") or 0.0) / valid_clues, 4),
+        "actual_usage_tokens": actual_usage_tokens,
+        "actual_usage_tokens_per_valid_clue": (
+            None if actual_usage_tokens is None else round(float(actual_usage_tokens) / valid_clues, 4)
+        ),
+        "gateway_request_estimated_tokens": gateway_request_estimated_tokens,
+        "llm_gateway_stats": llm_gateway_stats,
         "llm_mode": llm_mode,
         "budget_controller": llm_budget,
         "p50_latency_ms": round(elapsed_ms, 2),
@@ -213,7 +249,9 @@ def evaluate(
             "primary_classification_recall": classification_metrics["primary"]["recall"],
             "false_positive_rate": classification_metrics["false_positive_rate"],
             "p95_latency_ms": round(elapsed_ms, 2),
-            "estimated_tokens": int((llm_budget or {}).get("estimated_tokens") or 0),
+            "estimated_tokens": estimated_tokens,
+            "actual_usage_tokens": actual_usage_tokens,
+            "gateway_request_estimated_tokens": gateway_request_estimated_tokens,
         },
     }
     return report
@@ -282,6 +320,18 @@ def quality_gate_failures(report: Mapping[str, Any], args: argparse.Namespace) -
         failures.append(f"hard_negative_fpr_above_threshold:{report['false_positive_rate']}>{args.max_hard_negative_fpr}")
     if args.max_llm_calls_per_1000 is not None and float(report["llm_calls_per_1000_records"]) > args.max_llm_calls_per_1000:
         failures.append(f"llm_calls_per_1000_above_threshold:{report['llm_calls_per_1000_records']}>{args.max_llm_calls_per_1000}")
+    if getattr(args, "min_clue_recall", None) is not None:
+        recall = ((report.get("clue") or {}).get("overall") or {}).get("recall")
+        if recall is None:
+            failures.append("clue_recall_not_applicable:clue_gold_required")
+        elif float(recall) < args.min_clue_recall:
+            failures.append(f"clue_recall_below_threshold:{recall}<{args.min_clue_recall}")
+    if getattr(args, "min_object_clue_recall", None) is not None:
+        recall = ((((report.get("clue") or {}).get("object_clue_eval") or {}).get("overall") or {}).get("recall"))
+        if recall is None:
+            failures.append("object_clue_recall_not_applicable:object_clue_gold_required")
+        elif float(recall) < args.min_object_clue_recall:
+            failures.append(f"object_clue_recall_below_threshold:{recall}<{args.min_object_clue_recall}")
     if getattr(args, "max_clue_overgeneration_ratio", None) is not None and float(report["clue"]["clue_overgeneration_ratio"]) > args.max_clue_overgeneration_ratio:
         failures.append(f"clue_overgeneration_ratio_above_threshold:{report['clue']['clue_overgeneration_ratio']}>{args.max_clue_overgeneration_ratio}")
     if getattr(args, "max_review_load_per_100_records", None) is not None and float(report["clue"]["review_load_per_100_records"]) > args.max_review_load_per_100_records:
@@ -316,7 +366,7 @@ def evaluate_classification(
     positive_record_count = 0
     negative_record_count = 0
     annotated_secondary_records = sum(1 for record in records if _has_secondary_gold_annotation(record))
-    expected_secondary_gold_count = sum(len(expected_secondary_labels(record)) for record in records)
+    expected_secondary_gold_count = sum(len(_formal_expected_secondary_labels(record)) for record in records)
     requested_granularity = str(granularity or "auto").strip().lower()
     if requested_granularity == "auto":
         resolved_granularity = "hierarchical" if expected_secondary_gold_count > 0 else "primary_only"
@@ -328,10 +378,16 @@ def evaluate_classification(
     for record in records:
         trace_id = _trace_id(record)
         expected_primary = predicted_categories(record)
-        expected_secondary = expected_secondary_labels(record)
+        expected_secondary = _formal_expected_secondary_labels(record)
         actual = actual_by_trace.get(trace_id, {})
         actual_primary = predicted_categories(actual)
         actual_secondary = actual_secondary_labels(actual)
+        if not expected_primary:
+            actual_secondary = {
+                label
+                for label in actual_secondary
+                if label not in NON_RISK_SECONDARY_LABELS
+            }
         if expected_primary:
             positive_record_count += 1
             primary_tp += len(expected_primary & actual_primary)
@@ -428,9 +484,31 @@ def evaluate_classification(
             include_secondary=hierarchical_gold_ready,
             limit=10,
         ),
+        "error_buckets": _classification_error_buckets(
+            records,
+            actual_by_trace,
+            include_secondary=hierarchical_gold_ready,
+            limit=10,
+        ),
+        "manual_review_error_analysis": _manual_review_error_analysis(
+            records,
+            actual_by_trace,
+            include_secondary=hierarchical_gold_ready,
+        ),
         "review_load": _classification_review_load(actual_item_list, record_count=len(records)),
         "granularity": resolved_granularity,
         "evaluation_mode": evaluation_mode,
+        "prediction_semantics": {
+            "metric_scope": "review_augmented_predictions",
+            "primary_predictions": "risk_category_plus_conflict_categories",
+            "secondary_predictions": "secondary_label_plus_evidence_backed_conflict_candidate_secondary_labels",
+            "conflict_categories_counted_as_predictions": True,
+            "candidate_secondary_requires_evidence": True,
+            "note": (
+                "Classification precision/recall counts conflict alternatives as review predictions "
+                "so overlap cases measure whether the candidate set preserves gold labels."
+            ),
+        },
         "positive_record_count": positive_record_count,
         "negative_record_count": negative_record_count,
         "secondary_gold": {
@@ -469,6 +547,7 @@ def evaluate_clues(records: list[dict[str, Any]], actual_clues: Iterable[Mapping
     overall_eval = _evaluate_clue_layer(records, actual, layer="overall")
     standard_eval = _evaluate_clue_layer(records, actual, layer="standard")
     graph_eval = _evaluate_clue_layer(records, actual, layer="graph")
+    object_eval = _evaluate_clue_objects(records, actual)
     review_load_eval = {
         "clue_overgeneration_ratio": overall_eval["clue_overgeneration_ratio"],
         "review_load_per_100_records": overall_eval["review_load_per_100_records"],
@@ -481,8 +560,9 @@ def evaluate_clues(records: list[dict[str, Any]], actual_clues: Iterable[Mapping
         **overall_eval,
         "standard_clue_eval": standard_eval,
         "graph_clue_eval": graph_eval,
+        "object_clue_eval": object_eval,
         "overall_review_load_eval": review_load_eval,
-        "evaluation_layers": ["standard_clue_eval", "graph_clue_eval", "overall_review_load_eval"],
+        "evaluation_layers": ["standard_clue_eval", "graph_clue_eval", "object_clue_eval", "overall_review_load_eval"],
     }
 
 
@@ -533,7 +613,7 @@ def _expected_clue_gold(records: list[dict[str, Any]], *, layer: str) -> tuple[i
     expected_types = {
         clue_type
         for record in records
-        for clue_type in _expected_clue_types(record)
+        for clue_type in _expected_clue_types(record, include_expected_clues=True)
         if _clue_type_in_layer(clue_type, layer=layer)
     }
     expected_count_values = [
@@ -542,8 +622,8 @@ def _expected_clue_gold(records: list[dict[str, Any]], *, layer: str) -> tuple[i
         if record.get("expected_clue_count") is not None
         and (
             layer == "overall"
-            or any(_clue_type_in_layer(clue_type, layer=layer) for clue_type in _expected_clue_types(record))
-            or (not _expected_clue_types(record) and layer == "standard")
+            or any(_clue_type_in_layer(clue_type, layer=layer) for clue_type in _expected_clue_types(record, include_expected_clues=True))
+            or (not _expected_clue_types(record, include_expected_clues=True) and layer == "standard")
         )
     ]
     expected_count = max(expected_count_values) if expected_count_values else 0
@@ -556,6 +636,155 @@ def _expected_clue_gold(records: list[dict[str, Any]], *, layer: str) -> tuple[i
         )
     expected_count = max(expected_count, len(expected_types))
     return expected_count, expected_types
+
+
+def _evaluate_clue_objects(records: list[dict[str, Any]], actual_clues: list[dict[str, Any]]) -> dict[str, Any]:
+    expected = _expected_clue_objects(records)
+    if not expected:
+        return {
+            "status": "not_applicable_no_expected_clue_objects",
+            "overall": {**prf(0, 0, 0), "tp": 0, "fp": 0, "fn": 0, "status": "not_applicable_no_expected_clue_objects"},
+            "expected_clue_count": 0,
+            "actual_clue_count": len(actual_clues),
+            "evidence_chain_precision": 0.0,
+            "evidence_chain_recall": 0.0,
+            "evidence_reviewability_rate": 0.0,
+            "duplicate_clue_rate": _duplicate_clue_rate(actual_clues),
+        }
+
+    matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    matched_actual_indexes: set[int] = set()
+    for expected_clue in expected:
+        match_index = _best_clue_object_match(expected_clue, actual_clues, matched_actual_indexes)
+        if match_index is None:
+            continue
+        matched_actual_indexes.add(match_index)
+        matches.append((expected_clue, actual_clues[match_index]))
+
+    tp = len(matches)
+    fp = max(0, len(actual_clues) - tp)
+    fn = max(0, len(expected) - tp)
+    evidence_precision, evidence_recall = _evidence_chain_pr(matches)
+    reviewable_count = sum(1 for expected_clue, actual in matches if _clue_reviewability_satisfied(expected_clue, actual))
+    overall = prf(tp, fp, fn)
+    return {
+        "status": "completed",
+        "overall": {**overall, "tp": tp, "fp": fp, "fn": fn, "status": "completed", "metric_note": "object_level_expected_clues"},
+        "expected_clue_count": len(expected),
+        "actual_clue_count": len(actual_clues),
+        "matched_clue_count": tp,
+        "evidence_chain_precision": evidence_precision,
+        "evidence_chain_recall": evidence_recall,
+        "evidence_reviewability_rate": round(reviewable_count / max(tp, 1), 4),
+        "duplicate_clue_rate": _duplicate_clue_rate(actual_clues),
+        "matched_expected_clue_types": sorted({str(item[0].get("clue_type") or "") for item in matches if str(item[0].get("clue_type") or "")}),
+    }
+
+
+def _expected_clue_objects(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    objects: list[dict[str, Any]] = []
+    for record in records:
+        raw = record.get("expected_clues")
+        if not isinstance(raw, list):
+            continue
+        for clue in raw:
+            if not isinstance(clue, Mapping):
+                continue
+            item = dict(clue)
+            item.setdefault("record_trace_id", _trace_id(record))
+            if str(item.get("clue_type") or "").strip():
+                objects.append(item)
+    return objects
+
+
+def _best_clue_object_match(
+    expected: Mapping[str, Any],
+    actual_clues: list[dict[str, Any]],
+    used_indexes: set[int],
+) -> int | None:
+    scored: list[tuple[int, int]] = []
+    for index, actual in enumerate(actual_clues):
+        if index in used_indexes:
+            continue
+        score = _clue_object_match_score(expected, actual)
+        if score > 0:
+            scored.append((score, index))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return scored[0][1]
+
+
+def _clue_object_match_score(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> int:
+    if _normalize_label(expected.get("clue_type")) != _normalize_label(actual.get("clue_type")):
+        return 0
+    score = 2
+    expected_key = _normalize_entity_value(expected.get("key"))
+    actual_key = _normalize_entity_value(actual.get("key"))
+    has_key_match = False
+    if expected_key and actual_key and (expected_key == actual_key or expected_key in actual_key or actual_key in expected_key):
+        has_key_match = True
+        score += 4
+    expected_risk = _normalize_label(expected.get("risk_category"))
+    actual_risk = _normalize_label(actual.get("risk_category"))
+    if expected_risk and actual_risk and expected_risk == actual_risk:
+        score += 2
+    expected_entities = {_normalize_entity_value(item) for item in expected.get("expected_entity_values") or [] if _normalize_entity_value(item)}
+    actual_entities = {_normalize_entity_value(item) for item in actual.get("entity_values") or [] if _normalize_entity_value(item)}
+    has_entity_match = bool(expected_entities and actual_entities & expected_entities)
+    if has_entity_match:
+        score += 3
+    expected_evidence = _evidence_set(expected)
+    actual_evidence = _evidence_set(actual)
+    overlap_count = len(expected_evidence & actual_evidence)
+    if overlap_count:
+        score += 2 + overlap_count
+    if expected_key and not has_key_match and not has_entity_match:
+        return 0
+    if not expected_key and not expected_entities:
+        if expected_evidence and actual_evidence & expected_evidence:
+            score += 2
+    return score if score >= 5 else 0
+
+
+def _evidence_chain_pr(matches: list[tuple[dict[str, Any], dict[str, Any]]]) -> tuple[float, float]:
+    expected_total = actual_total = matched_total = 0
+    for expected, actual in matches:
+        expected_evidence = _evidence_set(expected)
+        actual_evidence = _evidence_set(actual)
+        expected_total += len(expected_evidence)
+        actual_total += len(actual_evidence)
+        matched_total += len(expected_evidence & actual_evidence)
+    precision = matched_total / actual_total if actual_total else 0.0
+    recall = matched_total / expected_total if expected_total else 0.0
+    return round(precision, 4), round(recall, 4)
+
+
+def _clue_reviewability_satisfied(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> bool:
+    reviewability = actual.get("evidence_reviewability") if isinstance(actual.get("evidence_reviewability"), Mapping) else {}
+    evidence_count = len(_evidence_set(actual))
+    source_count = int(reviewability.get("source_count") or len({str(item) for item in actual.get("source_names") or [] if str(item).strip()}) or 0)
+    entity_support_count = int(reviewability.get("entity_support_count") or len({str(item) for item in actual.get("entity_values") or [] if str(item).strip()}) or 0)
+    if evidence_count < int(expected.get("min_evidence_count") or 0):
+        return False
+    if source_count < int(expected.get("min_source_count") or 0):
+        return False
+    expected_entities = {_normalize_entity_value(item) for item in expected.get("expected_entity_values") or [] if _normalize_entity_value(item)}
+    actual_entities = {_normalize_entity_value(item) for item in actual.get("entity_values") or [] if _normalize_entity_value(item)}
+    if expected_entities and not (expected_entities & actual_entities):
+        return False
+    if expected.get("requires_original_snippets") and not list(reviewability.get("original_snippets") or actual.get("original_snippets") or []):
+        return False
+    if expected.get("requires_time_range"):
+        time_range = reviewability.get("time_range") if isinstance(reviewability.get("time_range"), Mapping) else {}
+        if not (time_range.get("start") and time_range.get("end")):
+            return False
+    return entity_support_count >= 0
+
+
+def _evidence_set(clue: Mapping[str, Any]) -> set[str]:
+    values = clue.get("expected_evidence_trace_ids") or clue.get("evidence_trace_ids") or []
+    return {str(item).strip() for item in values if str(item).strip()}
 
 
 def dataset_profile(
@@ -600,10 +829,26 @@ def _classification_review_load(actual_items: list[dict[str, Any]], *, record_co
         "record_count": record_count,
         "review_rate": round(len(review_items) / max(record_count, 1), 4),
         "review_load_per_100_records": round(len(review_items) / max(record_count, 1) * 100.0, 4),
+        "by_review_bucket": _counter_payload(Counter(_review_bucket(item) for item in review_items)),
+        "final_review_buckets": _counter_payload(Counter(_review_bucket(item) for item in actual_items)),
         "by_risk_category": _counter_payload(Counter(str(item.get("risk_category") or "unknown") for item in review_items)),
         "by_secondary_label": _counter_payload(Counter(str(item.get("secondary_label") or "待研判") for item in review_items)),
         "by_conflict_status": _counter_payload(Counter(str(item.get("conflict_status") or "RESOLVED") for item in review_items)),
     }
+
+
+def _review_bucket(item: Mapping[str, Any]) -> str:
+    explicit = str(item.get("review_bucket") or "").strip()
+    conflict_status = str(item.get("conflict_status") or "").strip()
+    review_required = bool(item.get("review_required"))
+    if explicit and not review_required and conflict_status != "CONFLICT_REVIEW":
+        return explicit
+    return review_bucket_for_classification(
+        risk_category=str(item.get("risk_category") or "").strip(),
+        review_required=review_required,
+        secondary_label=str(item.get("secondary_label") or "").strip(),
+        conflict_status=conflict_status,
+    )
 
 
 def _classification_error_examples(
@@ -617,10 +862,10 @@ def _classification_error_examples(
     for record in records:
         trace_id = _trace_id(record)
         expected_primary = predicted_categories(record)
-        expected_secondary = expected_secondary_labels(record)
+        expected_secondary = _formal_expected_secondary_labels(record)
         actual = actual_by_trace.get(trace_id, {})
         actual_primary = predicted_categories(actual)
-        actual_secondary = actual_secondary_labels(actual)
+        actual_secondary = _formal_actual_secondary_labels(actual, expected_primary=expected_primary)
         primary_mismatch = expected_primary != actual_primary
         secondary_mismatch = include_secondary and expected_secondary != actual_secondary
         if not primary_mismatch and not secondary_mismatch:
@@ -649,6 +894,158 @@ def _classification_error_examples(
     return errors
 
 
+def _classification_error_buckets(
+    records: list[dict[str, Any]],
+    actual_by_trace: Mapping[str, Mapping[str, Any]],
+    *,
+    include_secondary: bool,
+    limit: int = 10,
+) -> dict[str, Any]:
+    bucket_names = (
+        "false_positive",
+        "false_negative",
+        "primary_confusion",
+        "secondary_confusion",
+        "secondary_missing",
+        "secondary_extra",
+    )
+    buckets: dict[str, dict[str, Any]] = {
+        name: {"count": 0, "examples": []}
+        for name in bucket_names
+    }
+    for record in records:
+        trace_id = _trace_id(record)
+        expected_primary = predicted_categories(record)
+        expected_secondary = _formal_expected_secondary_labels(record)
+        actual = actual_by_trace.get(trace_id, {})
+        actual_primary = predicted_categories(actual)
+        actual_secondary = _formal_actual_secondary_labels(actual, expected_primary=expected_primary)
+        base_example = _classification_error_example_payload(
+            record,
+            actual,
+            expected_primary=expected_primary,
+            actual_primary=actual_primary,
+            expected_secondary=expected_secondary,
+            actual_secondary=actual_secondary,
+        )
+        if not expected_primary and actual_primary:
+            _add_error_bucket_example(buckets, "false_positive", base_example, limit=limit)
+        if expected_primary and not actual_primary:
+            _add_error_bucket_example(buckets, "false_negative", base_example, limit=limit)
+        if expected_primary and actual_primary and expected_primary != actual_primary:
+            _add_error_bucket_example(buckets, "primary_confusion", base_example, limit=limit)
+        if not include_secondary:
+            continue
+        if not expected_primary and actual_primary:
+            continue
+        missing_secondary = expected_secondary - actual_secondary
+        extra_secondary = actual_secondary - expected_secondary
+        if expected_secondary and actual_secondary and expected_secondary != actual_secondary:
+            _add_error_bucket_example(buckets, "secondary_confusion", base_example, limit=limit)
+        elif missing_secondary:
+            example = {**base_example, "missing_secondary": sorted(missing_secondary)}
+            _add_error_bucket_example(buckets, "secondary_missing", example, limit=limit)
+        elif extra_secondary:
+            example = {**base_example, "extra_secondary": sorted(extra_secondary)}
+            _add_error_bucket_example(buckets, "secondary_extra", example, limit=limit)
+    return buckets
+
+
+def _manual_review_error_analysis(
+    records: list[dict[str, Any]],
+    actual_by_trace: Mapping[str, Mapping[str, Any]],
+    *,
+    include_secondary: bool,
+) -> dict[str, Any]:
+    typical_error_counts: Counter[str] = Counter()
+    source_type_counts: Counter[str] = Counter()
+    expected_primary_counts: Counter[str] = Counter()
+    actual_primary_counts: Counter[str] = Counter()
+    expected_secondary_counts: Counter[str] = Counter()
+    actual_secondary_counts: Counter[str] = Counter()
+    review_bucket_counts: Counter[str] = Counter()
+
+    for record in records:
+        review = record.get("human_review") if isinstance(record.get("human_review"), Mapping) else {}
+        typical_error = str(review.get("typical_error") or "unspecified").strip() or "unspecified"
+        typical_error_counts[typical_error] += 1
+        source_type_counts[str(record.get("source_type") or "unknown")] += 1
+        expected_primary = predicted_categories(record)
+        expected_secondary = _formal_expected_secondary_labels(record) if include_secondary else set()
+        actual = actual_by_trace.get(_trace_id(record), {})
+        actual_primary = predicted_categories(actual)
+        actual_secondary = _formal_actual_secondary_labels(actual, expected_primary=expected_primary) if include_secondary else set()
+        for value in expected_primary or {"__negative__"}:
+            expected_primary_counts[value] += 1
+        for value in actual_primary or {"__negative__"}:
+            actual_primary_counts[value] += 1
+        for value in expected_secondary or {"__none__"}:
+            expected_secondary_counts[value] += 1
+        for value in actual_secondary or {"__none__"}:
+            actual_secondary_counts[value] += 1
+        review_bucket_counts[_review_bucket(actual)] += 1
+
+    return {
+        "status": "completed" if records else "no_records",
+        "record_count": len(records),
+        "by_typical_error": _counter_payload(typical_error_counts),
+        "by_source_type": _counter_payload(source_type_counts),
+        "by_expected_primary": _counter_payload(expected_primary_counts),
+        "by_actual_primary": _counter_payload(actual_primary_counts),
+        "by_expected_secondary": _counter_payload(expected_secondary_counts),
+        "by_actual_secondary": _counter_payload(actual_secondary_counts),
+        "by_review_bucket": _counter_payload(review_bucket_counts),
+    }
+
+
+def _classification_error_example_payload(
+    record: Mapping[str, Any],
+    actual: Mapping[str, Any],
+    *,
+    expected_primary: set[str],
+    actual_primary: set[str],
+    expected_secondary: set[str],
+    actual_secondary: set[str],
+) -> dict[str, Any]:
+    review = record.get("human_review") if isinstance(record.get("human_review"), Mapping) else {}
+    return {
+        "source_trace_id": _trace_id(record),
+        "source_name": record.get("source_name"),
+        "source_type": record.get("source_type"),
+        "expected_primary": sorted(expected_primary),
+        "actual_primary": sorted(actual_primary),
+        "expected_secondary": sorted(expected_secondary),
+        "actual_secondary": sorted(actual_secondary),
+        "review_bucket": _review_bucket(actual),
+        "manual_typical_error": review.get("typical_error"),
+        "text_excerpt": _text_excerpt(record),
+    }
+
+
+def _add_error_bucket_example(
+    buckets: dict[str, dict[str, Any]],
+    bucket_name: str,
+    example: Mapping[str, Any],
+    *,
+    limit: int,
+) -> None:
+    bucket = buckets[bucket_name]
+    bucket["count"] += 1
+    if len(bucket["examples"]) < max(0, int(limit)):
+        bucket["examples"].append(dict(example))
+
+
+def _formal_actual_secondary_labels(
+    classification: Mapping[str, Any],
+    *,
+    expected_primary: set[str],
+) -> set[str]:
+    labels = actual_secondary_labels(classification)
+    if not expected_primary:
+        return {label for label in labels if label not in NON_RISK_SECONDARY_LABELS}
+    return {label for label in labels if label not in NON_RISK_SECONDARY_LABELS}
+
+
 def _counter_payload(counter: Counter[str], *, limit: int | None = None) -> list[dict[str, Any]]:
     pairs = counter.most_common(limit)
     return [{"value": value, "count": count} for value, count in pairs if value]
@@ -664,6 +1061,9 @@ def predicted_categories(classification: Mapping[str, Any]) -> set[str]:
     expected = classification.get("expected_risk_categories")
     categories = {_normalize_label(item) for item in expected} if isinstance(expected, list) else set()
     categories.update({_normalize_label(item) for item in classification.get("expected_primary_risks", [])} if isinstance(classification.get("expected_primary_risks"), list) else set())
+    conflicts = classification.get("conflict_categories")
+    if isinstance(conflicts, list):
+        categories.update(_normalize_label(item) for item in conflicts)
     if risk:
         categories.add(risk)
     return {item for item in categories if item not in {"unknown", "normal_noise", "正常业务白噪声", "待研判", "无风险", "none"}}
@@ -674,6 +1074,18 @@ def actual_secondary_labels(classification: Mapping[str, Any]) -> set[str]:
     secondary = _normalize_label(classification.get("secondary_label"))
     if secondary:
         labels.add(secondary)
+    conflicts = classification.get("conflict_categories")
+    candidates = classification.get("candidate_secondary_labels")
+    if isinstance(conflicts, list) and conflicts and isinstance(candidates, list):
+        for item in candidates:
+            if not isinstance(item, Mapping):
+                continue
+            label = _normalize_label(item.get("label"))
+            reason = str(item.get("reason") or "").strip()
+            evidence = item.get("evidence")
+            has_evidence = isinstance(evidence, list) and any(str(value).strip() for value in evidence)
+            if label and has_evidence and reason not in {"single_secondary_marker_only"}:
+                labels.add(label)
     return {item for item in labels if item not in {"待研判", "未细分", "unknown", "none", "null"}}
 
 
@@ -686,6 +1098,13 @@ def expected_secondary_labels(classification: Mapping[str, Any]) -> set[str]:
     if isinstance(raw, list):
         labels.update(_normalize_label(item) for item in raw)
     return {item for item in labels if item not in {"待研判", "未细分", "unknown", "none", "null"}}
+
+
+def _formal_expected_secondary_labels(classification: Mapping[str, Any]) -> set[str]:
+    labels = expected_secondary_labels(classification)
+    if predicted_categories(classification):
+        return labels
+    return {label for label in labels if label not in NON_RISK_SECONDARY_LABELS}
 
 
 def predicted_secondary_labels(classification: Mapping[str, Any]) -> set[str]:
@@ -784,10 +1203,22 @@ def main(argv: list[str] | None = None) -> int:
         "clue_records": load_jsonl(args.clues_gold) if args.clues_gold else None,
         "hard_negative_records": load_jsonl(args.hard_negative) if args.hard_negative else None,
     }
-    report = (
-        evaluate_ablation(**loaded, with_budget=True, include_real=args.ablation_include_real)
-        if args.ablation
-        else evaluate(
+    if args.profile_curve:
+        report = evaluate_profile_curve(
+            loaded["records"],
+            entity_records=loaded["entity_records"],
+            clue_records=loaded["clue_records"],
+            hard_negative_records=loaded["hard_negative_records"],
+            llm_mode=args.llm_mode,
+            with_budget=True,
+            classification_granularity=args.classification_granularity,
+            dataset_name=args.dataset_name,
+            dataset_kind=args.dataset_kind,
+        )
+    elif args.ablation:
+        report = evaluate_ablation(**loaded, with_budget=True, include_real=args.ablation_include_real)
+    else:
+        report = evaluate(
             loaded["records"],
             entity_records=loaded["entity_records"],
             clue_records=loaded["clue_records"],
@@ -799,7 +1230,6 @@ def main(argv: list[str] | None = None) -> int:
             dataset_name=args.dataset_name,
             dataset_kind=args.dataset_kind,
         )
-    )
     if args.ablation and args.write_latest_llm_value:
         report["latest_llm_value"] = write_latest_llm_value_report(
             report,
@@ -858,60 +1288,393 @@ def evaluate_ablation(
     with_budget: bool = True,
     include_real: bool = False,
 ) -> dict[str, Any]:
+    dataset_fingerprint = _ablation_dataset_fingerprint(
+        records,
+        entity_records=entity_records,
+        clue_records=clue_records,
+        hard_negative_records=hard_negative_records,
+    )
+    input_counts = _ablation_input_counts(
+        records,
+        entity_records=entity_records,
+        clue_records=clue_records,
+        hard_negative_records=hard_negative_records,
+    )
+
+    def run_scenario(
+        name: str,
+        *,
+        profile: str,
+        requested_llm_mode: str,
+        effective_llm_mode: str,
+        provider_status: str,
+        fallback_reason: str | None = None,
+        real_requested: bool = False,
+        real_gateway_configured: bool = False,
+    ) -> dict[str, Any]:
+        report = evaluate(
+            deepcopy(records),
+            entity_records=deepcopy(entity_records),
+            clue_records=deepcopy(clue_records),
+            hard_negative_records=deepcopy(hard_negative_records),
+            profile=profile,
+            llm_mode=effective_llm_mode,
+            with_budget=with_budget,
+        )
+        marker = {
+            "name": name,
+            "profile": profile,
+            "requested_llm_mode": requested_llm_mode,
+            "effective_llm_mode": effective_llm_mode,
+            "provider_status": provider_status,
+            "fallback_reason": fallback_reason,
+            "real_requested": real_requested,
+            "real_gateway_configured": real_gateway_configured,
+            "dataset_fingerprint": dataset_fingerprint,
+            "input_counts": input_counts,
+        }
+        if requested_llm_mode == "real_or_configured_fallback" and provider_status == "real":
+            marker.update(_real_scenario_runtime_status(report))
+        report["ablation_scenario"] = marker
+        report["dataset_fingerprint"] = dataset_fingerprint
+        return report
+
+    real_or_fallback = _real_or_fallback_ablation_choice(include_real=include_real)
     scenarios = {
-        "fast_off": evaluate(
-            deepcopy(records),
-            entity_records=deepcopy(entity_records),
-            clue_records=deepcopy(clue_records),
-            hard_negative_records=deepcopy(hard_negative_records),
+        "fast_off": run_scenario(
+            "fast_off",
             profile="fast",
-            llm_mode="off",
-            with_budget=with_budget,
+            requested_llm_mode="off",
+            effective_llm_mode="off",
+            provider_status="off",
         ),
-        "high_recall_off": evaluate(
-            deepcopy(records),
-            entity_records=deepcopy(entity_records),
-            clue_records=deepcopy(clue_records),
-            hard_negative_records=deepcopy(hard_negative_records),
-            profile="high_recall",
-            llm_mode="off",
-            with_budget=with_budget,
+        "balanced_mock": run_scenario(
+            "balanced_mock",
+            profile="balanced",
+            requested_llm_mode="mock",
+            effective_llm_mode="mock",
+            provider_status="mock",
         ),
-        "high_recall_mock": evaluate(
-            deepcopy(records),
-            entity_records=deepcopy(entity_records),
-            clue_records=deepcopy(clue_records),
-            hard_negative_records=deepcopy(hard_negative_records),
+        "balanced_real_or_configured_fallback": run_scenario(
+            "balanced_real_or_configured_fallback",
+            profile="balanced",
+            requested_llm_mode="real_or_configured_fallback",
+            effective_llm_mode=real_or_fallback["effective_llm_mode"],
+            provider_status=real_or_fallback["provider_status"],
+            fallback_reason=real_or_fallback.get("fallback_reason"),
+            real_requested=bool(real_or_fallback["real_requested"]),
+            real_gateway_configured=bool(real_or_fallback["real_gateway_configured"]),
+        ),
+        "high_recall_off": run_scenario(
+            "high_recall_off",
             profile="high_recall",
-            llm_mode="mock",
-            with_budget=with_budget,
+            requested_llm_mode="off",
+            effective_llm_mode="off",
+            provider_status="off",
+        ),
+        "high_recall_mock": run_scenario(
+            "high_recall_mock",
+            profile="high_recall",
+            requested_llm_mode="mock",
+            effective_llm_mode="mock",
+            provider_status="mock",
+        ),
+        "high_recall_real_or_configured_fallback": run_scenario(
+            "high_recall_real_or_configured_fallback",
+            profile="high_recall",
+            requested_llm_mode="real_or_configured_fallback",
+            effective_llm_mode=real_or_fallback["effective_llm_mode"],
+            provider_status=real_or_fallback["provider_status"],
+            fallback_reason=real_or_fallback.get("fallback_reason"),
+            real_requested=bool(real_or_fallback["real_requested"]),
+            real_gateway_configured=bool(real_or_fallback["real_gateway_configured"]),
         ),
     }
+    if include_real:
+        scenarios["balanced_real"] = scenarios["balanced_real_or_configured_fallback"]
+        scenarios["high_recall_real"] = scenarios["high_recall_real_or_configured_fallback"]
     base = scenarios["high_recall_off"]
     llm = scenarios["high_recall_mock"]
     comparison = _llm_value_delta(base, llm)
+    comparison["balanced_mock"] = _llm_value_delta(scenarios["fast_off"], scenarios["balanced_mock"])
+    comparison["balanced_real_or_fallback"] = _llm_value_delta(
+        scenarios["fast_off"],
+        scenarios["balanced_real_or_configured_fallback"],
+    )
+    balanced_real_marker = scenarios["balanced_real_or_configured_fallback"].get("ablation_scenario") or {}
+    comparison["balanced_real_or_fallback"]["provider_status"] = (
+        balanced_real_marker.get("provider_status") or real_or_fallback["provider_status"]
+    )
+    comparison["balanced_real_or_fallback"]["fallback_reason"] = (
+        balanced_real_marker.get("fallback_reason") or real_or_fallback.get("fallback_reason")
+    )
+    comparison["real_or_fallback"] = _llm_value_delta(base, scenarios["high_recall_real_or_configured_fallback"])
+    real_or_fallback_marker = scenarios["high_recall_real_or_configured_fallback"].get("ablation_scenario") or {}
+    comparison["real_or_fallback"]["provider_status"] = real_or_fallback_marker.get("provider_status") or real_or_fallback["provider_status"]
+    comparison["real_or_fallback"]["fallback_reason"] = real_or_fallback_marker.get("fallback_reason") or real_or_fallback.get("fallback_reason")
     if include_real:
-        scenarios["high_recall_real"] = evaluate(
-            deepcopy(records),
-            entity_records=deepcopy(entity_records),
-            clue_records=deepcopy(clue_records),
-            hard_negative_records=deepcopy(hard_negative_records),
-            profile="high_recall",
-            llm_mode="real",
-            with_budget=with_budget,
-        )
-        comparison["real"] = _llm_value_delta(base, scenarios["high_recall_real"])
+        comparison["balanced_real"] = comparison["balanced_real_or_fallback"]
+        comparison["real"] = comparison["real_or_fallback"]
+    matrix_scenarios = [
+        "fast_off",
+        "balanced_mock",
+        "balanced_real_or_configured_fallback",
+        "high_recall_real_or_configured_fallback",
+    ]
+    scenario_fingerprints = {
+        str((report.get("ablation_scenario") or {}).get("dataset_fingerprint") or "")
+        for name, report in scenarios.items()
+        if name not in {"balanced_real", "high_recall_real"}
+    }
     value_gate = LLMValueGate()
     return {
         "status": "completed",
         "mode": "llm_ablation",
         "runtime_value_gate_applied": False,
         "llm_value_gate_mode": "disabled_for_ablation_measurement",
+        "dataset_fingerprint": dataset_fingerprint,
+        "scenario_consistency": {
+            "dataset_fingerprint": dataset_fingerprint,
+            "same_dataset_fingerprint": scenario_fingerprints == {dataset_fingerprint},
+            "input_counts": input_counts,
+        },
         "scenarios": scenarios,
+        "llm_value_matrix": _llm_value_matrix(matrix_scenarios, scenarios, baseline_name="fast_off"),
         "llm_value": comparison,
         "llm_value_gate": {
             "should_enable_record_enrich": value_gate.should_enable_record_enrich("high_recall", comparison),
             "reason": comparison["gate_reason"],
+        },
+    }
+
+
+def _ablation_input_counts(
+    records: list[dict[str, Any]],
+    *,
+    entity_records: list[dict[str, Any]] | None,
+    clue_records: list[dict[str, Any]] | None,
+    hard_negative_records: list[dict[str, Any]] | None,
+) -> dict[str, int]:
+    return {
+        "classification_records": len(records),
+        "entity_records": len(entity_records or records),
+        "clue_records": len(clue_records or []),
+        "hard_negative_records": len(hard_negative_records or []),
+    }
+
+
+def _ablation_dataset_fingerprint(
+    records: list[dict[str, Any]],
+    *,
+    entity_records: list[dict[str, Any]] | None,
+    clue_records: list[dict[str, Any]] | None,
+    hard_negative_records: list[dict[str, Any]] | None,
+) -> str:
+    payload = {
+        "classification_records": records,
+        "entity_records": entity_records if entity_records is not None else records,
+        "clue_records": clue_records or [],
+        "hard_negative_records": hard_negative_records or [],
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def _real_or_fallback_ablation_choice(*, include_real: bool) -> dict[str, Any]:
+    config = LLMGatewayConfig.from_env()
+    real_gateway_configured = bool(config.api_key) and not config.dry_run and not config.mock
+    if real_gateway_configured:
+        return {
+            "effective_llm_mode": "real",
+            "provider_status": "real",
+            "fallback_reason": None,
+            "real_requested": include_real,
+            "real_gateway_configured": True,
+        }
+    if config.mock:
+        fallback_reason = "real_gateway_mock_mode_configured"
+    elif config.dry_run:
+        fallback_reason = "real_gateway_dry_run_or_missing_credentials"
+    elif not config.api_key:
+        fallback_reason = "real_gateway_missing_api_key"
+    else:
+        fallback_reason = "real_gateway_unavailable"
+    if include_real:
+        fallback_reason = f"real_requested_{fallback_reason}"
+    return {
+        "effective_llm_mode": "mock",
+        "provider_status": "fallback",
+        "fallback_reason": fallback_reason,
+        "real_requested": include_real,
+        "real_gateway_configured": False,
+    }
+
+
+def _real_scenario_runtime_status(report: Mapping[str, Any]) -> dict[str, Any]:
+    summary = report.get("pipeline_summary") if isinstance(report.get("pipeline_summary"), Mapping) else {}
+    traces = summary.get("llm_call_traces") if isinstance(summary.get("llm_call_traces"), list) else []
+    if not traces:
+        return {
+            "provider_status": "fallback",
+            "fallback_reason": "real_gateway_configured_but_no_llm_calls_attempted",
+        }
+    network_attempted = any(bool(item.get("network_attempted")) for item in traces if isinstance(item, Mapping))
+    successful_network = any(
+        bool(item.get("network_attempted")) and bool(item.get("llm_ok"))
+        for item in traces
+        if isinstance(item, Mapping)
+    )
+    if successful_network:
+        return {}
+    errors = sorted(
+        {
+            str(item.get("error") or "").strip()
+            for item in traces
+            if isinstance(item, Mapping) and str(item.get("error") or "").strip()
+        }
+    )
+    if network_attempted:
+        reason = "real_gateway_network_failed"
+        if errors:
+            reason = f"{reason}:{','.join(errors[:3])}"
+    else:
+        reason = "real_gateway_configured_but_used_local_fallback"
+        if errors:
+            reason = f"{reason}:{','.join(errors[:3])}"
+    return {
+        "provider_status": "fallback",
+        "fallback_reason": reason,
+    }
+
+
+def _llm_value_matrix(
+    scenario_names: Iterable[str],
+    scenarios: Mapping[str, Mapping[str, Any]],
+    *,
+    baseline_name: str,
+) -> list[dict[str, Any]]:
+    baseline = scenarios[baseline_name]
+    rows: list[dict[str, Any]] = []
+    for name in scenario_names:
+        report = scenarios[name]
+        marker = report.get("ablation_scenario") if isinstance(report.get("ablation_scenario"), Mapping) else {}
+        dimensions = report.get("profile_comparison_dimensions") if isinstance(report.get("profile_comparison_dimensions"), Mapping) else {}
+        row = {
+            "scenario": name,
+            "profile": marker.get("profile") or report.get("profile"),
+            "requested_llm_mode": marker.get("requested_llm_mode") or report.get("llm_mode"),
+            "effective_llm_mode": marker.get("effective_llm_mode") or report.get("llm_mode"),
+            "provider_status": marker.get("provider_status") or report.get("llm_mode"),
+            "fallback_reason": marker.get("fallback_reason"),
+            "dataset_fingerprint": marker.get("dataset_fingerprint") or report.get("dataset_fingerprint"),
+            "quality": {
+                "primary_classification_f1": report.get("primary_classification_f1"),
+                "secondary_classification_f1": report.get("secondary_classification_f1"),
+                "hierarchical_classification_f1": report.get("hierarchical_classification_f1"),
+                "entity_f1": report.get("entity_f1"),
+                "clue_recall": report.get("clue_recall"),
+                "clue_f1": report.get("clue_f1"),
+                "false_positive_rate": report.get("false_positive_rate"),
+            },
+            "cost": {
+                "llm_calls": dimensions.get("llm_calls"),
+                "llm_calls_per_1000_records": report.get("llm_calls_per_1000_records"),
+                "estimated_tokens": dimensions.get("estimated_tokens"),
+                "actual_usage_tokens": dimensions.get("actual_usage_tokens"),
+                "gateway_request_estimated_tokens": dimensions.get("gateway_request_estimated_tokens"),
+                "estimated_tokens_per_valid_clue": report.get("estimated_tokens_per_valid_clue"),
+                "actual_usage_tokens_per_valid_clue": report.get("actual_usage_tokens_per_valid_clue"),
+            },
+            "latency": {
+                "p50_latency_ms": report.get("p50_latency_ms"),
+                "p95_latency_ms": dimensions.get("p95_latency_ms") or report.get("p95_latency_ms"),
+            },
+        }
+        if name != baseline_name:
+            row[f"delta_vs_{baseline_name}"] = _llm_value_delta(baseline, report)
+        rows.append(row)
+    return rows
+
+
+def evaluate_profile_curve(
+    records: list[dict[str, Any]],
+    *,
+    entity_records: list[dict[str, Any]] | None = None,
+    clue_records: list[dict[str, Any]] | None = None,
+    hard_negative_records: list[dict[str, Any]] | None = None,
+    profiles: Iterable[str] = ("fast", "balanced", "high_recall"),
+    llm_mode: str = "off",
+    with_budget: bool = True,
+    classification_granularity: str = "auto",
+    dataset_name: str | None = None,
+    dataset_kind: str | None = None,
+) -> dict[str, Any]:
+    scenarios: dict[str, dict[str, Any]] = {}
+    curve: list[dict[str, Any]] = []
+    for profile in profiles:
+        normalized_profile = str(profile or "").strip()
+        if normalized_profile not in {"fast", "balanced", "high_recall"}:
+            continue
+        report = evaluate(
+            deepcopy(records),
+            entity_records=deepcopy(entity_records),
+            clue_records=deepcopy(clue_records),
+            hard_negative_records=deepcopy(hard_negative_records),
+            profile=normalized_profile,
+            llm_mode=llm_mode,
+            with_budget=with_budget,
+            classification_granularity=classification_granularity,
+            dataset_name=dataset_name,
+            dataset_kind=dataset_kind,
+        )
+        scenarios[normalized_profile] = report
+        curve.append(_profile_curve_row(normalized_profile, report))
+    return {
+        "status": "completed",
+        "mode": "profile_quality_cost_latency_curve",
+        "profiles": [row["profile"] for row in curve],
+        "llm_mode": llm_mode,
+        "profile_quality_cost_latency_curve": curve,
+        "scenarios": scenarios,
+        "claim_boundary": (
+            "Curve compares local/offline pipeline quality, deterministic routing cost estimates, "
+            "and measured local p95 latency for the same evaluation fixtures."
+        ),
+    }
+
+
+def _profile_curve_row(profile: str, report: Mapping[str, Any]) -> dict[str, Any]:
+    dimensions = report.get("profile_comparison_dimensions") if isinstance(report.get("profile_comparison_dimensions"), Mapping) else {}
+    return {
+        "profile": profile,
+        "quality": {
+            "primary_classification_f1": report.get("primary_classification_f1"),
+            "secondary_classification_f1": report.get("secondary_classification_f1"),
+            "hierarchical_classification_f1": report.get("hierarchical_classification_f1"),
+            "classification_recall": dimensions.get("classification_recall") or report.get("classification_recall"),
+            "false_positive_rate": report.get("false_positive_rate"),
+            "classification_review_rate": report.get("classification_review_rate"),
+            "entity_f1": report.get("entity_f1"),
+            "clue_precision": report.get("clue_precision"),
+            "clue_recall": report.get("clue_recall"),
+            "clue_f1": report.get("clue_f1"),
+        },
+        "cost": {
+            "llm_calls": dimensions.get("llm_calls"),
+            "llm_calls_per_1000_records": report.get("llm_calls_per_1000_records"),
+            "estimated_tokens": dimensions.get("estimated_tokens"),
+            "estimated_tokens_per_valid_clue": report.get("estimated_tokens_per_valid_clue"),
+            "profile_budget": _budget_profile(profile),
+        },
+        "latency": {
+            "p50_latency_ms": report.get("p50_latency_ms"),
+            "p95_latency_ms": dimensions.get("p95_latency_ms") or report.get("p95_latency_ms"),
+        },
+        "tradeoff_summary": {
+            "profile": profile,
+            "quality_signal": report.get("hierarchical_classification_f1") or report.get("primary_classification_f1"),
+            "cost_signal": report.get("llm_calls_per_1000_records"),
+            "latency_signal_ms": dimensions.get("p95_latency_ms") or report.get("p95_latency_ms"),
         },
     }
 
@@ -924,30 +1687,97 @@ def _gateway_for_mode(llm_mode: str) -> LLMGateway | None:
     return None
 
 
+def _gateway_stats(gateway: Any | None) -> list[dict[str, Any]]:
+    if gateway is None or not hasattr(gateway, "stats"):
+        return []
+    try:
+        stats = gateway.stats()
+    except Exception:
+        return []
+    return [dict(item) for item in stats if isinstance(item, Mapping)]
+
+
+def _sum_actual_usage_tokens(stats: Iterable[Mapping[str, Any]]) -> int | None:
+    values: list[int] = []
+    for item in stats:
+        value = item.get("actual_usage_tokens")
+        if value is None:
+            continue
+        try:
+            values.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return sum(values) if values else None
+
+
+def _sum_gateway_estimated_tokens(stats: Iterable[Mapping[str, Any]]) -> int | None:
+    values: list[int] = []
+    for item in stats:
+        value = item.get("gateway_request_estimated_tokens")
+        if value is None:
+            continue
+        try:
+            values.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return sum(values) if values else None
+
+
 def _budget_profile(profile: str) -> dict[str, Any]:
+    configured = _configured_budget_profile(profile)
+    if configured:
+        return configured
     return {
         "fast": {
-            "max_candidate_clues": 4,
-            "max_llm_calls": 2,
-            "max_llm_tokens": 4000,
-            "max_llm_classify_records": 2,
-            "max_llm_refine_clues": 1,
+            "max_candidate_clues": 20,
+            "max_llm_calls": 3,
+            "max_llm_tokens": 3000,
+            "max_llm_classify_records": 5,
+            "max_llm_extract_records": 5,
+            "max_llm_refine_clues": 2,
         },
         "balanced": {
-            "max_candidate_clues": 6,
-            "max_llm_calls": 20,
-            "max_llm_tokens": 20000,
+            "max_candidate_clues": 50,
+            "max_llm_calls": 10,
+            "max_llm_tokens": 10000,
             "max_llm_classify_records": 20,
-            "max_llm_refine_clues": 10,
+            "max_llm_extract_records": 20,
+            "max_llm_refine_clues": 6,
         },
         "high_recall": {
-            "max_candidate_clues": 6,
+            "max_candidate_clues": 200,
             "max_llm_calls": 40,
-            "max_llm_tokens": 40000,
-            "max_llm_classify_records": 40,
+            "max_llm_tokens": 50000,
+            "max_llm_classify_records": 100,
+            "max_llm_extract_records": 100,
             "max_llm_refine_clues": 20,
         },
     }.get(profile, {})
+
+
+def _configured_budget_profile(profile: str) -> dict[str, Any]:
+    path = PROJECT_ROOT / "config" / "routing_profiles.yaml"
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except OSError:
+        return {}
+    profiles = payload.get("routing_profiles") if isinstance(payload, Mapping) else {}
+    raw = profiles.get(profile) if isinstance(profiles, Mapping) else None
+    if not isinstance(raw, Mapping):
+        return {}
+    budget_keys = {
+        "max_elapsed_seconds",
+        "max_sources",
+        "max_raw_records",
+        "max_candidate_clues",
+        "max_llm_calls",
+        "max_llm_tokens",
+        "max_llm_classify_records",
+        "max_llm_extract_records",
+        "max_llm_refine_clues",
+        "max_query_rewrite_sources",
+    }
+    return {key: raw[key] for key in budget_keys if key in raw}
 
 
 def _llm_value_delta(base: Mapping[str, Any], llm: Mapping[str, Any]) -> dict[str, Any]:
@@ -957,7 +1787,14 @@ def _llm_value_delta(base: Mapping[str, Any], llm: Mapping[str, Any]) -> dict[st
     clue_precision_delta = round(_numeric_metric(llm.get("clue_f1")) - _numeric_metric(base.get("clue_f1")), 4)
     clue_recall_delta = round(_numeric_metric(llm.get("clue_recall")) - _numeric_metric(base.get("clue_recall")), 4)
     llm_calls_delta = round(_numeric_metric(llm.get("llm_calls_per_1000_records")) - _numeric_metric(base.get("llm_calls_per_1000_records")), 4)
-    token_delta = float(llm.get("profile_comparison_dimensions", {}).get("estimated_tokens") or 0) - float(base.get("profile_comparison_dimensions", {}).get("estimated_tokens") or 0)
+    llm_dimensions = llm.get("profile_comparison_dimensions") if isinstance(llm.get("profile_comparison_dimensions"), Mapping) else {}
+    base_dimensions = base.get("profile_comparison_dimensions") if isinstance(base.get("profile_comparison_dimensions"), Mapping) else {}
+    token_delta = _token_total_for_value_delta(llm_dimensions) - _token_total_for_value_delta(base_dimensions)
+    latency_delta = round(
+        _numeric_metric(llm_dimensions.get("p95_latency_ms") or llm.get("p95_latency_ms"))
+        - _numeric_metric(base_dimensions.get("p95_latency_ms") or base.get("p95_latency_ms")),
+        4,
+    )
     f1_gain = max(classification_delta, entity_delta, clue_precision_delta, 0.0)
     extra_valid_clues = max(float(llm.get("clue", {}).get("overall", {}).get("tp") or 0) - float(base.get("clue", {}).get("overall", {}).get("tp") or 0), 0.0)
     if f1_gain <= 0.0 and extra_valid_clues <= 0.0:
@@ -971,8 +1808,11 @@ def _llm_value_delta(base: Mapping[str, Any], llm: Mapping[str, Any]) -> dict[st
         "clue_precision_delta": clue_precision_delta,
         "clue_recall_delta": clue_recall_delta,
         "llm_calls_delta": llm_calls_delta,
+        "p95_latency_ms_delta": latency_delta,
         "tokens_per_f1_gain": None if f1_gain <= 0 else round(token_delta / f1_gain, 4),
         "tokens_per_extra_valid_clue": None if extra_valid_clues <= 0 else round(token_delta / extra_valid_clues, 4),
+        "latency_ms_per_f1_gain": None if f1_gain <= 0 else round(latency_delta / f1_gain, 4),
+        "latency_ms_per_extra_valid_clue": None if extra_valid_clues <= 0 else round(latency_delta / extra_valid_clues, 4),
         "gate_reason": gate_reason,
     }
 
@@ -1086,6 +1926,13 @@ def _numeric_metric(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _token_total_for_value_delta(dimensions: Mapping[str, Any]) -> float:
+    actual = dimensions.get("actual_usage_tokens")
+    if actual is not None:
+        return _numeric_metric(actual)
+    return _numeric_metric(dimensions.get("estimated_tokens"))
 
 
 if __name__ == "__main__":

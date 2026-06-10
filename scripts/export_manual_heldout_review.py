@@ -50,8 +50,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output", default="data/manual_review/heldout_review_task.csv", help="CSV task file for analysts.")
     parser.add_argument("--readme", default="data/manual_review/README.md", help="Review instructions to write.")
     parser.add_argument("--report", default="data/manual_review/heldout_review_task_report.json", help="Task package report JSON.")
-    parser.add_argument("--limit", type=int, default=100, help="Maximum rows to export.")
-    parser.add_argument("--min-target", type=int, default=50, help="Minimum rows expected to be confirmed.")
+    parser.add_argument("--limit", type=int, default=200, help="Maximum rows to export.")
+    parser.add_argument("--min-target", type=int, default=100, help="Minimum rows expected to be confirmed.")
     return parser.parse_args(argv)
 
 
@@ -104,6 +104,14 @@ def build_report(rows: list[dict[str, str]], *, output: str | Path, min_target: 
             "typical_error",
         ],
         "accepted_status_values": ["confirmed", "corrected", "rejected", "pending_human_confirmation"],
+        "manual_gold_claim": {
+            "can_claim_manual_gold": False,
+            "claim_status": "review_package_only",
+            "required_next_step": (
+                "Analysts must fill status/annotator/review_date/final labels/conflict fields, "
+                "then run scripts/validate_manual_heldout.py before claiming manual gold."
+            ),
+        },
         "claim_boundary": "This package is ready for a human analyst; it is not itself a human-confirmed held-out set.",
     }
 

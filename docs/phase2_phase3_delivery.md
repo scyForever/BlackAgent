@@ -1,143 +1,191 @@
 # 分类 / 抽取阶段交付说明
 
-本文档记录 2026-05-26 基于 `data/collection_phase_delivery.db` 的**分类 / 抽取阶段最新版产物**。  
-本轮输入不是全量 4042 条原始底库直接硬跑，而是先基于最新 `keyword_relevance_v6` 结果，只取仍带主题标签的 `1755` 条记录进入分类 / 抽取链路。
-
-## 1. 本轮实际产出
-
-- 输入原始底库：`data/collection_phase_delivery.db`
-- 进入分类 / 抽取阶段的样本数：`1755`
-- 实际完成分类：`1755`
-- 实际抽取实体：`4597`
-- 需要人工复核：`739`
-- 原先 `unknown=759`：**已压到 `0`**
-- 后续残留 `secondary_label=未细分`：**`82 -> 0`**
-
-### 一级分类计数
-
-| 一级分类 | 条数 |
-| --- | ---: |
-| 账号交易 | 688 |
-| 工具交易 | 466 |
-| 众包服务 | 405 |
-| 诈骗引流 | 103 |
-| 刷单作弊 | 93 |
-
-### 高频二级标签
-
-| 二级标签 | 条数 |
-| --- | ---: |
-| 群控脚本 | 461 |
-| 接码注册 | 424 |
-| 实名账号买卖 | 231 |
-| 代投服务 | 221 |
-| 拉群获客 | 172 |
-| 私域导流 | 74 |
-| 刷单返佣 | 33 |
-| 账号养号 | 33 |
-| 垫付兼职 | 22 |
-| 拉群语义 | 19 |
-| 手工做单 | 16 |
-| 订单卡单 | 14 |
-| 打粉卖量 | 12 |
-| 卡单玩法 | 8 |
-
-> 本轮已把原先 `拉人获客=469` 继续拆成 `拉群获客 / 打粉卖量 / 代投服务`，并继续吃掉了后续残留的 `未细分=82`；同时，一批明显“软件更新 / 教程 / 下载”文案被重新推回 `工具交易 / 群控脚本`。
-
-### 高频实体类型
-
-| 实体类型 | 条数 |
-| --- | ---: |
-| contact | 1445 |
-| tool_name | 1365 |
-| url | 810 |
-| slang_term | 605 |
-| settlement | 265 |
-| account | 107 |
-
-### 高频实体示例
-
-- `tool_name::接码`：`912`
-- `slang_term::Telegram`：`352`
-- `tool_name::协议号`：`264`
-- `slang_term::抖音`：`247`
-- `settlement::支付宝`：`157`
-- `tool_name::接码平台`：`114`
-
-## 2. 本轮结论
-
-### 2.1 分类 / 抽取链路已经跑通并完成标签升级
-
-本轮已经稳定输出：
-
-- 一级分类
-- 二级标签
-- `review_required`
-- 联系方式 / 工具名 / URL / 黑话 / 结算方式 / 账号 等实体
-
-交付产物已落成到文件：
+本文档记录当前 `data/collection_phase_delivery.db` 的分类 / 抽取交付口径。数字来自已重新生成的：
 
 - `data/classification_extraction_phase_summary.json`
+- `data/classification_extraction_phase_high_risk_summary.json`
 - `data/classification_extraction_phase_classifications.jsonl`
 - `data/classification_extraction_phase_entities.jsonl`
 
-### 2.2 这轮的核心成果不是“多跑一遍”，而是把 unknown / 未细分 / 粗粒度服务桶一起压下去
+## 1. 当前产出视图
 
-上一轮分类结果里：
+### 1.1 全量 cleaned 视图
 
-- `unknown = 759`
-
-本轮补完分类规则后：
-
-- `unknown = 0`
-- `secondary_label=未细分 = 0`
-
-新增和增强的主要分类能力包括：
-
-- 一级类：`众包服务`
-- 服务细分：`拉群获客` / `打粉卖量` / `代投服务` / `代运营`
-- 残留样本承接标签：`拉群语义` / `打粉引流` / `订单卡单` / `卡单玩法` / `手工做单`
-- 旧类增强：`接码注册` / `群控脚本` / `私域导流`
-
-### 2.3 当前主要聚集源已经从 unknown / 未细分 迁移到明确类别
-
-例如：
-
-- `telegram_public_delivery:TGtelegram101` / `huzige1916` -> 以 `拉群获客` 为主
-- `telegram_public_delivery:alanghome` / `tgzs88` / `LYZDH` -> 以 `代投服务` 为主
-- `telegram_public_delivery:kuajing003` -> 开始出现 `打粉卖量`
-- `telegram_public_delivery:HHweb_yk` / `heimayunkong1` -> 以 `工具交易 / 群控脚本` 为主
-- `tieba_task_fraud_search` -> 由原先粗粒度 `未细分` 收敛到 `订单卡单 / 卡单玩法 / 手工做单`
-- `telegram_public_delivery:alanghome` / `tgchqf` / `haodi00` -> 一部分原本挂在服务桶里的工具更新文案，已回流到 `工具交易`
-
-这说明当前规则已经把之前“看得见主题、分不出类别”的服务型文本压进了明确分类桶。
-
-## 3. 复跑命令
+复跑命令：
 
 ```powershell
-python scripts/run_classification_extraction_phase.py --db data/collection_phase_delivery.db --summary-out data/classification_extraction_phase_summary.json --classifications-jsonl data/classification_extraction_phase_classifications.jsonl --entities-jsonl data/classification_extraction_phase_entities.jsonl --only-labeled
+python scripts/run_classification_extraction_phase.py --db data/collection_phase_delivery.db --source cleaned --summary-out data/classification_extraction_phase_summary.json --classifications-jsonl data/classification_extraction_phase_classifications.jsonl --entities-jsonl data/classification_extraction_phase_entities.jsonl
 ```
 
-如果前面已经跑过清洗阶段并持久化了 `cleaned_texts`，现在可以直接让分类 / 抽取阶段消费清洗结果：
+当前结果：
 
-```powershell
-python scripts/run_classification_extraction_phase.py --db data/collection_phase_delivery.db --source cleaned --summary-out data/classification_extraction_phase_summary.json --classifications-jsonl data/classification_extraction_phase_classifications.jsonl --entities-jsonl data/classification_extraction_phase_entities.jsonl --only-labeled
-```
+| 指标 | 数值 |
+| --- | ---: |
+| raw snapshot | 4163 |
+| cleaned snapshot | 3464 |
+| 分类输入 | 3464 |
+| 分类完成 | 3464 |
+| 实体抽取 | 21774 |
+| 需人工复核 | 970 |
 
-如果只想继续处理清洗阶段筛出来的高危语料：
+一级分类计数：
+
+| 一级分类 | 条数 |
+| --- | ---: |
+| 正常业务白噪声 | 1744 |
+| 账号交易 | 513 |
+| 工具交易 | 333 |
+| 众包服务 | 304 |
+| 诈骗引流 | 302 |
+| unknown | 190 |
+| 刷单作弊 | 78 |
+
+二级标签计数中仍有 `待研判=398`、`低相关=1737`、`未细分=30`。因此当前不能声称全量 cleaned 语料已经把 `unknown / 待研判 / 未细分` 清零。
+
+### 1.2 高危高质量视图
+
+复跑命令：
 
 ```powershell
 python scripts/run_classification_extraction_phase.py --db data/collection_phase_delivery.db --source cleaned --high-risk-only --min-quality-score 0.7 --summary-out data/classification_extraction_phase_high_risk_summary.json --classifications-jsonl data/classification_extraction_phase_high_risk_classifications.jsonl --entities-jsonl data/classification_extraction_phase_high_risk_entities.jsonl
 ```
 
+当前结果：
+
+| 指标 | 数值 |
+| --- | ---: |
+| raw snapshot | 4163 |
+| cleaned snapshot | 3464 |
+| 高危高质量输入 | 1061 |
+| 分类完成 | 1061 |
+| 实体抽取 | 4698 |
+| 需人工复核 | 461 |
+
+一级分类计数：
+
+| 一级分类 | 条数 |
+| --- | ---: |
+| 账号交易 | 360 |
+| 工具交易 | 270 |
+| 众包服务 | 240 |
+| 诈骗引流 | 117 |
+| 刷单作弊 | 46 |
+| 正常业务白噪声 | 28 |
+
+高危高质量视图中，一级分类没有 `unknown`。但二级标签仍有 `待研判=90`、`未细分=19`，这些样本继续保留复核边界。
+
+## 2. 本轮优化点
+
+### 2.1 正常业务白噪声兜底
+
+分类器现在会把明显公共资料、技术说明、教程介绍等无交易/联系方式意图的文本归入 `正常业务白噪声 / 低相关`，避免这类样本继续堆在 `unknown`。同时含直接联系、交易邀约、账号/工具/任务风险信号的弱证据文本仍保留 `待研判` 和人工复核。
+
+当前效果：
+
+- 全量 cleaned 中 `正常业务白噪声=1744`
+- 高危高质量视图中 `正常业务白噪声=28`
+- 全量 cleaned 仍保留 `unknown=190`，不做过度承诺
+
+### 2.2 图片文字与 OCR 信心
+
+多模态入口现在保留：
+
+- `content_modality=image_text/mixed/text`
+- `ocr_text`
+- `ocr_confidence`
+- `ocr_engine_confidences`
+- `ocr_confidence_details`
+
+OCR hard set 产物：
+
+| 产物 | 当前结果 |
+| --- | ---: |
+| `tests/evaluation/ocr_image_text_hardset.jsonl` | 20 行 |
+| `content_modality=image_text` | 20 |
+| `ocr_status=completed` | 20 |
+
+OCR hard set 评测 `data/eval_ocr_hardset_report.json`：
+
+| 指标 | 数值 |
+| --- | ---: |
+| primary classification F1 | 1.0 |
+| secondary classification F1 | 0.8 |
+| hierarchical classification F1 | 0.8 |
+| entity F1 | 0.9677 |
+| review rate | 0.4 |
+
+边界：该 hard set 验证图片文字合同和确定性 OCR 路径，不代表外部 OCR 引擎在线质量。
+
+### 2.3 黑话候选发现闭环
+
+新增 `scripts/build_slang_candidate_report.py`，从 `unknown / 待研判 / 未细分 / review_required` 样本中挖掘高频上下文 n-gram，并输出待人工确认候选。
+
+当前报告 `data/slang_candidate_report.json`：
+
+| 指标 | 数值 |
+| --- | ---: |
+| 输入 cleaned 记录 | 3464 |
+| pending 分类记录 | 970 |
+| 候选数量 | 80 |
+| min count | 3 |
+
+高频候选示例包括 `库存`、`协议`、`直登`、`机器人`、`频道`、`采集`、`批量`、`验证`、`小号`、`批发`。这些只是发现线索，`manual_review.claim_boundary` 明确要求人工确认后才能进入动态黑话生命周期，不能直接写入正式词库。人工确认建议使用 `data/manual_review/slang_candidate_review_template.csv` 记录 `approved/rejected/needs_more_evidence`、归一化词、目标风险类、reviewer 和日期，再进入 `DynamicSlangLifecycleManager.review/gray_rollout/activate`。
+
+### 2.4 人工 held-out 评估
+
+当前人工 held-out 已经有人审完并通过验证：
+
+| 产物 | 当前结果 |
+| --- | ---: |
+| `tests/evaluation/heldout_classification.jsonl` | 200 行 |
+| `data/manual_review/heldout_review_task.csv` | 200 行 |
+| `data/manual_review/heldout_review_task_report.json` | `ready_for_human_review` |
+| `data/manual_heldout_report.json` | `completed` |
+| 已确认人工 gold | 193 |
+| rejected | 7 |
+| 最低人工确认目标 | 100 |
+| claim status | `human_confirmed_gold_ready` |
+
+`data/eval_manual_heldout_report.json` 的人工 gold 离线评估：primary F1=0.7484，secondary F1=0.6124，hierarchical F1=0.5314，entity F1=0.9484，clue F1=0.1538，clue recall=0.0833，object clue F1=0.0769，evidence reviewability rate=1.0，false positive rate=0.3361，classification review rate=0.3575。边界：该结果只证明本地公开 / 授权 held-out split，不代表线上生产泛化；对象级线索与证据链可复核率已从 0 拉起，但线索召回仍低，当前线索产出应作为人工复核增强候选。
+
+## 3. 实体抽取结果
+
+全量 cleaned 视图实体类型：
+
+| 实体类型 | 条数 |
+| --- | ---: |
+| url | 12346 |
+| contact | 3030 |
+| invite_code | 2961 |
+| slang_term | 2852 |
+| tool_name | 375 |
+| settlement | 110 |
+| account | 100 |
+
+高危高质量视图实体类型：
+
+| 实体类型 | 条数 |
+| --- | ---: |
+| url | 2251 |
+| contact | 1153 |
+| slang_term | 824 |
+| tool_name | 303 |
+| settlement | 92 |
+| invite_code | 71 |
+| account | 4 |
+
 ## 4. 关键代码入口
 
 - `src/classifier/nlp_rule_matcher.py`
 - `src/enhancement/text_intelligence.py`
+- `src/enhancement/source_intake.py`
+- `src/ocr/image_text.py`
 - `scripts/run_classification_extraction_phase.py`
+- `scripts/build_slang_candidate_report.py`
 
-## 5. 下一步建议
+## 5. 当前边界
 
-1. 继续细分 `众包服务=405`，优先拆 `代投服务=221`，把“私信代发 / 群发代发 / SEO排名 / 数据筛活 / 采集投放”进一步拉开。
-2. 对 `拉群语义 / 订单卡单 / 卡单玩法 / 手工做单` 这批 review-only 标签做模板复盘，继续压缩边界宽、低置信样本。
-3. 对少量仍落在 `诈骗引流` 的 `打粉引流 / 拉群语义` 样本再做一次模板复盘，决定是否继续上提到 `众包服务` 或继续细拆 `代运营` 标签。
+- 全量 cleaned 语料仍有大量 `unknown / 待研判`，这是候选复核池，不是已确认黑灰产事实。
+- 高危高质量视图可以说明“一级 unknown 已不存在”，但不能扩展成“全量未知已归零”。
+- `正常业务白噪声` 是低相关归档判断，不等于证明页面永久安全。
+- 人工 held-out gold 已可用，但只能支撑本地公开 / 授权 held-out split 的离线结论。

@@ -87,6 +87,14 @@ python scripts/run_agent_cli.py --demo-sample
 
 `--demo-sample` 没有显式 `--query` 时会自动使用内置默认 query，适合非交互 smoke。
 
+最终验收口径冻结在一个摘要文件中：
+
+```powershell
+python scripts/run_acceptance_gate.py
+```
+
+该命令会生成 `data/final_acceptance_summary.json`，并只把当前有效产物作为最终验收依据：`data/manual_heldout_eval_current.json`、`data/eval_manual_heldout_clue_recall_report.json`、多源 evidence pack 报告，以及显式运行的验收命令结果。`data/eval_report.json` 只作为历史/临时报告处理，不作为最终答辩口径。
+
 一键答辩 demo/API/UI：
 
 ```powershell
@@ -115,6 +123,24 @@ python scripts/run_agent_cli.py `
   --enable-network `
   --show summary
 ```
+
+答辩演示建议使用两条明确路径：
+
+```powershell
+# 离线稳定演示：使用内置样本和本地 evidence pack，不依赖当天网络和外部凭据。
+python scripts/run_agent_cli.py --demo-sample --show summary --dry-run
+
+# 授权联网演示：仅在已配置授权 source / X / Telegram 凭据时展示实时采集。
+python scripts/run_agent_cli.py `
+  --query "取当天诈骗引流相关线索" `
+  --enable-network `
+  --routing-profile high_recall `
+  --source-config-path config/intel_sources.acceptance_telegramnav_live.yaml `
+  --max-sources 4 `
+  --show summary
+```
+
+如果没有 X/TG 等凭据，联网演示只能展示已授权 HTTP/source catalog 或 loopback smoke；不要暗示已经实时覆盖这些平台。
 
 控制效果 / 成本 / 时延取舍：
 
@@ -177,6 +203,9 @@ $env:BLACKAGENT_LLM_BASE_URL='https://your-provider/v1'
 $env:BLACKAGENT_LLM_API_KEY='***'
 $env:BLACKAGENT_LLM_MODEL='your-model'
 $env:BLACKAGENT_LLM_DRY_RUN='false'
+# 生产/持久化部署应设置 PII 哈希盐，使落库的联系方式/账号 canonical_hash 加盐不可逆；
+# 留空（默认）时哈希与历史基准产物保持一致，便于本地复跑。
+$env:BLACKAGENT_PII_HASH_SALT='<deployment-secret-salt>'
 ```
 
 ## 本地 runtime 示例
@@ -239,7 +268,7 @@ python scripts/evaluate_pipeline.py `
   --max-hard-negative-fpr 0.10 `
   --max-clue-overgeneration-ratio 2.0 `
   --max-review-load-per-100-records 3.0 `
-  --output data/eval_report.json
+  --output data/eval_gold_fixture_report.json
 
 python scripts/evaluate_pipeline.py `
   --gold tests/evaluation/gold_classification.jsonl `
@@ -248,6 +277,14 @@ python scripts/evaluate_pipeline.py `
   --clues-gold tests/evaluation/gold_clues.jsonl `
   --ablation `
   --output data/eval_llm_ablation.json
+
+python scripts/evaluate_pipeline.py `
+  --gold tests/evaluation/llm_required_cases.jsonl `
+  --hard-negative tests/evaluation/context_conflict.jsonl `
+  --ablation `
+  --with-budget `
+  --write-latest-llm-value data/latest_llm_value_report.json `
+  --output data/eval_llm_hard_ablation.json
 
 python scripts/build_heldout_eval.py `
   --limit 60 `
@@ -296,6 +333,15 @@ python scripts/generate_source_smoke_report.py `
 python scripts/run_live_source_smoke.py `
   --output data/source_live_smoke_report.json
 
+python scripts/build_acceptance_evidence_pack.py `
+  --acceptance-pack data/collection_phase_multi_source_acceptance_pack.jsonl `
+  --cleaned data/acceptance_direct_final3_cleaned_corpus.jsonl `
+  --classifications data/acceptance_direct_final3_raw_classifications.jsonl `
+  --entities data/acceptance_direct_final3_raw_entities.jsonl `
+  --hydrated data/acceptance_direct_final3_hydrated_pages.jsonl `
+  --output data/collection_phase_multi_source_evidence_pack.jsonl `
+  --report-out data/collection_phase_multi_source_evidence_pack_report.json
+
 python scripts/run_ocr_demo.py `
   --output data/ocr_demo_report.json
 
@@ -340,11 +386,22 @@ split，不能冒充线上泛化。人工版 held-out 只有在 `validate_manual
 看到 `confirmed / corrected` 且 `annotator / review_date / final_risk_categories /
 conflict_handling` 等字段完整时才会输出 `manual_heldout_public_authorized`。
 线索质量需分别查看 `standard_clue_eval` 与 `graph_clue_eval`，人工负载看
-`overall_review_load_eval`。
-`--ablation` 会对比 `fast/off`、`high_recall/off`、`high_recall/mock`，输出
-`classification_f1_delta / entity_f1_delta / clue_*_delta / llm_calls_delta /
-tokens_per_f1_gain / tokens_per_extra_valid_clue`，用于判断 LLM record enrich
-是否值得启用；默认仍是受控增强，不把 record enrich 当作全量必选链路。
+`overall_review_load_eval`；source smoke 使用 IM、论坛/社媒、垂直平台、
+公众号/文章四个 `smoke_group`，其中公众号/文章仍保留在全局
+`social_or_forum` source class 中。
+`--ablation` 会保留 `fast/off`、`high_recall/off`、`high_recall/mock`，
+并额外输出 `fast/off`、`balanced/mock`、`high_recall/real_or_configured_fallback`
+的 LLM value matrix；真实网关未配置时高召回场景会标注 `fallback` 而不是静默省略。
+小型 hard ablation 固定使用 `tests/evaluation/llm_required_cases.jsonl` 的 50 条
+LLM-required 正样本和 `tests/evaluation/context_conflict.jsonl` 的 50 条冲突负样本；
+credentialless/offline 环境只能声称 value gate 离线证明，不能冒充真实 provider 证明。
+真实 LLM 价值证明需要配置真实网关凭据并追加 `--ablation-include-real`，否则
+`high_recall/real_or_configured_fallback` 必须显示 `provider_status=fallback` 和
+`fallback_reason`。
+报告包含 `classification_f1_delta / entity_f1_delta / clue_*_delta / llm_calls_delta /
+tokens_per_f1_gain / tokens_per_extra_valid_clue / latency_ms_per_f1_gain /
+latency_ms_per_extra_valid_clue`，用于判断 LLM record enrich 是否值得启用；
+默认仍是受控增强，不把 record enrich 当作全量必选链路。
 
 默认 `pytest` 已配置为 offline/unit：`pytest.ini` 和 `pyproject.toml` 会排除
 `integration`、`network` marker；需要真实网络或集成验证时显式运行对应 marker。

@@ -7,7 +7,7 @@ from typing import Any, Iterable, Mapping, Protocol
 from src.cleaner.pipeline import CleanerPipeline
 from src.domain import CleanedRecord, ClassificationResolution, ExtractedEntity, IntelRecord, PipelineItem, RiskClassification
 from src.pipeline.classification_resolution import resolve_classification
-from src.enhancement.clue_quality import ClueQualityEvaluator
+from src.enhancement.clue_quality import ClueQualityEvaluator, build_evidence_reviewability
 from src.enhancement.source_intake import MultimodalTextExtractor
 from src.enhancement.strategy import RiskClueAggregator
 from src.enhancement.text_intelligence import AdaptiveEntropyFilter, AdvancedEntityExtractor, FineGrainedIntentClassifier
@@ -160,6 +160,7 @@ class ClassifyStage:
                 conflict_status=_optional_str(resolution.final.get("conflict_status")),
                 evidence=[str(value) for value in (resolution.final.get("evidence") or [])],
                 review_required=bool(resolution.final.get("review_required")),
+                review_bucket=str(resolution.final.get("review_bucket") or "human_review_required"),
                 classifier_version=str(resolution.final.get("classifier_version") or "unknown"),
             )
             current = _item_with_payload(
@@ -267,10 +268,12 @@ class ScoreStage:
     def run_batch(self, items: Iterable[Mapping[str, Any]], **kwargs: Any) -> list[dict[str, Any]]:
         clues = [dict(item) for item in items]
         context = dict(kwargs.get("context") or {})
+        entities = context.get("entities") or []
+        records = context.get("records") or context.get("raw_records") or context.get("items") or []
         assessments = self.evaluator.evaluate_many(
             clues,
             classifications=context.get("classifications") or [],
-            entities=context.get("entities") or [],
+            entities=entities,
             quality_profile=str(context.get("quality_profile") or "balanced"),
             require_cross_source=bool(context.get("require_cross_source", False)),
             require_evidence_chain=bool(context.get("require_evidence_chain", True)),
@@ -284,6 +287,14 @@ class ScoreStage:
                 payload["quality"] = assessment.model_dump()
                 payload["quality_score"] = assessment.quality_score
                 payload["quality_level"] = assessment.quality_level
+                payload["evidence_reviewability"] = build_evidence_reviewability(
+                    payload,
+                    assessment=assessment,
+                    classifications=context.get("classifications") or [],
+                    entities=entities,
+                    records=records,
+                )
+                payload["evidence_cards"] = payload["evidence_reviewability"].get("evidence_cards") or []
             output.append(payload)
         return output
 
@@ -332,6 +343,7 @@ def _coerce_pipeline_item(item: Mapping[str, Any] | PipelineItem) -> PipelineIte
             conflict_status=_optional_str(final.get("conflict_status")),
             evidence=[str(value) for value in (final.get("evidence") or [])],
             review_required=bool(final.get("review_required")),
+            review_bucket=str(final.get("review_bucket") or "human_review_required"),
             classifier_version=str(final.get("classifier_version") or final.get("decision_version") or "unknown"),
         )
     resolution = (
@@ -516,6 +528,7 @@ def _sync_classification_contract(item: dict[str, Any], classification: Mapping[
         conflict_status=_optional_str(final_classification.get("conflict_status")),
         evidence=[str(value) for value in (final_classification.get("evidence") or [])],
         review_required=bool(final_classification.get("review_required")),
+        review_bucket=str(final_classification.get("review_bucket") or "human_review_required"),
         classifier_version=str(final_classification.get("classifier_version") or final_classification.get("decision_version") or "unknown"),
     ).model_dump()
     contract["classification_resolution"] = ClassificationResolution.model_validate(dict(resolution_payload)).model_dump()

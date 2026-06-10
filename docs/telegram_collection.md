@@ -43,6 +43,38 @@ $env:BLACKAGENT_TG_PHONE='+8613xxxxxxxxx'
 
 ## 启动
 
+## 推荐首次验证流程
+
+配置好 `BLACKAGENT_TG_API_ID`、`BLACKAGENT_TG_API_HASH`、`BLACKAGENT_TG_PHONE` 和代理后，先跑小规模一次性回补：
+
+```powershell
+python scripts/telegram_telethon_collector.py --config config/telegram_watch.example.yaml --once --username-limit 2 --history-limit 10 --search-limit 2
+```
+
+如果这是该账号第一次创建 Telethon session，需要在可交互终端运行一次并输入 Telegram 发来的登录验证码。登录成功后，`data/telethon/blackagent_telegram.session` 会被复用，后续 CLI 和调度器自动化运行不再需要输入验证码。
+
+CLI 入口等价命令：
+
+```powershell
+python scripts/run_agent_cli.py --collect-telegram --telegram-once --telegram-username-limit 2 --telegram-history-limit 10 --telegram-search-limit 2
+```
+
+调度器入口：
+
+```powershell
+python scripts/run_collection_scheduler.py --cycles 1 --telegram-username-limit 2 --telegram-history-limit 10 --telegram-search-limit 2
+```
+
+输出 JSON 中重点看：
+
+- `tracked_chat_count`
+- `persisted_count`
+- `failed_target_count`
+- `targets[].status`
+- `targets[].error_stage`
+
+## 常规启动
+
 ```powershell
 python scripts/telegram_telethon_collector.py --config config/telegram_watch.example.yaml
 ```
