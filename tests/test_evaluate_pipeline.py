@@ -474,6 +474,67 @@ def test_llm_ablation_value_matrix_labels_high_recall_fallback_and_latency(monke
     assert "latency_ms_per_extra_valid_clue" in runtime_report
 
 
+def test_llm_ablation_value_matrix_includes_balanced_real_fallback(monkeypatch):
+    monkeypatch.delenv("BLACKAGENT_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("BLACKAGENT_LLM_DRY_RUN", "true")
+
+    report = evaluate_ablation(
+        load_jsonl("tests/evaluation/gold_classification.jsonl"),
+        entity_records=load_jsonl("tests/evaluation/gold_entities.jsonl"),
+        clue_records=load_jsonl("tests/evaluation/gold_clues.jsonl"),
+        hard_negative_records=load_jsonl("tests/evaluation/hard_negative.jsonl"),
+        with_budget=True,
+        include_real=True,
+    )
+
+    matrix = {row["scenario"]: row for row in report["llm_value_matrix"]}
+
+    assert "balanced_real_or_configured_fallback" in report["scenarios"]
+    assert "balanced_real_or_configured_fallback" in matrix
+    assert matrix["balanced_real_or_configured_fallback"]["profile"] == "balanced"
+    assert matrix["balanced_real_or_configured_fallback"]["requested_llm_mode"] == "real_or_configured_fallback"
+    assert matrix["balanced_real_or_configured_fallback"]["provider_status"] == "fallback"
+    assert report["llm_value"]["balanced_real_or_fallback"]["provider_status"] == "fallback"
+
+    runtime_report = llm_value_report_from_ablation(report)
+
+    assert "balanced_real_or_fallback" in runtime_report["provider_specific"]
+
+
+def test_llm_value_delta_prefers_actual_usage_tokens_when_available():
+    base = {
+        "primary_classification_f1": 0.8,
+        "entity_f1": 0.9,
+        "clue_f1": 0.7,
+        "clue_recall": 0.7,
+        "llm_calls_per_1000_records": 0.0,
+        "profile_comparison_dimensions": {
+            "estimated_tokens": 1000,
+            "actual_usage_tokens": 200,
+            "p95_latency_ms": 1000,
+        },
+        "clue": {"overall": {"tp": 3}},
+    }
+    llm = {
+        "primary_classification_f1": 0.8,
+        "entity_f1": 0.9,
+        "clue_f1": 0.9,
+        "clue_recall": 0.9,
+        "llm_calls_per_1000_records": 10.0,
+        "profile_comparison_dimensions": {
+            "estimated_tokens": 3000,
+            "actual_usage_tokens": 700,
+            "p95_latency_ms": 1300,
+        },
+        "clue": {"overall": {"tp": 3}},
+    }
+
+    delta = evaluate_pipeline._llm_value_delta(base, llm)
+
+    assert delta["tokens_per_f1_gain"] == 2500.0
+
+
 def test_llm_ablation_uses_hard_llm_required_and_context_conflict_samples(monkeypatch):
     monkeypatch.delenv("BLACKAGENT_LLM_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

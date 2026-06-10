@@ -172,10 +172,14 @@ def evaluate(
     entity_metrics = evaluate_entities(entity_eval_records, entity_result.entities)
     clue_metrics = evaluate_clues(clue_eval_records, clue_result.clues if clue_result is not None else [])
     llm_budget = budget_controller.snapshot() if budget_controller is not None else {}
+    llm_gateway_stats = _gateway_stats(gateway)
+    actual_usage_tokens = _sum_actual_usage_tokens(llm_gateway_stats)
+    gateway_request_estimated_tokens = _sum_gateway_estimated_tokens(llm_gateway_stats)
     llm_calls = int((llm_budget or {}).get("llm_calls") or classification_result.execution_summary.get("llm_enrich_trace_count") or 0)
     llm_calls_per_1000 = round(llm_calls / max(len(classification_records) + len(hard_negative_records), 1) * 1000, 4)
     valid_clues = max(1, clue_metrics["overall"]["tp"])
     pipeline_summary = classification_result.execution_summary.model_dump()
+    estimated_tokens = int((llm_budget or {}).get("estimated_tokens") or classification_result.execution_summary.get("estimated_tokens") or 0)
     report = {
         "status": "completed",
         "dataset": dataset_profile(
@@ -226,6 +230,12 @@ def evaluate(
             else "disabled_for_ablation_measurement"
         ),
         "estimated_tokens_per_valid_clue": round(float((llm_budget or {}).get("estimated_tokens") or classification_result.execution_summary.get("estimated_tokens") or 0.0) / valid_clues, 4),
+        "actual_usage_tokens": actual_usage_tokens,
+        "actual_usage_tokens_per_valid_clue": (
+            None if actual_usage_tokens is None else round(float(actual_usage_tokens) / valid_clues, 4)
+        ),
+        "gateway_request_estimated_tokens": gateway_request_estimated_tokens,
+        "llm_gateway_stats": llm_gateway_stats,
         "llm_mode": llm_mode,
         "budget_controller": llm_budget,
         "p50_latency_ms": round(elapsed_ms, 2),
@@ -239,7 +249,9 @@ def evaluate(
             "primary_classification_recall": classification_metrics["primary"]["recall"],
             "false_positive_rate": classification_metrics["false_positive_rate"],
             "p95_latency_ms": round(elapsed_ms, 2),
-            "estimated_tokens": int((llm_budget or {}).get("estimated_tokens") or 0),
+            "estimated_tokens": estimated_tokens,
+            "actual_usage_tokens": actual_usage_tokens,
+            "gateway_request_estimated_tokens": gateway_request_estimated_tokens,
         },
     }
     return report
@@ -1343,6 +1355,16 @@ def evaluate_ablation(
             effective_llm_mode="mock",
             provider_status="mock",
         ),
+        "balanced_real_or_configured_fallback": run_scenario(
+            "balanced_real_or_configured_fallback",
+            profile="balanced",
+            requested_llm_mode="real_or_configured_fallback",
+            effective_llm_mode=real_or_fallback["effective_llm_mode"],
+            provider_status=real_or_fallback["provider_status"],
+            fallback_reason=real_or_fallback.get("fallback_reason"),
+            real_requested=bool(real_or_fallback["real_requested"]),
+            real_gateway_configured=bool(real_or_fallback["real_gateway_configured"]),
+        ),
         "high_recall_off": run_scenario(
             "high_recall_off",
             profile="high_recall",
@@ -1369,26 +1391,40 @@ def evaluate_ablation(
         ),
     }
     if include_real:
+        scenarios["balanced_real"] = scenarios["balanced_real_or_configured_fallback"]
         scenarios["high_recall_real"] = scenarios["high_recall_real_or_configured_fallback"]
     base = scenarios["high_recall_off"]
     llm = scenarios["high_recall_mock"]
     comparison = _llm_value_delta(base, llm)
     comparison["balanced_mock"] = _llm_value_delta(scenarios["fast_off"], scenarios["balanced_mock"])
+    comparison["balanced_real_or_fallback"] = _llm_value_delta(
+        scenarios["fast_off"],
+        scenarios["balanced_real_or_configured_fallback"],
+    )
+    balanced_real_marker = scenarios["balanced_real_or_configured_fallback"].get("ablation_scenario") or {}
+    comparison["balanced_real_or_fallback"]["provider_status"] = (
+        balanced_real_marker.get("provider_status") or real_or_fallback["provider_status"]
+    )
+    comparison["balanced_real_or_fallback"]["fallback_reason"] = (
+        balanced_real_marker.get("fallback_reason") or real_or_fallback.get("fallback_reason")
+    )
     comparison["real_or_fallback"] = _llm_value_delta(base, scenarios["high_recall_real_or_configured_fallback"])
     real_or_fallback_marker = scenarios["high_recall_real_or_configured_fallback"].get("ablation_scenario") or {}
     comparison["real_or_fallback"]["provider_status"] = real_or_fallback_marker.get("provider_status") or real_or_fallback["provider_status"]
     comparison["real_or_fallback"]["fallback_reason"] = real_or_fallback_marker.get("fallback_reason") or real_or_fallback.get("fallback_reason")
     if include_real:
+        comparison["balanced_real"] = comparison["balanced_real_or_fallback"]
         comparison["real"] = comparison["real_or_fallback"]
     matrix_scenarios = [
         "fast_off",
         "balanced_mock",
+        "balanced_real_or_configured_fallback",
         "high_recall_real_or_configured_fallback",
     ]
     scenario_fingerprints = {
         str((report.get("ablation_scenario") or {}).get("dataset_fingerprint") or "")
         for name, report in scenarios.items()
-        if name != "high_recall_real"
+        if name not in {"balanced_real", "high_recall_real"}
     }
     value_gate = LLMValueGate()
     return {
@@ -1544,7 +1580,10 @@ def _llm_value_matrix(
                 "llm_calls": dimensions.get("llm_calls"),
                 "llm_calls_per_1000_records": report.get("llm_calls_per_1000_records"),
                 "estimated_tokens": dimensions.get("estimated_tokens"),
+                "actual_usage_tokens": dimensions.get("actual_usage_tokens"),
+                "gateway_request_estimated_tokens": dimensions.get("gateway_request_estimated_tokens"),
                 "estimated_tokens_per_valid_clue": report.get("estimated_tokens_per_valid_clue"),
+                "actual_usage_tokens_per_valid_clue": report.get("actual_usage_tokens_per_valid_clue"),
             },
             "latency": {
                 "p50_latency_ms": report.get("p50_latency_ms"),
@@ -1648,6 +1687,42 @@ def _gateway_for_mode(llm_mode: str) -> LLMGateway | None:
     return None
 
 
+def _gateway_stats(gateway: Any | None) -> list[dict[str, Any]]:
+    if gateway is None or not hasattr(gateway, "stats"):
+        return []
+    try:
+        stats = gateway.stats()
+    except Exception:
+        return []
+    return [dict(item) for item in stats if isinstance(item, Mapping)]
+
+
+def _sum_actual_usage_tokens(stats: Iterable[Mapping[str, Any]]) -> int | None:
+    values: list[int] = []
+    for item in stats:
+        value = item.get("actual_usage_tokens")
+        if value is None:
+            continue
+        try:
+            values.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return sum(values) if values else None
+
+
+def _sum_gateway_estimated_tokens(stats: Iterable[Mapping[str, Any]]) -> int | None:
+    values: list[int] = []
+    for item in stats:
+        value = item.get("gateway_request_estimated_tokens")
+        if value is None:
+            continue
+        try:
+            values.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return sum(values) if values else None
+
+
 def _budget_profile(profile: str) -> dict[str, Any]:
     configured = _configured_budget_profile(profile)
     if configured:
@@ -1714,7 +1789,7 @@ def _llm_value_delta(base: Mapping[str, Any], llm: Mapping[str, Any]) -> dict[st
     llm_calls_delta = round(_numeric_metric(llm.get("llm_calls_per_1000_records")) - _numeric_metric(base.get("llm_calls_per_1000_records")), 4)
     llm_dimensions = llm.get("profile_comparison_dimensions") if isinstance(llm.get("profile_comparison_dimensions"), Mapping) else {}
     base_dimensions = base.get("profile_comparison_dimensions") if isinstance(base.get("profile_comparison_dimensions"), Mapping) else {}
-    token_delta = float(llm_dimensions.get("estimated_tokens") or 0) - float(base_dimensions.get("estimated_tokens") or 0)
+    token_delta = _token_total_for_value_delta(llm_dimensions) - _token_total_for_value_delta(base_dimensions)
     latency_delta = round(
         _numeric_metric(llm_dimensions.get("p95_latency_ms") or llm.get("p95_latency_ms"))
         - _numeric_metric(base_dimensions.get("p95_latency_ms") or base.get("p95_latency_ms")),
@@ -1851,6 +1926,13 @@ def _numeric_metric(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _token_total_for_value_delta(dimensions: Mapping[str, Any]) -> float:
+    actual = dimensions.get("actual_usage_tokens")
+    if actual is not None:
+        return _numeric_metric(actual)
+    return _numeric_metric(dimensions.get("estimated_tokens"))
 
 
 if __name__ == "__main__":

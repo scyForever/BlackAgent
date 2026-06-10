@@ -12,7 +12,7 @@ model_stage_policy:
     fast_record_max_tokens: 600
     default_record_max_tokens: 900
     fast_record_deadline_ms: 2500
-    default_record_deadline_ms: 6000
+    default_record_deadline_ms: 30000
   clue_routing:
     low_quality_without_entities_score: 0.35
     already_refined_quality_score: 0.82

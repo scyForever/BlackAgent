@@ -97,6 +97,7 @@ class LLMCallStats:
     cache_hit: bool
     ok: bool
     error: str | None = None
+    actual_usage_tokens: int | None = None
 
     def model_dump(self) -> dict[str, Any]:
         gateway_request_estimated_tokens = self.prompt_tokens_estimated + self.completion_tokens_limit
@@ -107,7 +108,7 @@ class LLMCallStats:
             "completion_tokens_limit": self.completion_tokens_limit,
             "prompt_estimated_tokens": self.prompt_tokens_estimated,
             "gateway_request_estimated_tokens": gateway_request_estimated_tokens,
-            "actual_usage_tokens": None,
+            "actual_usage_tokens": self.actual_usage_tokens,
             "token_estimation_policy": "heuristic_chars_div_4_plus_completion_limit",
             "elapsed_ms": self.elapsed_ms,
             "cache_hit": self.cache_hit,
@@ -624,6 +625,7 @@ class LLMGateway:
                 cache_hit=cache_hit,
                 ok=response.ok,
                 error=response.error,
+                actual_usage_tokens=_actual_usage_tokens(response.raw),
             )
         )
 
@@ -802,6 +804,18 @@ def _extract_json_candidate(content: str) -> str | None:
             if depth == 0:
                 return content[start : index + 1].strip()
     return None
+
+
+def _actual_usage_tokens(raw: Mapping[str, Any]) -> int | None:
+    usage = raw.get("usage") if isinstance(raw, Mapping) else None
+    if not isinstance(usage, Mapping):
+        return None
+    value = usage.get("total_tokens")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
 
 
 def _env_bool(name: str, *, default: bool) -> bool:

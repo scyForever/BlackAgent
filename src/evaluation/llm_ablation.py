@@ -87,7 +87,7 @@ def llm_value_report_from_ablation(
     }
     provider_specific = {
         key: value[key]
-        for key in ("balanced_mock", "real_or_fallback", "real")
+        for key in ("balanced_mock", "balanced_real_or_fallback", "balanced_real", "real_or_fallback", "real")
         if key in value
     }
     if provider_specific:
