@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import hashlib
+import os
 import re
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
@@ -301,7 +302,10 @@ def _prefix_ends_with_any(prefix: str, markers: Iterable[str]) -> bool:
 
 
 def _canonical_hash(entity_type: str, normalized_value: str) -> str:
-    return hashlib.sha256(f"{entity_type}:{normalized_value.lower()}".encode("utf-8")).hexdigest()
+    salt = os.environ.get("BLACKAGENT_PII_HASH_SALT", "")
+    canonical = f"{entity_type}:{normalized_value.lower()}"
+    payload = f"{salt}\x1f{canonical}" if salt else canonical
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _entity_type(entity: Any) -> str:

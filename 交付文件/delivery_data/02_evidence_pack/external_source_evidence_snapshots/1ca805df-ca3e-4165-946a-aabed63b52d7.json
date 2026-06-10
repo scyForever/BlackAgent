@@ -1,0 +1,9 @@
+{
+  "trace_id": "1ca805df-ca3e-4165-946a-aabed63b52d7",
+  "source_name": "direct_technical_reddit_search",
+  "source_url": "https://blog.csdn.net/weixin_56097064/article/details/144262022",
+  "crawl_time": "2026-06-08T17:06:48.932992Z",
+  "raw_payload_uri": "https://www.bing.com/search?q=site%3Areddit.com%2Fr%20selenium%20automation",
+  "original_capture_snapshot_uri": "",
+  "content_text": "csdn.net https://blog.csdn.net › article › details › ... 2024年12月5日 · 一、selenium简介 Selenium是一个用于自动化测试的工具，它可以模拟用户在浏览器中的各种操作。 除了用于爬虫，Selenium还可以用于测试，尤其是在处理动态加载页面时非常有用。 …"
+}

@@ -1,0 +1,9 @@
+{
+  "trace_id": "82ee1d60-3342-4ed0-9617-a4b4ce076798",
+  "source_name": "direct_technical_cn_blog_search",
+  "source_url": "https://docs.telethon.dev/",
+  "crawl_time": "2026-06-08T17:11:40.307169Z",
+  "raw_payload_uri": "https://www.bing.com/search?q=site%3Acnblogs.com%20telethon",
+  "original_capture_snapshot_uri": "",
+  "content_text": "telethon.dev https://docs. telethon .dev 2026年4月11日 · Used Telethon before v1.0? See Compatibility and Convenience. Coming from Bot API or want to create new bots? …"
+}

@@ -1,0 +1,8 @@
+{
+  "trace_id": "2cb5c42d-1c63-4e22-b1d0-a1f51ad147a8",
+  "source_name": "direct_public_article_search",
+  "source_url": "https://baike.baidu.com/item/%E7%BE%A4%E6%8E%A7/12611405",
+  "crawl_time": "2026-06-08T17:06:58.914655Z",
+  "raw_payload_uri": "https://www.bing.com/search?q=site%3Amp.weixin.qq.com%2Fs%20%E7%BE%A4%E6%8E%A7",
+  "content_text": "baidu.com https://baike.baidu.com › item › 群控 群控是一种通过一台计算机控制多部手机，实现同步操作的技术。 群控核心在于使用真实手机或模拟环境，借助脚本软件自动化模拟用户行为，达到吸粉、引流、广告、薅羊毛等目的。"
+}

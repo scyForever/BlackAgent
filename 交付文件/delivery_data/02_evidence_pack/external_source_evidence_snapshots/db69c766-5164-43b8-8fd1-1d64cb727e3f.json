@@ -1,0 +1,8 @@
+{
+  "trace_id": "db69c766-5164-43b8-8fd1-1d64cb727e3f",
+  "source_name": "tech_forum_blackgray_search",
+  "source_url": "https://www.v2ex.com/t/1212539",
+  "crawl_time": "2026-05-26T02:31:20.966141Z",
+  "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20automation",
+  "content_text": "做了一个 Chrome 扩展 Grok Automation，让 Grok Imagine 可以批量跑图跑视频 - V2EX Image 1www.v2ex.com/t/1212539 2026-05-13T15:43:22.0000000 分享创造 - @funet - ## 起因我自己日常在 grok 上用 Grok Imagine 出图、出短视频，主要是给 YouTube Shorts 做素材和给电商的 SKU 出测试图。用着用着发现一个很尴尬的事"
+}

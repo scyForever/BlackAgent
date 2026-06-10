@@ -1,0 +1,9 @@
+{
+  "trace_id": "f5043e77-a048-4424-89c3-97cc759474f3",
+  "source_name": "direct_technical_stackoverflow_search",
+  "source_url": "https://www.mdpi.com/journal/automation",
+  "crawl_time": "2026-06-08T17:05:06.910850Z",
+  "raw_payload_uri": "https://www.bing.com/search?q=site%3Astackoverflow.com%2Fquestions%20automation",
+  "original_capture_snapshot_uri": "",
+  "content_text": "mdpi.com https://www.mdpi.com › journal › automation Automation is an international, peer-reviewed, open access journal on automation and control systems published bimonthly online by …"
+}

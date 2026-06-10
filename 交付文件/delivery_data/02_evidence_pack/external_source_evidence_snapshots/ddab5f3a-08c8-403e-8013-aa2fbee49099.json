@@ -1,0 +1,9 @@
+{
+  "trace_id": "ddab5f3a-08c8-403e-8013-aa2fbee49099",
+  "source_name": "direct_crowdsourcing_guru_search",
+  "source_url": "https://github.com/itgoyo/TelegramBot",
+  "crawl_time": "2026-06-08T17:11:28.343854Z",
+  "raw_payload_uri": "https://www.bing.com/search?q=site%3Awww.guru.com%2Fd%2Fjobs%20telegram%20bot",
+  "original_capture_snapshot_uri": "",
+  "content_text": "github.com https://github.com › itgoyo › TelegramBot 持续收集更新全网最全最有趣的Telegram机器人🤖大全，相信总有你需要的一款机器人~. Contribute to itgoyo/TelegramBot development by creating an account on GitHub."
+}

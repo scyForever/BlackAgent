@@ -13,6 +13,60 @@ from src.collector.base_collector import get_record_field
 from src.cleaner.text_filter import canonicalize_for_dedup, normalize_text
 
 
+# Generic platforms / dictionaries / search hubs that legitimately recur across
+# many public search snippets but are NOT black/gray cross-source signals. They
+# must never be promoted into shared-domain risk clues, otherwise the real-data
+# evidence pack fills with noise like "zhihu.com / baidu.com is a cross-source clue".
+GENERIC_CLUE_DOMAIN_DENYLIST = {
+    "baidu.com", "baike.baidu.com", "tieba.baidu.com", "zhihu.com", "zhuanlan.zhihu.com",
+    "csdn.net", "blog.csdn.net", "cnblogs.com", "jianshu.com", "juejin.cn",
+    "segmentfault.com", "iciba.com", "cambridge.org", "dictionary.cambridge.org",
+    "github.com", "gist.github.com", "stackoverflow.com", "reddit.com", "v2ex.com",
+    "bilibili.com", "douban.com", "weibo.com", "qq.com", "163.com", "126.com",
+    "sina.com.cn", "sohu.com", "google.com", "bing.com", "youtube.com", "twitter.com",
+    "x.com", "facebook.com", "instagram.com", "linkedin.com", "wikipedia.org",
+    "zh.wikipedia.org", "apple.com", "microsoft.com", "amazon.com", "medium.com",
+    "tencent.com", "cloud.tencent.com", "toutiao.com", "ibm.com", "mdpi.com",
+    "sciencedirect.com", "runoob.com", "dict.cn", "collinsdictionary.com",
+    # News / state media domains: articles *about* black/gray crime carry risk
+    # keywords and recur across search sources, but the domain itself is not a
+    # black/gray asset. Excluded so cross-source clues stay operator-focused.
+    "huanqiu.com", "m.huanqiu.com", "cnr.cn", "news.cnr.cn", "law.cnr.cn",
+    "bjnews.com.cn", "m.bjnews.com.cn", "youth.cn", "news.youth.cn", "cpd.com.cn",
+    "jcrb.com", "hbtv.com.cn", "gzstv.com", "people.com.cn", "xinhuanet.com",
+    "chinanews.com.cn", "thepaper.cn",
+}
+GENERIC_CLUE_DOMAIN_SUFFIXES = (".gov.cn", ".edu.cn", ".gov", ".edu", ".ac.cn")
+# Bare public suffixes / TLDs: a "domain" that collapses to one of these is a URL
+# parsing artifact (e.g. ``com.cn``) and is never a real registrable identifier.
+BARE_PUBLIC_SUFFIXES = {
+    "com", "cn", "net", "org", "gov", "edu", "co", "io", "me", "top", "xyz",
+    "info", "cc", "biz", "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "co.uk",
+}
+# Bare handles that are platform roles, not a specific black/gray operator.
+PSEUDO_CLUE_CONTACT_HANDLES = {
+    "bot", "botfather", "api", "admin", "administrator", "official", "channel",
+    "group", "support", "service", "customer", "help", "kefu", "客服", "公告",
+}
+
+
+def _is_generic_clue_domain(domain: str) -> bool:
+    text = (domain or "").strip().lower().strip(".")
+    if not text or text in {"www", "www."}:
+        return True
+    if text.startswith("www."):
+        text = text[4:]
+    if "." not in text or text in BARE_PUBLIC_SUFFIXES:
+        return True
+    if any(text == denied or text.endswith("." + denied) for denied in GENERIC_CLUE_DOMAIN_DENYLIST):
+        return True
+    return any(text.endswith(suffix) for suffix in GENERIC_CLUE_DOMAIN_SUFFIXES)
+
+
+def _is_pseudo_clue_contact(value: str) -> bool:
+    return _contact_clue_group_key(value) in PSEUDO_CLUE_CONTACT_HANDLES
+
+
 @dataclass(frozen=True)
 class RiskClue:
     clue_id: str
@@ -209,6 +263,8 @@ class RiskClueAggregator:
                     grouped[key].append(entity)
         clues: list[RiskClue] = []
         for key, group in grouped.items():
+            if key in PSEUDO_CLUE_CONTACT_HANDLES:
+                continue
             value = _contact_clue_display_value(key, group)
             traces = sorted({str(get_record_field(entity, "source_trace_id") or "unknown") for entity in group})
             sources = {
@@ -228,6 +284,8 @@ class RiskClueAggregator:
                     grouped[key].append(entity)
         clues: list[RiskClue] = []
         for value, group in grouped.items():
+            if _is_generic_clue_domain(value):
+                continue
             traces = sorted({str(get_record_field(entity, "source_trace_id") or "unknown") for entity in group})
             sources = {str(get_record_field(records.get(trace), "source_name") or get_record_field(records.get(trace), "source_type") or trace) for trace in traces}
             if len(sources) >= 2:
@@ -352,6 +410,8 @@ class RiskClueAggregator:
                 key = _bridge_entity_group_key(entity)
                 if not key:
                     continue
+                if entity_type in {"domain", "url"} and _is_generic_clue_domain(value):
+                    continue
                 if entity_type == "settlement" and _is_contextual_settlement_bridge_value(value) and trace_entity_types.intersection(self.CONTACT_TYPES):
                     continue
                 if len(traces_by_type_key.get((entity_type, key), set())) >= 2 and not _is_contextual_settlement_bridge_value(value):
@@ -398,6 +458,8 @@ class RiskClueAggregator:
                 [entity],
             )
             if not value:
+                continue
+            if _is_pseudo_clue_contact(value):
                 continue
             bridge_trace = self._best_corroborating_trace(
                 records,
@@ -837,6 +899,18 @@ def _has_authorized_corroboration_text(record: Any) -> bool:
     lowered = text.lower()
     if any(marker in lowered for marker in ("没有复核", "无复核", "没有授权", "无授权", "没有证据链", "无证据链")):
         return False
+    # Structural authorization signal: a genuine authorized record carries a legal
+    # basis plus an auditable source URL and an immutable snapshot/payload URI.
+    # This lets real cross-source corroboration form on live authorized data
+    # without requiring hand-authored "证据链/复核" marker words (which only exist
+    # in crafted samples). Synthetic gold rows have no snapshot/payload URI, so the
+    # benchmarked clue gate is unchanged.
+    legal_basis = str(get_record_field(record, "legal_basis") or "").upper()
+    has_legal_basis = any(token in legal_basis for token in ("AUTHORIZED", "PUBLIC_COMPLIANT", "COMPLIANT", "PARTNER"))
+    has_source_url = bool(get_record_field(record, "source_url"))
+    has_snapshot = bool(get_record_field(record, "capture_snapshot_uri") or get_record_field(record, "raw_payload_uri"))
+    if has_legal_basis and has_source_url and has_snapshot:
+        return True
     authority_hits = any(marker in text for marker in ("授权样本", "授权记录", "授权来源", "授权情报源", "公开授权", "情报源", "人工确认", "人工标注"))
     corroboration_hits = any(
         marker in text

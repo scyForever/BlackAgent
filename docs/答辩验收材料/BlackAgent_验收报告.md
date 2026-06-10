@@ -1,200 +1,473 @@
-# BlackAgent 真实样例逐条追踪验收报告
+# BlackAgent 最终验收报告
 
-**项目目录**：`D:\研一\BlackAgent`  
-**报告日期**：2026-06-06  
-**本版写法**：不用总览页，不堆指标；按一次真实联网样例，把每条数据在每一步的可见结果写出来。必须保留的英文只用于文件名、命令和字段名，方便复查。
+**项目目录**：`D:\研一\BlackAgent`
+**报告日期**：2026-06-10
+**验收口径**：按 `黑灰产情报分析Agent.docx` 和启动会答疑要求，验收端到端系统、合规数据来源、线索质量、证据链、分类/实体效果和工程边界。
 
-## 1. 验收口径
+## 1. 验收结论
 
-本次验收不把系统说成“已经自动处置黑灰产”，而是验证它能不能把公开合规来源中的线索按步骤留下证据，并交给人复核。
+BlackAgent 当前已经完成一条本地可复跑的公开 / 授权黑灰产情报分析流水线：
 
-- 完整运行结果：`data/acceptance_real_e2e_run_success.json`
-- 人可读证据：`data/acceptance_real_e2e_evidence.md`
-- 逐条明细：`docs/答辩验收材料/BlackAgent_真实样例逐步明细.md`
-- 原始全文附录：`docs/答辩验收材料/BlackAgent_原始数据完整内容.md`
-
-重要边界：这次样例来自公开合规来源（论坛/社交、垂直/技术、IM/群组）；不是私群、登录后页面，也不是线上生产处置系统；输出为人工复核候选。
-
-## 2. 样例任务如何开始
-
-用户输入的任务是：采集公开合规来源中接码、群控脚本、账号交易相关线索，保留完整处理节点、证据链和人工复核建议。
-
-```powershell
-python scripts/run_agent_cli.py --query <真实联网外部LLM验收查询> --config config/config.real.example.yaml --source-config-path config/intel_sources.acceptance_telegramnav_live.yaml --enable-network --force-real --routing-profile high_recall --max-sources 8 --max-raw-records 160 --max-candidate-clues 40 --max-llm-refine-clues 5 --max-elapsed-seconds 300 --output data/acceptance_real_e2e_run_success.json --show summary
+```text
+公开 / 授权来源
+  -> 数据采集
+  -> 清洗去重
+  -> 风险分类
+  -> 实体抽取
+  -> 线索聚合与证据链
+  -> 人工复核与评测
 ```
 
-命令中的关键意思是：启用联网；只用配置中的公开合规来源；最多选择 8 个来源变体、实际进入处理 75 条记录；把结果写入 `data/acceptance_real_e2e_run_success.json`。
+```mermaid
+flowchart LR
+  S["公开/授权来源"] --> C["数据采集<br/>4163 raw"]
+  C --> CL["清洗去重<br/>3464·去重 650"]
+  CL --> CF["风险分类<br/>F1 0.866"]
+  CF --> EX["实体抽取<br/>21774·F1 0.948"]
+  EX --> CLU["线索聚合 + 证据链<br/>500 行·17 高质量·8 跨源"]
+  CLU --> RV["人工复核 + 评测<br/>193 人工 gold"]
+  classDef green fill:#F0FDF4,stroke:#16A34A,color:#14532D;
+  classDef red fill:#FEF2F2,stroke:#DC2626,color:#7F1D1D;
+  class CF,EX,CLU green;
+  class RV red;
+```
 
-## 3. 第一步：把任务改写成可采集的查询
+```text
+公开/授权来源 ─▶ 采集 ─▶ 清洗去重 ─▶ 风险分类 ─▶ 实体抽取 ─▶ 线索+证据链 ─▶ 人工复核+评测
+               4163   3464/去重650  F1 0.866   21774/F1.948  500行·17高质量    193人工gold
+```
 
-| 序号 | 改写后的查询/来源 | 为什么这样改 | 本步结果 |
-|---:|---|---|---|
-| 1 | `site:tieba.baidu.com/p 接码 群控脚本 账号交易 交易` | Reserve the existing Baidu Tieba site constraint, expand the original core query term to cover all specified black灰产 related keywords, exclude irrelevant content such as police notices and anti-fraud reminders, to collect high-quality risk clues as required. | 生成公开合规查询；未越过登录或私有页面 |
-| 2 | `site:tieba.baidu.com/p 接码 群控脚本 账号交易 工具交易` | Retain the existing Baidu Tieba public post site constraint in source metadata, integrate all high-signal target black grey industry keywords, remove redundant non-search content, effectively filter irrelevant public security notification content, and improve the hit rate of valid risk clues. | 生成公开合规查询；未越过登录或私有页面 |
-| 3 | `site:www.freelancer.com/jobs 接码 群控脚本 账号交易 工具交易` | 保留源指定的站点搜索约束，聚合所有高相关风险关键词，排除指定无关内容类型，适配合规公开来源的风险线索采集需求 | 生成公开合规查询；未越过登录或私有页面 |
-| 4 | `site:tieba.baidu.com/p 接码 群控脚本 账号交易 工具交易` | 保留指定百度贴吧帖子站点域约束，补充高相关黑灰产核心关键词，提升目标风险线索召回精准度，过滤无关合规内容干扰 | 生成公开合规查询；未越过登录或私有页面 |
-| 5 | `site:telegramnav.github.io 接码 群控脚本 账号交易 工具交易` | 保留指定telegramnav.github.io站点约束，整合全量目标风险关键词，规避曝光辟谣等无关内容，适配合规公开IM目录的高价值线索采集需求 | 生成公开合规查询；未越过登录或私有页面 |
-| 6 | `site:tieba.baidu.com/p 卖号 账号交易` | query_rewrite_source_limit_reached | 生成公开合规查询；未越过登录或私有页面 |
-| 7 | `site:tieba.baidu.com/p 收号` | query_rewrite_source_limit_reached | 生成公开合规查询；未越过登录或私有页面 |
-| 8 | `site:tieba.baidu.com/p 实名号` | query_rewrite_source_limit_reached | 生成公开合规查询；未越过登录或私有页面 |
+直接结论：
 
-## 4. 第二步：真实采集每个批次的结果
+| 问题 | 结论 |
+| --- | --- |
+| 做成了什么？ | 一个能从公开 / 授权内容中生成风险分类、实体、线索和证据链的本地可复跑系统 |
+| 处理了多少？ | 全量 4163 raw / 3464 cleaned / 21774 实体；final3 405 raw / 268 cleaned / 151 高风险 |
+| 有真实样例吗？ | 有。群控脚本、接码平台、群发 / 云控、实名号 / 卖号 4 个用例都能追到 source URL 和 trace id |
+| 质量如何证明？ | 人工 held-out 193 行，primary F1=0.8662，entity F1=0.9484，FPR=0.0504 |
+| 边界是什么？ | 输出人工复核候选，不自动处置；不覆盖私群、登录后页面、验证码绕过或购买数据 |
 
-| 批次 | 来源 | 来源类别 | 采集层 | 返回情况 | 这个结果怎么理解 |
-|---:|---|---|---|---|---|
-| 1 | acceptance_tieba_public_search | `social_or_forum` | `theme_core` | 返回 7 条；错误：无错误 | 返回有效样本；本轮共 75 条探索记录参与后续处理 |
-| 2 | acceptance_tieba_public_search | `social_or_forum` | `theme_core` | 返回 9 条；错误：无错误 | 返回有效样本；本轮共 75 条探索记录参与后续处理 |
-| 3 | acceptance_crowdsourcing_public_search | `vertical_or_technical` | `theme_core` | 返回 1 条；错误：无错误 | 返回有效样本；本轮共 75 条探索记录参与后续处理 |
-| 4 | acceptance_tieba_public_search | `social_or_forum` | `global_core` | 返回 9 条；错误：无错误 | 返回有效样本；本轮共 75 条探索记录参与后续处理 |
-| 5 | acceptance_telegramnav_public_directory | `im_or_group` | `global_core` | 返回 42 条；错误：无错误 | 返回有效样本；本轮共 75 条探索记录参与后续处理 |
-| 6 | acceptance_tieba_public_search | `social_or_forum` | `global_core` | 返回 7 条；错误：无错误 | 返回有效样本；本轮共 75 条探索记录参与后续处理 |
+项目交付：
 
-## 5. 第三步到第五步：75 条数据逐条结果
+- 一套可运行代码：CLI、pipeline、source policy、清洗、分类、实体抽取、线索质量、人工复核和验收脚本；
+- 一组精选情报数据：raw、cleaned、classification、entities、evidence pack、manual held-out gold；
+- 一套答辩材料：交付说明、数据整理、真实用例速览、真实样例逐条追踪、原始内容附录和本验收报告。
 
-下面的每一行都是一条真实样例数据。因为完整 JSON 没有逐条保存原始网页全文，也没有逐条写出清洗丢弃原因，所以这里不编造原文；只展示文件里能直接复查到的字段：追踪号、分类、置信度、抽取出的部分信息、探索摘要和最终去向。
+项目不能声称：
 
-原始完整内容单独放在 `BlackAgent_原始数据完整内容.md`。需要注意：当前验收运行未逐条保存 `content_text`；附录展示的是历史同源公开来源复跑得到的 31 条原始完整行，不能把复跑编号冒充当前 trace_id。
+- 不是生产实时风控系统；
+- 不自动封禁、拦截或处置账号；
+- 不覆盖私群、登录后页面、验证码绕过或购买数据。
 
-| # | 追踪号 | 分类结果 | 抽取到的部分信息 | 探索摘要 | 最终去向 |
-|---:|---|---|---|---|---|
-| 1 | `5dd824e3` | 正常业务白噪声 / 0.74 / 需要人工复核 | 工具名:脚本；链接:1tieba.baidu.com/p/9562191757；工具名:外挂 | 样本进入受控探索：原分类=正常业务白噪声，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:脚本, url:1tieba.baidu.com/p/9562191757, tool_name:外挂。 | 未进入最终线索；保留为人工复核候选 |
-| 2 | `6c7c95f3` | 未知风险模式 / 0.47 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 样本进入受控探索：原分类=unknown_risk_pattern，疑似未知/低置信风险模式；局部相似样本 3 条。 | 未进入最终线索；保留为人工复核候选 |
-| 3 | `791aca31` | 工具交易 / 0.74 / 需要人工复核 | 工具名:脚本；链接:3tieba.baidu.com/p/7228857139 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:脚本, url:3tieba.baidu.com/p/7228857139。 | 未进入最终线索；保留为人工复核候选 |
-| 4 | `46a70c46` | 工具交易 / 0.74 / 需要人工复核 | 工具名:群控；工具名:脚本；链接:4tieba.baidu.com/p/8433110888 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:群控, tool_name:脚本, url:4tieba.baidu.com/p/8433110888。 | 未进入最终线索；保留为人工复核候选 |
-| 5 | `7d4ca0ff` | 工具交易 / 0.74 / 需要人工复核 | 工具名:群控；工具名:脚本；链接:5tieba.baidu.com/p/9485548560 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:群控, tool_name:脚本, url:5tieba.baidu.com/p/9485548560。 | 未进入最终线索；保留为人工复核候选 |
-| 6 | `7107fb60` | 工具交易 / 0.74 / 需要人工复核 | 工具名:脚本；链接:9tieba.baidu.com/p/7859191887 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:脚本, url:9tieba.baidu.com/p/7859191887。 | 未进入最终线索；保留为人工复核候选 |
-| 7 | `f8e1402a` | 工具交易 / 0.74 / 需要人工复核 | 工具名:脚本；链接:10tieba.baidu.com/p/7209064254 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:脚本, url:10tieba.baidu.com/p/7209064254。 | 进入高质量线索证据链：clue_065e2cd8a6a9 |
-| 8 | `ba2bdc5f` | 工具交易 / 0.74 / 需要人工复核 | 工具名:群控；工具名:脚本；链接:1tieba.baidu.com/p/8433110888 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:群控, tool_name:脚本, url:1tieba.baidu.com/p/8433110888。 | 未进入最终线索；保留为人工复核候选 |
-| 9 | `ce824383` | 工具交易 / 0.74 / 需要人工复核 | 工具名:群控；工具名:脚本；链接:3tieba.baidu.com/p/9485548560 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:群控, tool_name:脚本, url:3tieba.baidu.com/p/9485548560。 | 未进入最终线索；保留为人工复核候选 |
-| 10 | `3c25fcee` | 工具交易 / 0.74 / 需要人工复核 | 工具名:群控；工具名:脚本；链接:4tieba.baidu.com/p/9510700697 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:群控, tool_name:脚本, url:4tieba.baidu.com/p/9510700697。 | 未进入最终线索；保留为人工复核候选 |
-| 11 | `1389b3fd` | 工具交易 / 0.74 / 需要人工复核 | 工具名:群控；链接:5tieba.baidu.com/p/10131214556 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:群控, url:5tieba.baidu.com/p/10131214556。 | 未进入最终线索；保留为人工复核候选 |
-| 12 | `eaa32b9a` | 工具交易 / 0.74 / 需要人工复核 | 工具名:脚本；链接:6tieba.baidu.com/p/9648820219 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:脚本, url:6tieba.baidu.com/p/9648820219。 | 未进入最终线索；保留为人工复核候选 |
-| 13 | `9f11b9e8` | 工具交易 / 0.74 / 需要人工复核 | 工具名:群控；工具名:脚本；链接:7tieba.baidu.com/p/9081007159 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:群控, tool_name:脚本, url:7tieba.baidu.com/p/9081007159。 | 未进入最终线索；保留为人工复核候选 |
-| 14 | `c07fb1c1` | 工具交易 / 0.74 / 需要人工复核 | 工具名:脚本；链接:8tieba.baidu.com/p/7228857139 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:脚本, url:8tieba.baidu.com/p/7228857139。 | 未进入最终线索；保留为人工复核候选 |
-| 15 | `876cacee` | 工具交易 / 0.74 / 需要人工复核 | 工具名:脚本；链接:9tieba.baidu.com/p/8499194637 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:脚本, url:9tieba.baidu.com/p/8499194637。 | 未进入最终线索；保留为人工复核候选 |
-| 16 | `1aa211e8` | 工具交易 / 0.74 / 需要人工复核 | 工具名:脚本；链接:10tieba.baidu.com/p/7209064254 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:脚本, url:10tieba.baidu.com/p/7209064254。 | 进入高质量线索证据链：clue_065e2cd8a6a9 |
-| 17 | `75e23ad1` | 工具交易 / 0.74 / 需要人工复核 | 链接:www.freelancer.com/jobs；工具名:接码；工具名:群控 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；候选黑话“接码”；局部相似样本 3 条；实体线索 url:www.freelancer.com/jobs, tool_name:接码, tool_name:群控。 | 未进入最终线索；保留为人工复核候选 |
-| 18 | `8797a5dc` | 工具交易 / 0.74 / 需要人工复核 | 工具名:群控；工具名:脚本；链接:1tieba.baidu.com/p/8433110888 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:群控, tool_name:脚本, url:1tieba.baidu.com/p/8433110888。 | 未进入最终线索；保留为人工复核候选 |
-| 19 | `0db5d41d` | 工具交易 / 0.74 / 需要人工复核 | 工具名:群控；工具名:脚本；链接:3tieba.baidu.com/p/9485548560 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:群控, tool_name:脚本, url:3tieba.baidu.com/p/9485548560。 | 未进入最终线索；保留为人工复核候选 |
-| 20 | `384b8535` | 工具交易 / 0.74 / 需要人工复核 | 工具名:群控；工具名:脚本；链接:4tieba.baidu.com/p/9510700697 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:群控, tool_name:脚本, url:4tieba.baidu.com/p/9510700697。 | 未进入最终线索；保留为人工复核候选 |
-| 21 | `1c807a42` | 工具交易 / 0.74 / 需要人工复核 | 工具名:群控；链接:5tieba.baidu.com/p/10131214556 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:群控, url:5tieba.baidu.com/p/10131214556。 | 未进入最终线索；保留为人工复核候选 |
-| 22 | `10f50eff` | 工具交易 / 0.74 / 需要人工复核 | 工具名:脚本；链接:6tieba.baidu.com/p/9648820219 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:脚本, url:6tieba.baidu.com/p/9648820219。 | 未进入最终线索；保留为人工复核候选 |
-| 23 | `d2139540` | 工具交易 / 0.74 / 需要人工复核 | 工具名:群控；工具名:脚本；链接:7tieba.baidu.com/p/9081007159 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:群控, tool_name:脚本, url:7tieba.baidu.com/p/9081007159。 | 未进入最终线索；保留为人工复核候选 |
-| 24 | `f0957b07` | 工具交易 / 0.74 / 需要人工复核 | 工具名:脚本；链接:8tieba.baidu.com/p/7228857139 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:脚本, url:8tieba.baidu.com/p/7228857139。 | 未进入最终线索；保留为人工复核候选 |
-| 25 | `ba47c3ea` | 工具交易 / 0.74 / 需要人工复核 | 工具名:脚本；链接:9tieba.baidu.com/p/8499194637 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:脚本, url:9tieba.baidu.com/p/8499194637。 | 未进入最终线索；保留为人工复核候选 |
-| 26 | `9bf8c3ea` | 工具交易 / 0.74 / 需要人工复核 | 工具名:脚本；链接:10tieba.baidu.com/p/7209064254 | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 tool_name:脚本, url:10tieba.baidu.com/p/7209064254。 | 进入高质量线索证据链：clue_065e2cd8a6a9 |
-| 27 | `54c827d5` | 诈骗引流 / 0.74 / 需要人工复核 | 黑话:v；黑话:Telegram | 样本进入受控探索：原分类=诈骗引流，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 slang_term:v, slang_term:Telegram。 | 未进入最终线索；保留为人工复核候选 |
-| 28 | `1e194754` | 诈骗引流 / 0.74 / 需要人工复核 | 链接:https://telegramnav.github.io/assets/im…；链接:https://telegramnav.github.io/assets/im…；黑话:telegram | 样本进入受控探索：原分类=诈骗引流，疑似未知/低置信风险模式；候选黑话“dy”；局部相似样本 3 条；实体线索 url:https://telegramnav.github.io/assets/images/favicon.png, url:https://telegramnav.github.io/assets/images/favicon.png><meta, slang_term:telegram。 | 进入高质量线索证据链：clue_5c91a819eb32 |
-| 29 | `1d808079` | 诈骗引流 / 0.74 / 需要人工复核 | 链接:https://telegramnav.github.io/assets/im…；黑话:telegram；联系方式:nav | 样本进入受控探索：原分类=诈骗引流，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 url:https://telegramnav.github.io/assets/images/bt8-expand-dark.png, slang_term:telegram, contact:nav。 | 进入高质量线索证据链：clue_5c91a819eb32 |
-| 30 | `efdaa322` | 诈骗引流 / 0.74 / 需要人工复核 | 链接:https://telegramnav.github.io/assets/im…；黑话:telegram；联系方式:nav | 样本进入受控探索：原分类=诈骗引流，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 url:https://telegramnav.github.io/assets/images/bt.png, slang_term:telegram, contact:nav。 | 进入高质量线索证据链：clue_5c91a819eb32 |
-| 31 | `c86415b3` | 诈骗引流 / 0.74 / 需要人工复核 | 链接:https://telegramnav.github.io/assets/im…；黑话:telegram；联系方式:nav | 样本进入受控探索：原分类=诈骗引流，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 url:https://telegramnav.github.io/assets/images/bt.png, slang_term:telegram, contact:nav。 | 进入高质量线索证据链：clue_5c91a819eb32 |
-| 32 | `e2673eff` | 未知风险模式 / 0.47 / 需要人工复核 | 黑话:Telegram | 样本进入受控探索：原分类=unknown_risk_pattern，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 slang_term:Telegram。 | 未进入最终线索；保留为人工复核候选 |
-| 33 | `205fc641` | 工具交易 / 0.74 / 需要人工复核 | 页面片段:ebar-more；工具名:脚本；页面片段:ebar-item | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 invite_code:ebar-more, tool_name:脚本, invite_code:ebar-item。 | 未进入最终线索；保留为人工复核候选 |
-| 34 | `f0e682da` | 诈骗引流 / 0.74 / 需要人工复核 | 黑话:v；黑话:Telegram；链接:https://telegramnav.github.io/assets/im… | 样本进入受控探索：原分类=诈骗引流，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 slang_term:v, slang_term:Telegram, url:https://telegramnav.github.io/assets/images/bt.png。 | 进入高质量线索证据链：clue_5c91a819eb32 |
-| 35 | `5e4937c6` | 诈骗引流 / 0.74 / 需要人工复核 | 链接:https://telegramnav.github.io/assets/im…；黑话:telegram；联系方式:nav | 样本进入受控探索：原分类=诈骗引流，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 url:https://telegramnav.github.io/assets/images/bt.png, slang_term:telegram, contact:nav。 | 进入高质量线索证据链：clue_5c91a819eb32 |
-| 36 | `c095409e` | 众包服务 / 0.74 / 需要人工复核 | 链接:https://t.me/xieyihaoautobot；链接:https://t.me/xieyihaoautobot><i | 样本进入受控探索：原分类=众包服务，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 url:https://t.me/xieyihaoautobot, url:https://t.me/xieyihaoautobot><i。 | 未进入最终线索；保留为人工复核候选 |
-| 37 | `4f578ce4` | 工具交易 / 0.74 / 需要人工复核 | 链接:https://t.me/xnby08bot；链接:https://t.me/xnby08bot><i | 样本进入受控探索：原分类=工具交易，疑似未知/低置信风险模式；局部相似样本 3 条；实体线索 url:https://t.me/xnby08bot, url:https://t.me/xnby08bot><i。 | 未进入最终线索；保留为人工复核候选 |
-| 38 | `2a61dc9f` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 39 | `d48741cf` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 40 | `0f762e8c` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 41 | `6118b5e2` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 42 | `6e5bc353` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 43 | `99306015` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 44 | `d1c69fa6` | 未知风险模式 / 0.55 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 样本进入受控探索：原分类=unknown_risk_pattern，疑似未知/低置信风险模式；候选黑话“dy”；局部相似样本 3 条。 | 未进入最终线索；保留为人工复核候选 |
-| 45 | `ffcc1160` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 46 | `87d11039` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 47 | `a4baef60` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 48 | `2af3db00` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 49 | `b49cba1e` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 50 | `65869d26` | 未判定 / 0.00 / 无置信度；只保留复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 51 | `49b2a61a` | 未判定 / 0.00 / 无置信度；只保留复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 52 | `6bdf5f17` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 53 | `4b06650e` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 54 | `490f7e65` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 55 | `d7cb7da8` | 未判定 / 0.00 / 无置信度；只保留复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 56 | `e60b9166` | 诈骗引流 / 0.74 / 需要人工复核 | 黑话:v；黑话:dy；链接:https://t.me/xxtxxxlplg | 样本进入受控探索：原分类=诈骗引流，疑似未知/低置信风险模式；候选黑话“dy”；局部相似样本 3 条；实体线索 slang_term:v, slang_term:dy, url:https://t.me/xxtxxxlplg。 | 未进入最终线索；保留为人工复核候选 |
-| 57 | `a0779275` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 58 | `d221424d` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 59 | `2ef9ec79` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 60 | `6235d0a8` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 61 | `dd732025` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 62 | `45ee2581` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 63 | `aa5af116` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 64 | `63bca5f9` | 未知风险模式 / 0.55 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 样本进入受控探索：原分类=unknown_risk_pattern，疑似未知/低置信风险模式；候选黑话“dy”；局部相似样本 2 条。 | 未进入最终线索；保留为人工复核候选 |
-| 65 | `84f583f3` | 诈骗引流 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 66 | `d0173d03` | 正常业务白噪声 / 0.50 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 探索预算触顶(max_tokens exceeded)，保留当前样本为人工复核候选。 | 未进入最终线索；保留为人工复核候选 |
-| 67 | `f69bc253` | 未知风险模式 / 0.47 / 需要人工复核 | 链接:https://www.dianbaodaohang.com；黑话:Telegram | 样本进入受控探索：原分类=unknown_risk_pattern，疑似未知/低置信风险模式；局部相似样本 2 条；实体线索 url:https://www.dianbaodaohang.com, slang_term:Telegram。 | 未进入最终线索；保留为人工复核候选 |
-| 68 | `4ff04976` | 未知风险模式 / 0.47 / 需要人工复核 | 链接:https://www.tgbaike.com；联系方式:baike；黑话:Telegram | 样本进入受控探索：原分类=unknown_risk_pattern，疑似未知/低置信风险模式；局部相似样本 2 条；实体线索 url:https://www.tgbaike.com, contact:baike, slang_term:Telegram。 | 未进入最终线索；保留为人工复核候选 |
-| 69 | `cd0f13e9` | 众包服务 / 0.74 / 需要人工复核 | 链接:1tieba.baidu.com/p/9312365640 | 样本进入受控探索：原分类=众包服务，疑似未知/低置信风险模式；局部相似样本 2 条；实体线索 url:1tieba.baidu.com/p/9312365640。 | 未进入最终线索；保留为人工复核候选 |
-| 70 | `e2b144c9` | 账号交易 / 0.74 / 需要人工复核 | 链接:2tieba.baidu.com/p/9034558762 | 样本进入受控探索：原分类=账号交易，疑似未知/低置信风险模式；局部相似样本 2 条；实体线索 url:2tieba.baidu.com/p/9034558762。 | 未进入最终线索；保留为人工复核候选 |
-| 71 | `a3aaf4a6` | 账号交易 / 0.74 / 需要人工复核 | 页面片段:Image；链接:3tieba.baidu.com/p/9021774156 | 样本进入受控探索：原分类=账号交易，疑似未知/低置信风险模式；局部相似样本 2 条；实体线索 invite_code:Image, url:3tieba.baidu.com/p/9021774156。 | 未进入最终线索；保留为人工复核候选 |
-| 72 | `79e35027` | 未知风险模式 / 0.47 / 需要人工复核 | 该条摘要未展示可见抽取字段 | 样本进入受控探索：原分类=unknown_risk_pattern，疑似未知/低置信风险模式；局部相似样本 2 条。 | 未进入最终线索；保留为人工复核候选 |
-| 73 | `c2c78165` | 账号交易 / 0.74 / 需要人工复核 | 链接:8tieba.baidu.com/p/9059508917 | 样本进入受控探索：原分类=账号交易，疑似未知/低置信风险模式；局部相似样本 2 条；实体线索 url:8tieba.baidu.com/p/9059508917。 | 未进入最终线索；保留为人工复核候选 |
-| 74 | `ff80c1b6` | 账号交易 / 0.74 / 需要人工复核 | 链接:9tieba.baidu.com/p/9317937289 | 样本进入受控探索：原分类=账号交易，疑似未知/低置信风险模式；局部相似样本 2 条；实体线索 url:9tieba.baidu.com/p/9317937289。 | 未进入最终线索；保留为人工复核候选 |
-| 75 | `89d1231f` | 账号交易 / 0.74 / 需要人工复核 | 链接:10tieba.baidu.com/p/7644419202 | 样本进入受控探索：原分类=账号交易，疑似未知/低置信风险模式；局部相似样本 2 条；实体线索 url:10tieba.baidu.com/p/7644419202。 | 未进入最终线索；保留为人工复核候选 |
+## 2. 课题要求如何对应
 
-## 6. 2 条高质量候选线索怎样由证据合成
+| 课题要求 | 当前交付 |
+| --- | --- |
+| 打通 IM、群组、论坛等至少 3 类情报源 | 全量采集库 4163 条 raw，覆盖 IM/群组、社媒/论坛、垂直/技术；另有四类来源均衡证据包 |
+| 清洗、去重、过滤噪声 | cleaned 3464 条，丢弃 699 条，重复丢弃 650 条 |
+| 识别高危内容 | high risk 1095 条；final3 高风险子集 151 条 |
+| 风险意图分类 | cleaned 分类 3464 条；人工 held-out primary F1=0.8662 |
+| 实体抽取 | 全量实体 21774 行；人工 held-out entity F1=0.9484 |
+| 输出风险线索和证据 | evidence pack 500 行，均带 source evidence、raw snippet、clean text、source URL 和 raw payload URI |
+| 可信证据链 | 354 行带 capture snapshot URI，12 行带 hydrated body；人工线索 gold clue F1=1.0 |
+| 效果 / 成本 / 时延平衡 | LLM value gate 当前策略为 `conflict_only`；规模 benchmark 10000 条约 1246 records/s，LLM calls=0 |
 
-系统没有把 75 条都说成最终线索，而是筛出 2 条高质量候选线索；这些线索合计引用 9 条证据（去重后 9 个追踪号）。
+## 3. 最终主口径文件
 
-### 6.1 `clue_5c91a819eb32`
+最终验收主口径不是整个 `data/` 目录，而是以下文件组合：
 
-线索 `clue_5c91a819eb32`：风险=诈骗引流；证据=6 条；key=`nav`；置信度=0.86；质量分=0.8362。
+| 类型 | 文件 |
+| --- | --- |
+| 总摘要 | `data/final_acceptance_summary.json` |
+| final3 采集 | `data/acceptance_direct_final3_delivery_manifest.json`、`data/acceptance_direct_final3_raw_dataset.jsonl`、`data/acceptance_direct_final3_cleaned_corpus.jsonl` |
+| final3 分类实体 | `data/acceptance_direct_final3_raw_classifications.jsonl`、`data/acceptance_direct_final3_raw_entities.jsonl`、`data/acceptance_direct_final3_classifications.jsonl`、`data/acceptance_direct_final3_entities.jsonl` |
+| 证据包 | `data/collection_phase_multi_source_acceptance_pack.jsonl`、`data/collection_phase_multi_source_evidence_pack.jsonl`、`data/collection_phase_multi_source_evidence_pack_report.json` |
+| 均衡来源证据 | `data/external_balanced_source_evidence_pack.jsonl`、`data/external_balanced_source_evidence_pack_report.json` |
+| 授权源复跑 | `data/authorized_source_rerun_pack.jsonl`、`data/authorized_source_rerun_pack_report.json` |
+| 人工评测 | `data/manual_heldout_report.json`、`data/manual_heldout_eval_current.json`、`data/eval_manual_heldout_clue_recall_report.json` |
+| gold 数据 | `tests/evaluation/manual_heldout_classification.jsonl`、`tests/evaluation/manual_heldout_clues.jsonl` |
+| 工程评估 | `data/eval_llm_ablation.json`、`data/eval_llm_hard_ablation.json`、`data/latest_llm_value_report.json`、`data/ocr_hardset_report.json`、`data/scale_benchmark_report.json` |
 
-- 来源：["acceptance_telegramnav_public_directory"]；类型：["IM"]。
-- 复核边界：当前主要证明高频共享联系方式/模板重复，尚未直接证明接码、群控脚本或账号交易服务。
+`data/eval_report.json` 是历史评测文件，不能作为最终验收依据。
 
-| 证据追踪号 | 分类 | 抽取到的部分信息 | 本条为什么能支撑候选线索 |
-|---|---|---|---|
-| `1d808079` | 诈骗引流 / 0.74 | 链接:https://telegramnav.github.io/assets/im…；黑话:telegram；联系方式:nav | 当前主要证明高频共享联系方式/模板重复，尚未直接证明接码、群控脚本或账号交易服务。 |
-| `1e194754` | 诈骗引流 / 0.74 | 链接:https://telegramnav.github.io/assets/im…；链接:https://telegramnav.github.io/assets/im…；黑话:telegram | 当前主要证明高频共享联系方式/模板重复，尚未直接证明接码、群控脚本或账号交易服务。 |
-| `5e4937c6` | 诈骗引流 / 0.74 | 链接:https://telegramnav.github.io/assets/im…；黑话:telegram；联系方式:nav | 当前主要证明高频共享联系方式/模板重复，尚未直接证明接码、群控脚本或账号交易服务。 |
-| `c86415b3` | 诈骗引流 / 0.74 | 链接:https://telegramnav.github.io/assets/im…；黑话:telegram；联系方式:nav | 当前主要证明高频共享联系方式/模板重复，尚未直接证明接码、群控脚本或账号交易服务。 |
-| `efdaa322` | 诈骗引流 / 0.74 | 链接:https://telegramnav.github.io/assets/im…；黑话:telegram；联系方式:nav | 当前主要证明高频共享联系方式/模板重复，尚未直接证明接码、群控脚本或账号交易服务。 |
-| `f0e682da` | 诈骗引流 / 0.74 | 黑话:v；黑话:Telegram；链接:https://telegramnav.github.io/assets/im… | 当前主要证明高频共享联系方式/模板重复，尚未直接证明接码、群控脚本或账号交易服务。 |
+## 4. 数据采集验收
 
-大模型精炼后的说法：该线索为48小时内Telegram公开目录中同一联系方式重复出现至少3次的共享接触类线索，关联6条证据溯源ID，当前标注风险类别为诈骗引流，未明确关联接码、群控脚本、账号交易等目标采集风险要素，实体字段仅为无明确业务语义的nav标识
-它同时给出复核理由：
-- 原线索实体信息缺失有效风险属性，未匹配本次采集指定的接码、群控、账号交易类核心关键词，风险类别标注为诈骗引流与本次采集目标匹配度较低
-- 需人工核验该重复出现的联系方式是否实际属于接码、黑灰产账号交易相关资源，排除正常公共导航类联系方式的误判情况
+全量阶段数据来自 `data/collection_phase_delivery.db` 和导出的 JSONL：
 
-### 6.2 `clue_065e2cd8a6a9`
+| 指标 | 数值 |
+| --- | ---: |
+| raw 记录 | 4163 |
+| cleaned 记录 | 3464 |
+| source 数 | 83 |
+| source access type | `public_compliant` |
+| IM / 群组 | 3786 |
+| 社媒 / 论坛 | 356 |
+| 垂直 / 技术 | 21 |
+| 黑话 / 谐音归一信号 | 208 |
+| emoji 标记 | 186 |
+| 多模态文本物化 | 29 |
 
-线索 `clue_065e2cd8a6a9`：风险=工具交易；证据=3 条；key=`交易所扫货脚本使用风险及封禁情况百度贴吧image10tiebabaiducomp7209064254我去年暑假无聊的时候搞过一会挂了2个月吧封过两次一次一小时`；置信度=0.95；质量分=0.7507。
+全量 raw 偏 IM / Telegram 公开目录，因此不能说天然均衡。为答辩展示多源覆盖，项目额外交付：
 
-- 来源：["acceptance_tieba_public_search"]；类型：["Forum"]。
-- 复核边界：命中脚本/工具交易相关证据链，但仍需人工复核排除教程、经验讨论或误报语境。
+- `data/collection_phase_defense_quota_balanced_sample.jsonl`：209 行，IM/群组 94、社媒/论坛 94、垂直/技术 21；
+- `data/external_balanced_source_evidence_pack.jsonl`：80 行，IM/群组、公众号/文章、社媒/论坛、垂直/技术各 20 行，`missing_required_fields=0`；
+- `data/authorized_source_rerun_pack.jsonl`：80 行，`real_external_row_count=80`，snapshot 缺失数为 0。
 
-| 证据追踪号 | 分类 | 抽取到的部分信息 | 本条为什么能支撑候选线索 |
-|---|---|---|---|
-| `1aa211e8` | 工具交易 / 0.74 | 工具名:脚本；链接:10tieba.baidu.com/p/7209064254 | 命中脚本/工具交易相关证据链，但仍需人工复核排除教程、经验讨论或误报语境。 |
-| `9bf8c3ea` | 工具交易 / 0.74 | 工具名:脚本；链接:10tieba.baidu.com/p/7209064254 | 命中脚本/工具交易相关证据链，但仍需人工复核排除教程、经验讨论或误报语境。 |
-| `f8e1402a` | 工具交易 / 0.74 | 工具名:脚本；链接:10tieba.baidu.com/p/7209064254 | 命中脚本/工具交易相关证据链，但仍需人工复核排除教程、经验讨论或误报语境。 |
+final3 验收采集：
 
-大模型精炼后的说法：该线索来自百度贴吧公开搜索渠道，为去重后相同模板内容重复出现至少3次的高频模板类线索，内容提及用户曾使用交易所扫货脚本运行2个月期间遭遇2次平台封禁，关联3条证据溯源ID，属于工具交易类风险范畴，命中本次采集指定的脚本类风险关键词
-它同时给出复核理由：
-- 线索内容明确命中本次采集规则中「脚本」「工具交易」核心关键词，完全处于目标风险类型覆盖范围内，原置信度可小幅上调
-- 需人工核验该贴吧内容不属于曝光、辟谣、警方通报等排除类范畴，确认交易所扫货脚本是否属于违规群控类工具，补充完善全链路证据链节点
+| 指标 | 数值 |
+| --- | ---: |
+| raw 记录 | 405 |
+| cleaned 记录 | 268 |
+| 高风险记录 | 151 |
+| `other_authorized` | 192 |
+| `social_or_forum` | 186 |
+| `vertical_or_technical` | 27 |
+| hydrated pages | 50 |
 
-## 7. 第六步：大模型只做线索精炼，不替人工下结论
+## 5. 清洗验收
 
-本次外部大模型的作用主要是：理解任务、改写查询、精炼最终线索文字。对于意图和计划两个早期步骤，模型返回内容有字段不完全符合内部格式，系统按规则做了兜底归一化；查询改写和线索精炼使用了模型输出。
+`data/cleaning_phase_summary.json`：
 
-这一步最关键的验收点是：系统没有把证据夸大。它把高质量输出保留为“人工复核候选”，并在证据不足时明确提示需要人工确认。
+| 指标 | 数值 |
+| --- | ---: |
+| 输入 raw | 4163 |
+| cleaned | 3464 |
+| dropped | 699 |
+| duplicate dropped | 650 |
+| high risk | 1095 |
+| average quality score | 0.7568 |
+| average risk score | 0.422 |
 
-## 8. 人工验收时建议怎么讲
+风险等级分布：
 
-1. 打开 `BlackAgent_答辩PPT.pptx`，从真实任务、查询改写、采集批次开始讲；
-2. 展示 75 条逐条明细，不再用总览数字代替细节；
-3. 重点点开 2 条高质量候选线索和 9 个唯一证据追踪号；
-4. 讲最终结论时说“高价值复核候选”，不要说“已确认黑灰产团伙”；
-5. 如评委追问原文或清洗原因，说明本次 JSON 没有逐条暴露原始全文和清洗原因，后续可把这两个字段补进验收产物。
+| 风险等级 | 条数 |
+| --- | ---: |
+| CRITICAL | 921 |
+| HIGH | 174 |
+| MEDIUM | 327 |
+| LOW | 1903 |
+| NONE | 139 |
 
-## 9. 本版材料的限制
+清洗结果说明系统能处理启动会里提到的“体量大、噪声多、重复率高”问题，但低相关和白噪声样本仍保留评测价值，不能简单删除。
 
-- 可以证明：系统完成了一次公开合规来源的真实联网采集，并把 75 条样例逐条保留为可复核记录。
-- 可以证明：系统能从 75 条里筛出 2 条高质量候选线索，并保留 9 个唯一证据追踪号。
-- 可以证明：本轮目标 high_quality_count >= 2 已达成。
-- 不能证明：所有候选线索都已被人工确认属于接码、群控脚本或账号交易。
-- 不能证明：系统覆盖了私群、登录后页面或生产级长期监控。
-- 不能证明：当前验收运行已经逐条保存完整原文；当前只能展示历史同源复跑原始行。
+## 6. 分类与实体抽取验收
+
+全量 cleaned 分类：
+
+| 指标 | 数值 |
+| --- | ---: |
+| 分类输入 | 3464 |
+| 分类完成 | 3464 |
+| 需人工复核 | 970 |
+| 实体总数 | 21774 |
+
+一级分类分布：
+
+| 分类 | 条数 |
+| --- | ---: |
+| 正常业务白噪声 | 1744 |
+| 账号交易 | 513 |
+| 工具交易 | 333 |
+| 众包服务 | 304 |
+| 诈骗引流 | 302 |
+| unknown | 190 |
+| 刷单作弊 | 78 |
+
+实体类型分布：
+
+| 实体类型 | 条数 |
+| --- | ---: |
+| url | 12346 |
+| contact | 3030 |
+| invite_code | 2961 |
+| slang_term | 2852 |
+| tool_name | 375 |
+| settlement | 110 |
+| account | 100 |
+
+高危高质量视图：
+
+| 指标 | 数值 |
+| --- | ---: |
+| 输入 | 1061 |
+| 分类完成 | 1061 |
+| 需人工复核 | 461 |
+| 实体总数 | 4698 |
+
+高危高质量视图中一级没有 `unknown`，但二级仍有 `待研判=90`、`未细分=19`。因此不能说全量未知已经清零；正确说法是“高危高质量一级分类已收敛，二级疑难样本进入复核”。
+
+## 7. 线索与证据链验收
+
+`data/collection_phase_multi_source_evidence_pack_report.json`：
+
+| 指标 | 数值 |
+| --- | ---: |
+| evidence pack 行数 | 500 |
+| has source evidence | 500 |
+| has raw snippet | 500 |
+| has clean text | 500 |
+| has classification | 456 |
+| has entities | 453 |
+| has clue chain | 500 |
+| has high quality clue | 17 |
+| has cross source clue | 8 |
+| has source URL | 500 |
+| has crawl / publish time | 500 |
+| has raw payload URI | 500 |
+| has capture snapshot URI | 354 |
+| has hydrated body | 12 |
+
+这部分直接回应启动会里“线索需要有证据，让业务自行判断可信度”的要求。系统输出为人工复核候选，不把候选线索直接说成已确认黑灰产团伙。
+
+### 7.1 真实用例速览
+
+详细材料见 `docs/答辩验收材料/BlackAgent_真实用例速览.md`。下面是最容易理解的 4 个真实用例：
+
+| 用例 | 证据来源 | 系统输出 | 证据数 / 质量分 | 人工复核边界 |
+| --- | --- | --- | --- | --- |
+| 群控 / 手机群控 / 群控脚本 | V2EX 公开论坛 | 工具交易 / 群控脚本 | 6 / 0.96 | 证明群控工具讨论反复出现，仍需区分研究、防御和售卖滥用 |
+| 接码 / 收码平台 / 验证码接收 | 贴吧公开帖 | 账号交易 / 接码注册 | 3 / 0.9115 | 单源重复工具聚类，运营使用前需要跨来源佐证 |
+| 群发 / 云控 / 协议层开发 | V2EX + 贴吧 | 众包服务 / 代投服务 | 4 / 0.96 | 灰区工程需求进入人工复核，不直接定性 |
+| 实名号 / 卖号 / 号商 / 账号交易 | 贴吧公开帖 | 账号交易 / 实名账号买卖 | 4 / 0.96 | 支持账号交易风险复核优先级，不自动确认具体交易违法 |
+
+每个用例都在 `docs/答辩验收材料/BlackAgent_真实用例速览.md` 第 7 节直接展开完整 `answer_chain`，包含 source URL、raw snippet、classification、entities、trace id 和线索生成理由。`data/collection_phase_multi_source_clue_evidence_index.json` 作为原始索引备查。
+
+## 8. 人工评测验收
+
+人工复核包：
+
+| 指标 | 数值 |
+| --- | ---: |
+| 待复核输入 | 200 |
+| confirmed | 67 |
+| corrected | 126 |
+| rejected | 7 |
+| confirmed / corrected 总数 | 193 |
+| issue_count | 0 |
+| claim status | `human_confirmed_gold_ready` |
+
+分类 / 实体评测：
+
+| 指标 | 数值 |
+| --- | ---: |
+| record_count | 193 |
+| primary F1 | 0.8662 |
+| secondary F1 | 0.8258 |
+| hierarchical F1 | 0.7929 |
+| entity F1 | 0.9484 |
+| false positive rate | 0.0504 |
+| classification review rate | 0.1865 |
+
+线索召回评测：
+
+| 指标 | 数值 |
+| --- | ---: |
+| clue gold | 24 条 |
+| clue precision | 1.0 |
+| clue recall | 1.0 |
+| clue F1 | 1.0 |
+| duplicate clue rate | 0.0 |
+
+这些指标证明的是本地公开 / 授权人工 held-out split，不代表线上开放域泛化。
+
+## 9. 多模态、黑话与 LLM 成本
+
+OCR hardset：
+
+| 指标 | 数值 |
+| --- | ---: |
+| hardset 记录 | 20 |
+| 覆盖类型 | chat、poster、qr、screenshot |
+| substring match | 20 / 20 |
+
+边界：这是受控 hardset，不是生产真实截图 OCR 泛化证明。
+
+黑话候选：
+
+| 文件 | 结果 | 判断 |
+| --- | ---: | --- |
+| `data/slang_candidate_report.json` | input=0，candidate=0 | 不能作为正式候选发现证据 |
+| `data/slang_candidate_report_probe.json` | input=268，candidate=20 | 可作为 probe 演示 |
+| `data/manual_review/slang_lifecycle_records.json` | 1 条灰度记录 | 可证明人工审核生命周期 |
+
+LLM 价值门控：
+
+| 指标 | 结果 |
+| --- | --- |
+| record_enrich_policy | `conflict_only` |
+| should_enable_record_enrich | `false` |
+| gate_reason | `llm_added_cost_without_measured_quality_gain` |
+
+这与启动会“固定 token 限额下，优先用规则和工程化方法解决”的要求一致。系统不会把所有文本都交给大模型。
+
+规模 benchmark：
+
+| 样本量 | records/s | p95 record latency | LLM calls |
+| ---: | ---: | ---: | ---: |
+| 1000 | 1236.67 | 0.8086 ms | 0 |
+| 10000 | 1246.37 | 0.82 ms | 0 |
+
+该结果只证明本地核心路由和处理吞吐，不证明真实联网或真实 LLM 端到端时延。
+
+## 10. 真实样例材料
+
+仓库中仍保留一次真实联网样例的逐条追踪材料：
+
+- `data/acceptance_real_e2e_run_success.json`
+- `data/acceptance_real_e2e_evidence.md`
+- `docs/答辩验收材料/BlackAgent_真实样例逐步明细.md`
+- `docs/答辩验收材料/BlackAgent_原始数据完整内容.md`
+
+该样例可用于讲解系统如何从一次任务生成查询、采集 75 条样例、筛出 2 条高质量候选线索，并保留 9 个唯一证据追踪号。它是演示材料，不是当前最终主验收口径；最终数字以 `data/final_acceptance_summary.json` 和本报告前述主口径为准。
+
+## 11. 技术选型与考量
+
+课题的评估重点是端到端完整度、线索质量、证据可信度、分类合理性、实体结构化能力，以及效果 / 成本 / 时延的工程平衡。下面列出关键技术决策、为什么这么选，以及对应的取舍与边界。
+
+| 技术决策 | 为什么这么选 | 取舍 / 边界 |
+| --- | --- | --- |
+| 本地 runtime + CLI，不做对外 Web 服务（去掉 FastAPI/uvicorn，仅保留 stdlib 本机 demo） | 定位是公开 / 授权情报的防御分析工具，不是生产抓取 / 处置服务；默认 `network.enabled=false` | 放弃“在线多租户 API”卖点，换取合规与可复跑 |
+| 规则 + NLP + LLM value gate 协同，而非纯大模型 | 启动会要求“固定 token 预算下优先工程化”；实测 record-enrich 的 LLM 命中 `llm_added_cost_without_measured_quality_gain` → `record_enrich_policy=conflict_only` | 简单 query 走规则解析，复杂 / 冲突才上 LLM；核心路径约 1246 条/秒、LLM 调用 0 次 |
+| 分类仲裁：保留 `classification.rule / llm / final / resolution` 四层 | 防止 LLM 幻觉直接覆盖确定性规则结果，保留可审计链路 | LLM 不下最终结论；下游只消费 `final`，冲突标 `review_required` 交人工 |
+| 极性判别前置（`RiskPolarityScorer`：公告 / 反诈 / 研究 / 否定语境） | 把“防御识别”“安全研究”等语境从风险里摘出，压低误报 | 直接体现在人工 held-out 误报率 FPR=0.0504 |
+| 线索分层 + promotion gate（candidate → actionable，弱线索归档） | 召回优先会放大人工复核负担；用跨源、观察次数、实体支撑、防御语境做晋级门槛 | 分类复核率收敛到 0.1865，而不是全量灌给人工 |
+| 配置化 `RuleRegistry`（YAML：taxonomy / entity_patterns / slang / polarity / clue_rules） | 风险词、实体正则、黑话、门槛可不改代码扩展；评测输出 `rule_version` 定位影响 | 可维护、可审计、可回归 |
+| 实体图谱用 SQLite（asset / observation / relation） | 支撑跨 run、跨源可追溯的证据链，无需引入重型图数据库 | 轻量，足以支撑 demo 与线索佐证，不是大规模图计算 |
+| 路由 profile（fast / balanced / high_recall）+ `BudgetController`（peek/reserve/consume lease） | 显式平衡效果 / 成本 / 时延；pre-check 不污染预算账本，异常分支记入 failed/network ledger | 可按场景切换召回 / 成本档位 |
+| 默认 dry-run + `SourcePolicyGuard` 硬规则 | 合规边界即工程实现：禁绕过登录 / 验证码 / 私群，拦截 URL 凭据泄露，PII 可掩码加盐 | 安全边界是代码约束，不是口头承诺 |
+| 本地 BERT / OCR 适配器，默认不下载模型 | 不新增依赖、可离线；未配置时回退到本地确定性规则 | 多模态 / ML 是可插拔增强点，非强依赖；OCR 当前为受控 hardset 证明 |
+
+## 12. 技术架构与实现细节
+
+### 12.1 分层架构
+
+```mermaid
+flowchart TB
+  CLI["入口层<br/>main.py · run_agent_cli.py · serve_demo_api.py(本机 demo)"] --> APP["application 服务边界<br/>investigation · task · review · report"]
+  APP --> RT["LocalAgentRuntime + infra.RuntimeContainer<br/>依赖组装 · 遥测"]
+  RT --> PIPE["IntelligencePipeline（PipelineItem→PipelineItem）<br/>Clean→Dedup→Classify→Extract→Normalize→EntityGraph→CluePromotion"]
+  RT --> LLM["LLM 编排<br/>ModelRouter · BudgetController · LLMValueGate（固定 JSON schema）"]
+  RT --> SAFE["safety 守护<br/>SourcePolicyGuard · PolicyGuard · PII 掩码 · 输出校验"]
+  PIPE --> STORE["storage 双后端<br/>memory / SQLite / PostgreSQL + EntityGraphStore"]
+  classDef l1 fill:#EFF6FF,stroke:#2563EB,color:#1E3A8A;
+  classDef l2 fill:#F0FDF4,stroke:#16A34A,color:#14532D;
+  class CLI,APP,RT l1;
+  class PIPE,LLM,SAFE,STORE l2;
+```
+
+```text
+入口层 (main.py · run_agent_cli.py · serve_demo_api.py 本机 demo)
+  └─ application 服务边界 (investigation · task · review · report)
+       └─ LocalAgentRuntime + infra.RuntimeContainer (依赖组装 · 遥测)
+            ├─ IntelligencePipeline: Clean→Dedup→Classify→Extract→Normalize→EntityGraph→CluePromotion
+            ├─ LLM 编排: ModelRouter · BudgetController · LLMValueGate (固定 JSON schema)
+            ├─ safety: SourcePolicyGuard · PolicyGuard · PII 掩码 · 输出校验
+            └─ storage: memory / SQLite / PostgreSQL + EntityGraphStore (跨 run 共享)
+```
+
+低风险过渡式重构：不推倒重写，先在现有模块外补 `application / domain / pipeline / infra / safety` 边界，再逐步把业务逻辑从 `LocalAgentRuntime` 和 `InvestigationOrchestrator` 下沉。
+
+### 12.2 情报处理流水线
+
+- 主流转契约统一为 `PipelineItem -> PipelineItem`；核心数据契约为 `IntelRecord / CleanedRecord / RiskClassification / ClassificationResolution / ExtractedEntity / RiskClue / EntityGraphConfig`，dict 只保留给 CLI、JSON 和旧测试兼容。
+- stage 顺序：Clean → Dedup → Classify → Extract → Normalize → EntityGraph → CluePromotion；`LLMEnrich`、`Correlate/Score` 作为内部增强点折叠在流水线与线索生成中，不作为对外主流程节点。
+- 实体归一：`EntityNormalizer` 对邀请码 / TG / URL / 联系方式统一 `normalized / hash / masked` 字段；落库可用 `BLACKAGENT_PII_HASH_SALT` 加盐，使 canonical_hash 不可逆。
+
+### 12.3 LLM 编排与预算
+
+- `routing_profiles.yaml + ModelRouter + BudgetController + ClueRanker + LLMValueGate` 统一控制 intent / plan / query rewrite / record enrich / clue refine 的调用、token、候选条数和时延预算。
+- LLM parser / plan 走固定 JSON schema；plan 中的执行动作必须先过 `PolicyGuard`，不通过时直接回退规则 plan。
+- 查询预解析：`src/query/preflight_parser.py` 在调用 LLM 前先抽取 risk_types / keywords / slang_terms / entity_types / freshness / preferred_source_types 和跨源需求。
+
+### 12.4 评测方法学
+
+- `scripts/evaluate_pipeline.py` 输出一级 / 二级 / 层级分类 F1、`confusion_analysis`、`typical_errors`、`classification_review_load`，标准线索与图谱线索分开评（`standard_clue_eval / graph_clue_eval`）。
+- `--ablation` 输出 `fast/off`、`high_recall/mock`、`tokens_per_f1_gain`、`tokens_per_extra_valid_clue` 等成本-收益矩阵，用于判断 LLM record enrich 是否值得启用。
+- 人工 held-out（`manual_heldout_public_authorized`）与 seeded split 严格区分口径：held-out 只证明本地公开 / 授权 split，不冒充线上开放域泛化。
+
+### 12.5 存储与配置
+
+- 存储双后端：memory / SQLite / PostgreSQL；`EntityGraphStore` 跨 run 共享，支持 `neighborhood / cross_source_entities / related_clues` 查询。
+- 规则配置化：`RuleRegistry` 加载 `risk_taxonomy.yaml / entity_patterns.yaml / slang_dictionary.yaml / context_polarity.yaml / clue_generation_rules.yaml`，分类主词、二级标签、promotion marker、防御语境、实体正则和 promotion 门槛均可通过配置扩展。
+
+## 13. 安全合规边界
+
+| 边界 | 当前实现 |
+| --- | --- |
+| 默认不联网 | `config/config.yaml` 中 `network.enabled=false` |
+| source 合规校验 | `src/safety/source_policy_guard.py` |
+| 禁止绕过登录 / 验证码 / 私群 | source policy 硬规则 |
+| URL 凭据泄露拦截 | token、cookie、session、basic auth 检查 |
+| 默认 LLM dry-run | `llm.enabled=false`、`llm.dry_run=true` |
+| 生产处置 dry-run | `enforcement.enabled=false`、`enforcement.dry_run=true` |
+| PII 处理 | `src/safety/pii_masker.py` |
+
+交付包必须排除：
+
+- `data/telethon/*.session`；
+- `.env`、真实 token、cookie、API key；
+- `data/pkg_check_install*`、`data/pkg_check_wheels*`；
+- `data/_tmp_*`、`data/tmp_*`、安装缓存、历史 run 和 stale 报告。
+
+完整取舍清单见 `docs/data_delivery_assessment.md`。
+
+## 14. 复验命令
+
+最小 demo：
+
+```powershell
+D:\Anaconda\python.exe scripts/run_agent_cli.py --demo-sample --show summary --dry-run
+```
+
+最终验收门控：
+
+```powershell
+D:\Anaconda\python.exe scripts/run_acceptance_gate.py
+```
+
+人工 held-out 分类 / 实体评测：
+
+```powershell
+D:\Anaconda\python.exe scripts/evaluate_pipeline.py `
+  --gold tests/evaluation/manual_heldout_classification.jsonl `
+  --entities-gold tests/evaluation/manual_heldout_classification.jsonl `
+  --classification-granularity auto `
+  --dataset-kind manual_heldout_public_authorized `
+  --profile fast `
+  --max-hard-negative-fpr 0.1 `
+  --max-classification-review-rate 0.25 `
+  --output data/manual_heldout_eval_current.json
+```
+
+人工线索 gold 召回：
+
+```powershell
+D:\Anaconda\python.exe scripts/evaluate_pipeline.py `
+  --gold tests/evaluation/manual_heldout_classification.jsonl `
+  --entities-gold tests/evaluation/manual_heldout_classification.jsonl `
+  --clues-gold tests/evaluation/manual_heldout_clues.jsonl `
+  --classification-granularity auto `
+  --dataset-kind manual_heldout_clue_gold `
+  --profile high_recall `
+  --min-clue-recall 0.95 `
+  --min-object-clue-recall 0.95 `
+  --max-clue-overgeneration-ratio 1.05 `
+  --output data/eval_manual_heldout_clue_recall_report.json
+```
+
+全量测试：
+
+```powershell
+D:\Anaconda\python.exe -m pytest -q
+```
+
+## 15. 答辩建议
+
+答辩时建议用下面的说法：
+
+1. 先打开 `BlackAgent_真实用例速览.md`，用 1 分钟讲 4 个真实用例。
+2. 再跳到该文档第 7 节，任选一个 clue id 展示完整 `answer_chain`。
+3. 然后讲主指标：final summary、final3 采集包、500 行 evidence pack 和 193 行人工 held-out gold。
+4. 再讲系统链路：采集、清洗、分类、实体、线索、证据链、人工复核。
+5. 最后讲边界：公开 / 授权数据，不是非法采集工具；不确定样本进入人工复核，不自动下结论；不交付登录会话或敏感凭据。

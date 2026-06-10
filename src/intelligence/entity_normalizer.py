@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
@@ -143,8 +144,22 @@ def _mask(entity_type: str, value: str) -> str:
     return f"***{value[-2:]}"
 
 
+def _pii_hash_salt() -> str:
+    """Per-deployment secret salt for one-way PII hashing.
+
+    Defaults to empty so local benchmark artifacts stay reproducible and existing
+    canonical hashes are unchanged. Set ``BLACKAGENT_PII_HASH_SALT`` in any
+    deployment that persists hashed contacts/accounts so the SHA-256 digests are
+    salted and not reversible via rainbow tables over small identifier spaces.
+    """
+
+    return os.environ.get("BLACKAGENT_PII_HASH_SALT", "")
+
+
 def _hash(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    salt = _pii_hash_salt()
+    payload = f"{salt}\x1f{value}" if salt else value
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 __all__ = ["EntityNormalizer", "NormalizedEntity", "normalize_entity_payload"]

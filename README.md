@@ -203,6 +203,9 @@ $env:BLACKAGENT_LLM_BASE_URL='https://your-provider/v1'
 $env:BLACKAGENT_LLM_API_KEY='***'
 $env:BLACKAGENT_LLM_MODEL='your-model'
 $env:BLACKAGENT_LLM_DRY_RUN='false'
+# 生产/持久化部署应设置 PII 哈希盐，使落库的联系方式/账号 canonical_hash 加盐不可逆；
+# 留空（默认）时哈希与历史基准产物保持一致，便于本地复跑。
+$env:BLACKAGENT_PII_HASH_SALT='<deployment-secret-salt>'
 ```
 
 ## 本地 runtime 示例

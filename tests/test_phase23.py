@@ -1,6 +1,7 @@
 from src.agent.exploration_agent import ExplorationAgent
 from src.enhancement.engine import PhaseTwoThreeEngine
 from src.enhancement.lifecycle import DynamicSlangLifecycleManager, PromptEvaluator
+from src.enhancement.strategy import RiskClueAggregator
 from src.enhancement.source_intake import ComplianceSourceDiscovery, MultimodalTextExtractor
 from src.enhancement.text_intelligence import AdaptiveEntropyFilter, AdvancedEntityExtractor, FineGrainedIntentClassifier, SlangVariantNormalizer
 from src.intelligence.entity_postprocessor import filter_and_order_entities
@@ -530,6 +531,61 @@ def test_phase2_phase3_engine_builds_clues_playbooks_strategies_and_indexes():
     assert payload["prompt_eval"]["passed"] is True
     assert any(item.get("status") == "SCHEDULABLE" for item in payload["compliance_decisions"])
     assert engine.semantic_search("群控脚本 接码", top_k=1)[0]["score"] > 0.2
+
+
+def test_cross_source_clue_uses_structural_authorization_and_skips_generic_domains():
+    aggregator = RiskClueAggregator()
+
+    def authorized_record(trace_id: str, source_name: str) -> dict[str, object]:
+        # A genuine authorized record: legal basis + auditable source URL +
+        # immutable snapshot URI, but NO "证据链/复核/授权样本" marker words.
+        return {
+            "source_trace_id": trace_id,
+            "source_name": source_name,
+            "source_type": "Social",
+            "content_text": "诈骗引流 落地页推广 加微 进群 拉新",
+            "clean_text": "诈骗引流 落地页推广 加微 进群 拉新",
+            "legal_basis": "PUBLIC_COMPLIANT_DATA",
+            "source_url": f"https://example.test/{trace_id}",
+            "capture_snapshot_uri": f"snap://{trace_id}",
+            "publish_time": "2026-06-09T10:00:00+00:00",
+            "crawl_time": "2026-06-09T10:00:00+00:00",
+        }
+
+    records = [authorized_record("A", "tg_search"), authorized_record("B", "tieba_search")]
+    classifications = [
+        {"source_trace_id": "A", "risk_category": "诈骗引流"},
+        {"source_trace_id": "B", "risk_category": "诈骗引流"},
+    ]
+    # A high-value landing domain that appears only once (singleton on A).
+    entities = [
+        {
+            "source_trace_id": "A",
+            "entity_type": "url",
+            "entity_value": "https://scamland.example/go",
+            "normalized_value": "https://scamland.example/go",
+        }
+    ]
+    clues = aggregator.aggregate(records=records, classifications=classifications, entities=entities)
+    cross_source = [clue for clue in clues if len(set(clue.source_names)) >= 2]
+    assert any(
+        clue.clue_type == "shared_domain_multi_source" and clue.key == "scamland.example"
+        for clue in cross_source
+    )
+
+    # Generic platform / state-media / dictionary domains recur across public
+    # search snippets but are not black/gray assets: they must never form clues.
+    generic_entities = [
+        {"source_trace_id": "A", "entity_type": "url", "entity_value": "https://zhihu.com/x", "normalized_value": "https://zhihu.com/x"},
+        {"source_trace_id": "B", "entity_type": "url", "entity_value": "https://zhihu.com/y", "normalized_value": "https://zhihu.com/y"},
+        {"source_trace_id": "A", "entity_type": "url", "entity_value": "https://cnr.cn/a", "normalized_value": "https://cnr.cn/a"},
+        {"source_trace_id": "B", "entity_type": "url", "entity_value": "https://cnr.cn/b", "normalized_value": "https://cnr.cn/b"},
+    ]
+    generic_clues = aggregator.aggregate(records=records, classifications=classifications, entities=generic_entities)
+    assert not any(
+        clue.clue_type == "shared_domain_multi_source" and clue.key in {"zhihu.com", "cnr.cn"}
+        for clue in generic_clues
+    )
 
 
 def test_advanced_components_cover_conflict_entropy_compliance_and_lifecycle():

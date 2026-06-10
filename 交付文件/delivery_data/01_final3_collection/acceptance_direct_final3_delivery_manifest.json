@@ -1,0 +1,632 @@
+{
+  "status": "completed",
+  "db_path": "D:\\研一\\BlackAgent\\data\\acceptance_direct_collect_final3.db",
+  "raw_record_count": 405,
+  "cleaned_record_count": 268,
+  "snapshot_alignment": {
+    "raw_record_count": 405,
+    "cleaned_record_count": 268,
+    "claim_boundary": "raw_record_count is the authoritative collection snapshot; cleaned/classification summaries may be filtered derived views and must report their source snapshot separately."
+  },
+  "raw_jsonl": "D:\\研一\\BlackAgent\\data\\acceptance_direct_final3_raw_dataset.jsonl",
+  "quota_balanced_jsonl": "D:\\研一\\BlackAgent\\data\\acceptance_direct_final3_quota_sample.jsonl",
+  "defense_quota_balanced_jsonl": "D:\\研一\\BlackAgent\\data\\acceptance_direct_final3_defense_quota_sample.jsonl",
+  "acceptance_pack_jsonl": "D:\\研一\\BlackAgent\\data\\collection_phase_multi_source_acceptance_pack.jsonl",
+  "query_term_stage_counts": [
+    {
+      "stage": "core",
+      "count": 376
+    },
+    {
+      "stage": "variant",
+      "count": 29
+    }
+  ],
+  "special_signal_counts": [
+    {
+      "signal": "variant_or_homophone_normalized",
+      "count": 12
+    },
+    {
+      "signal": "emoji_marker",
+      "count": 5
+    },
+    {
+      "signal": "multimodal_text",
+      "count": 0
+    }
+  ],
+  "source_class_counts": [
+    {
+      "source_class": "other_authorized",
+      "count": 192
+    },
+    {
+      "source_class": "social_or_forum",
+      "count": 186
+    },
+    {
+      "source_class": "vertical_or_technical",
+      "count": 27
+    }
+  ],
+  "source_access_type_counts": [
+    {
+      "source_access_type": "public_compliant",
+      "count": 405
+    }
+  ],
+  "top_sources": [
+    {
+      "source_name": "direct_secondhand_epicnpc_search",
+      "count": 59
+    },
+    {
+      "source_name": "direct_public_article_news_blog_search",
+      "count": 52
+    },
+    {
+      "source_name": "direct_public_article_search",
+      "count": 31
+    },
+    {
+      "source_name": "direct_crowdsourcing_fiverr_search",
+      "count": 30
+    },
+    {
+      "source_name": "direct_crowdsourcing_guru_search",
+      "count": 27
+    },
+    {
+      "source_name": "direct_technical_forum_search",
+      "count": 23
+    },
+    {
+      "source_name": "direct_public_article_broad_search",
+      "count": 22
+    },
+    {
+      "source_name": "direct_technical_reddit_search",
+      "count": 19
+    },
+    {
+      "source_name": "direct_crowdsourcing_upwork_search",
+      "count": 19
+    },
+    {
+      "source_name": "direct_technical_github_discussions_search",
+      "count": 19
+    },
+    {
+      "source_name": "direct_secondhand_pzds_search",
+      "count": 18
+    },
+    {
+      "source_name": "direct_technical_cn_blog_search",
+      "count": 16
+    },
+    {
+      "source_name": "direct_secondhand_playerup_search",
+      "count": 15
+    },
+    {
+      "source_name": "direct_crowdsourcing_peopleperhour_search",
+      "count": 14
+    },
+    {
+      "source_name": "direct_technical_v2ex_broad_search",
+      "count": 13
+    },
+    {
+      "source_name": "direct_technical_stackoverflow_search",
+      "count": 10
+    },
+    {
+      "source_name": "direct_crowdsourcing_search",
+      "count": 10
+    },
+    {
+      "source_name": "direct_technical_github_search",
+      "count": 8
+    }
+  ],
+  "quota_balanced_sample": {
+    "status": "completed",
+    "strict_balance": false,
+    "target_source_class_shares": {
+      "im_or_group": 0.3,
+      "social_or_forum": 0.3,
+      "vertical_or_technical": 0.3,
+      "other_authorized": 0.1
+    },
+    "max_source_share": 0.3,
+    "min_class_count": 20,
+    "max_class_share": 0.45,
+    "effective_max_class_share": 0.45,
+    "raw_record_count": 405,
+    "selected_count": 189,
+    "selected_trace_id_sample": [
+      "37ebe734-b269-49c2-85ce-4799584f7ef1",
+      "b1c61904-10fd-4d71-8714-97e893ac51ca",
+      "585fb01d-8a01-45ea-8753-300cdc78eb9c",
+      "6b1c38b9-3605-4f1a-9295-1f40f4c190c8",
+      "97f2a228-856a-4afb-80ca-0b0f96c752fa",
+      "10860416-2f73-4b7c-94cb-a1dfdd283c25",
+      "9a59b423-be56-4451-8844-270274a8acf2",
+      "8f00459e-c9b9-4607-8ce5-c8c90e84a55b",
+      "cfc077eb-4138-4fd2-9b5a-53e71e0e3161",
+      "fb5d4b90-2a10-4cd2-942f-e7bc0ad1244e",
+      "159eb27e-7baf-4b2b-b742-d4bf5532eb7e",
+      "a18c3f5c-83cb-44b1-b0c1-1b11af7aa7cc",
+      "6d403913-ad22-4fb5-8b3a-ca30da7b9c49",
+      "c15fe81f-c8c6-42f4-b996-63f41a66b3fc",
+      "1eb1dd8a-10d1-4ea1-86d0-e3fc6a92c44b",
+      "f2372e37-4b58-449d-9c17-b981c7cb0b2b",
+      "9e4debf6-9a11-4c44-977f-c4f7a35cbf23",
+      "f2b53163-72f8-4d9d-8c1a-74ef576e8e39",
+      "6d115f64-40e9-49d5-a615-b548eeb7d2fc",
+      "8283ace2-478d-45cf-82ef-45511e403ec8"
+    ],
+    "class_counts": [
+      {
+        "source_class": "social_or_forum",
+        "count": 122
+      },
+      {
+        "source_class": "other_authorized",
+        "count": 40
+      },
+      {
+        "source_class": "vertical_or_technical",
+        "count": 27
+      }
+    ],
+    "source_counts": [
+      {
+        "source_name": "direct_public_article_search",
+        "count": 31
+      },
+      {
+        "source_name": "direct_secondhand_epicnpc_search",
+        "count": 25
+      },
+      {
+        "source_name": "direct_technical_forum_search",
+        "count": 23
+      },
+      {
+        "source_name": "direct_public_article_broad_search",
+        "count": 22
+      },
+      {
+        "source_name": "direct_technical_reddit_search",
+        "count": 19
+      },
+      {
+        "source_name": "direct_technical_github_discussions_search",
+        "count": 19
+      },
+      {
+        "source_name": "direct_secondhand_playerup_search",
+        "count": 15
+      },
+      {
+        "source_name": "direct_technical_v2ex_broad_search",
+        "count": 13
+      },
+      {
+        "source_name": "direct_technical_stackoverflow_search",
+        "count": 10
+      },
+      {
+        "source_name": "direct_technical_github_search",
+        "count": 8
+      },
+      {
+        "source_name": "direct_public_article_news_blog_search",
+        "count": 4
+      }
+    ],
+    "warnings": [
+      "im_or_group_quota_underfilled:0/122;available=0",
+      "vertical_or_technical_quota_underfilled:27/122;available=27"
+    ]
+  },
+  "defense_quota_balanced_sample": {
+    "status": "completed",
+    "strict_balance": true,
+    "target_source_class_shares": {
+      "im_or_group": 0.3,
+      "social_or_forum": 0.3,
+      "vertical_or_technical": 0.3,
+      "other_authorized": 0.1
+    },
+    "max_source_share": 0.3,
+    "min_class_count": 20,
+    "max_class_share": 0.45,
+    "effective_max_class_share": 0.45,
+    "raw_record_count": 405,
+    "selected_count": 269,
+    "selected_trace_id_sample": [
+      "37ebe734-b269-49c2-85ce-4799584f7ef1",
+      "b1c61904-10fd-4d71-8714-97e893ac51ca",
+      "585fb01d-8a01-45ea-8753-300cdc78eb9c",
+      "6b1c38b9-3605-4f1a-9295-1f40f4c190c8",
+      "97f2a228-856a-4afb-80ca-0b0f96c752fa",
+      "10860416-2f73-4b7c-94cb-a1dfdd283c25",
+      "9a59b423-be56-4451-8844-270274a8acf2",
+      "8f00459e-c9b9-4607-8ce5-c8c90e84a55b",
+      "cfc077eb-4138-4fd2-9b5a-53e71e0e3161",
+      "fb5d4b90-2a10-4cd2-942f-e7bc0ad1244e",
+      "159eb27e-7baf-4b2b-b742-d4bf5532eb7e",
+      "a18c3f5c-83cb-44b1-b0c1-1b11af7aa7cc",
+      "6d403913-ad22-4fb5-8b3a-ca30da7b9c49",
+      "c15fe81f-c8c6-42f4-b996-63f41a66b3fc",
+      "1eb1dd8a-10d1-4ea1-86d0-e3fc6a92c44b",
+      "f2372e37-4b58-449d-9c17-b981c7cb0b2b",
+      "9e4debf6-9a11-4c44-977f-c4f7a35cbf23",
+      "f2b53163-72f8-4d9d-8c1a-74ef576e8e39",
+      "6d115f64-40e9-49d5-a615-b548eeb7d2fc",
+      "8283ace2-478d-45cf-82ef-45511e403ec8"
+    ],
+    "class_counts": [
+      {
+        "source_class": "social_or_forum",
+        "count": 121
+      },
+      {
+        "source_class": "other_authorized",
+        "count": 121
+      },
+      {
+        "source_class": "vertical_or_technical",
+        "count": 27
+      }
+    ],
+    "source_counts": [
+      {
+        "source_name": "direct_secondhand_epicnpc_search",
+        "count": 59
+      },
+      {
+        "source_name": "direct_public_article_search",
+        "count": 31
+      },
+      {
+        "source_name": "direct_technical_forum_search",
+        "count": 23
+      },
+      {
+        "source_name": "direct_public_article_broad_search",
+        "count": 22
+      },
+      {
+        "source_name": "direct_technical_reddit_search",
+        "count": 19
+      },
+      {
+        "source_name": "direct_technical_github_discussions_search",
+        "count": 19
+      },
+      {
+        "source_name": "direct_crowdsourcing_upwork_search",
+        "count": 19
+      },
+      {
+        "source_name": "direct_secondhand_pzds_search",
+        "count": 18
+      },
+      {
+        "source_name": "direct_secondhand_playerup_search",
+        "count": 15
+      },
+      {
+        "source_name": "direct_technical_v2ex_broad_search",
+        "count": 13
+      },
+      {
+        "source_name": "direct_technical_stackoverflow_search",
+        "count": 10
+      },
+      {
+        "source_name": "direct_crowdsourcing_search",
+        "count": 10
+      },
+      {
+        "source_name": "direct_technical_github_search",
+        "count": 8
+      },
+      {
+        "source_name": "direct_public_article_news_blog_search",
+        "count": 3
+      }
+    ],
+    "warnings": [],
+    "strict_eligible_classes": [
+      {
+        "source_class": "social_or_forum",
+        "available": 186,
+        "target": 121
+      },
+      {
+        "source_class": "vertical_or_technical",
+        "available": 27,
+        "target": 27
+      },
+      {
+        "source_class": "other_authorized",
+        "available": 192,
+        "target": 121
+      }
+    ],
+    "strict_class_target_counts": [
+      {
+        "source_class": "social_or_forum",
+        "count": 121
+      },
+      {
+        "source_class": "vertical_or_technical",
+        "count": 27
+      },
+      {
+        "source_class": "other_authorized",
+        "count": 121
+      }
+    ]
+  },
+  "multi_source_acceptance_pack": {
+    "status": "completed",
+    "pack_version": "multi_source_acceptance_pack_v1",
+    "target_record_range": {
+      "min": 300,
+      "max": 500
+    },
+    "target_record_count": 300,
+    "per_category_target": 75,
+    "target_categories": [
+      "public_account_or_article",
+      "secondhand_market",
+      "crowdsourcing_platform",
+      "technical_or_forum"
+    ],
+    "raw_record_count": 405,
+    "evidence_ready_trace_filter": {
+      "enabled": true,
+      "required_trace_count": 401,
+      "excluded_without_required_trace": 4
+    },
+    "eligible_record_count": 401,
+    "selected_count": 300,
+    "available_category_counts": [
+      {
+        "category": "public_account_or_article",
+        "count": 105
+      },
+      {
+        "category": "secondhand_market",
+        "count": 88
+      },
+      {
+        "category": "crowdsourcing_platform",
+        "count": 100
+      },
+      {
+        "category": "technical_or_forum",
+        "count": 108
+      }
+    ],
+    "selected_category_counts": [
+      {
+        "category": "public_account_or_article",
+        "count": 75
+      },
+      {
+        "category": "secondhand_market",
+        "count": 75
+      },
+      {
+        "category": "crowdsourcing_platform",
+        "count": 75
+      },
+      {
+        "category": "technical_or_forum",
+        "count": 75
+      }
+    ],
+    "source_counts": [
+      {
+        "source_name": "direct_secondhand_epicnpc_search",
+        "count": 55
+      },
+      {
+        "source_name": "direct_public_article_search",
+        "count": 31
+      },
+      {
+        "source_name": "direct_crowdsourcing_fiverr_search",
+        "count": 30
+      },
+      {
+        "source_name": "direct_technical_forum_search",
+        "count": 23
+      },
+      {
+        "source_name": "direct_public_article_broad_search",
+        "count": 22
+      },
+      {
+        "source_name": "direct_public_article_news_blog_search",
+        "count": 22
+      },
+      {
+        "source_name": "direct_crowdsourcing_upwork_search",
+        "count": 19
+      },
+      {
+        "source_name": "direct_technical_reddit_search",
+        "count": 19
+      },
+      {
+        "source_name": "direct_secondhand_playerup_search",
+        "count": 15
+      },
+      {
+        "source_name": "direct_technical_v2ex_broad_search",
+        "count": 13
+      },
+      {
+        "source_name": "direct_crowdsourcing_guru_search",
+        "count": 11
+      },
+      {
+        "source_name": "direct_crowdsourcing_search",
+        "count": 10
+      },
+      {
+        "source_name": "direct_technical_stackoverflow_search",
+        "count": 10
+      },
+      {
+        "source_name": "direct_technical_github_search",
+        "count": 8
+      },
+      {
+        "source_name": "direct_secondhand_pzds_search",
+        "count": 5
+      },
+      {
+        "source_name": "direct_crowdsourcing_peopleperhour_search",
+        "count": 5
+      },
+      {
+        "source_name": "direct_technical_github_discussions_search",
+        "count": 2
+      }
+    ],
+    "selected_trace_id_sample": [
+      "2e9d0cda-d5a0-4706-8545-e03f2ab7a834",
+      "28071e3e-279c-461f-add5-7d09bf490960",
+      "1ee3cbb3-a55e-4790-99ec-8565b86eca5a",
+      "2508c607-b550-4dd6-80d8-4fb453504350",
+      "cbdf1a35-c731-4f27-b7ee-1b33d1a09038",
+      "e897cfd0-71c3-431e-a3a4-826f4bb540b0",
+      "8d11b46b-d143-4912-841c-d37c3ec52cf7",
+      "2892f655-ada4-4047-a74c-91bf89fc58b3",
+      "2cb5c42d-1c63-4e22-b1d0-a1f51ad147a8",
+      "5942896c-6496-4abd-a2db-50981f97d2e0",
+      "2e000065-31e8-4a91-9428-fc284875d8a3",
+      "acc9f5e8-28a6-4f00-917e-3cc121cfe69a",
+      "88c13245-0f55-4d9c-816b-382e5bc1226a",
+      "4e48bda3-5238-432d-933b-a7c9158dcceb",
+      "5052d21c-f69b-4b4e-a079-2df4462dc9ed",
+      "95edc37d-6357-465f-8f1d-60adc5d9fe41",
+      "97824224-9971-4b88-98ba-3d5aa03b962c",
+      "0c226be2-95b0-4164-9d7b-52db5fe2f4d3",
+      "07b88f03-6d43-4d8b-9343-e7247dec0fbd",
+      "e7ebc0b2-a3cc-49a5-adbf-8fb8fe813a3d"
+    ],
+    "warnings": [],
+    "claim_boundary": "completed_300_to_500_multi_source_acceptance_pack",
+    "evidence_ready_inputs": {
+      "classifications_jsonl": "D:\\研一\\BlackAgent\\data\\acceptance_direct_final3_raw_classifications.jsonl",
+      "entities_jsonl": "D:\\研一\\BlackAgent\\data\\acceptance_direct_final3_raw_entities.jsonl",
+      "classification_trace_count": 405,
+      "entity_trace_count": 401,
+      "required_trace_count": 401,
+      "claim_boundary": "acceptance pack sampled only from traces with both classification and entity evidence"
+    }
+  },
+  "sample_special_signal_rows": [
+    {
+      "trace_id": "6d115f64-40e9-49d5-a615-b548eeb7d2fc",
+      "source_name": "direct_technical_forum_search",
+      "query_term": "加微",
+      "query_term_stage": "core",
+      "special_signal_types": [
+        "variant_or_homophone_normalized"
+      ],
+      "multimodal_signal_count": 0,
+      "content_preview": "baidu.com https://aiqicha.baidu.com 5 天之前 · 爱企查为您提供加微通信技术（上海）有限公司的企业信息查询服务，查询加微通信技术（上海）有限公司工商注册信息、电话邮箱、公司地址、经营风险、控股持股、发展动态、财务状况、股 …"
+    },
+    {
+      "trace_id": "8283ace2-478d-45cf-82ef-45511e403ec8",
+      "source_name": "direct_technical_forum_search",
+      "query_term": "加微",
+      "query_term_stage": "core",
+      "special_signal_types": [
+        "variant_or_homophone_normalized"
+      ],
+      "multimodal_signal_count": 0,
+      "content_preview": "tianyancha.com https://www.tianyancha.com › company 简介： 加微通信技术（上海）有限公司，成立于2012年，位于上海市，是一家以从事批发业为主的企业。 企业注册资本200万美元，实缴资本200万美元。 通过天眼查大数据分析，加微通信技术（上海） …"
+    },
+    {
+      "trace_id": "653b22af-4e4f-4475-a2fe-00d83e2f1d88",
+      "source_name": "direct_technical_forum_search",
+      "query_term": "加微",
+      "query_term_stage": "core",
+      "special_signal_types": [
+        "variant_or_homophone_normalized"
+      ],
+      "multimodal_signal_count": 0,
+      "content_preview": "11467.com https://www.11467.com › qiye 2022年8月4日 · 加微通信技术（上海）有限公司属于DragonWaveInc.。 DragonWaveInc.创建于2000年，注册地为加拿大安大略省渥太华，是驱动下一代IP网络的大容量分组微波解决方案的提供商，在欧 …"
+    },
+    {
+      "trace_id": "acac8c5b-448e-4d4d-9b5c-c1fca4a659ea",
+      "source_name": "direct_technical_forum_search",
+      "query_term": "加微",
+      "query_term_stage": "core",
+      "special_signal_types": [
+        "variant_or_homophone_normalized"
+      ],
+      "multimodal_signal_count": 0,
+      "content_preview": "zhipin.com https://www.zhipin.com › gongsis 加微通信技术（上海）有限公司属于DragonWave Inc.。 DragonWave Inc.创建于2000年，注册地为加拿大安大略省渥太华，是驱动下一代IP网络的大容量分组微波解决方案的全球领先提供商，在欧洲、亚 …"
+    },
+    {
+      "trace_id": "d57bfde8-9d55-40dc-9cb1-9799793b4ffb",
+      "source_name": "direct_technical_forum_search",
+      "query_term": "加微",
+      "query_term_stage": "core",
+      "special_signal_types": [
+        "variant_or_homophone_normalized"
+      ],
+      "multimodal_signal_count": 0,
+      "content_preview": "liepin.com https://www.liepin.com › company 猎聘为您提供2026年加微通信技术 (上海)有限公司招聘信息，更有加微通信技术 (上海)有限公司企业介绍、加微通信技术 (上海)有限公司地址、加微通信技术 (上海)有限公司工作环境以及加微通信技术 (上 …"
+    },
+    {
+      "trace_id": "fdee5c5e-2866-4d58-9a42-df0479cfc101",
+      "source_name": "direct_secondhand_playerup_search",
+      "query_term": "飞机号",
+      "query_term_stage": "variant",
+      "special_signal_types": [
+        "variant_or_homophone_normalized",
+        "emoji_marker"
+      ],
+      "multimodal_signal_count": 0,
+      "content_preview": "syltws.com https://syltws.com 2026年5月3日 · 飞号网提供纸飞机账号购买成品号、telegraph账号、电报账号,飞机号购买自助下单官网包含了美国、加拿大、印度、 …"
+    },
+    {
+      "trace_id": "d2b53a86-d9fb-43bc-8cfe-051867d3dfe7",
+      "source_name": "direct_secondhand_epicnpc_search",
+      "query_term": "飞机号",
+      "query_term_stage": "variant",
+      "special_signal_types": [
+        "variant_or_homophone_normalized",
+        "emoji_marker"
+      ],
+      "multimodal_signal_count": 0,
+      "content_preview": "huojianx.com https://huojianx.com › telegram-tutorial 2026年3月30日 · 这篇文章详细讲解 Telegram 注册教程，包括手机号注册步骤、验证码收不到解决方法、注册失败排查和新手使用建议，适合第一次接触纸飞机的用户查看。"
+    },
+    {
+      "trace_id": "b45d17ef-8b33-4da7-aa76-28023be29d5d",
+      "source_name": "direct_secondhand_epicnpc_search",
+      "query_term": "飞机号",
+      "query_term_stage": "variant",
+      "special_signal_types": [
+        "variant_or_homophone_normalized",
+        "emoji_marker"
+      ],
+      "multimodal_signal_count": 0,
+      "content_preview": "syltws.com https://syltws.com 2026年5月3日 · 飞号网提供纸飞机账号购买成品号、telegraph账号、电报账号,飞机号购买自助下单官网包含了美国、加拿大、印度、日本、韩国等海外各个国家的Telegram账号,TG电报账号购买批发平台 …"
+    }
+  ]
+}
