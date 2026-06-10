@@ -1,0 +1,8 @@
+{
+  "trace_id": "2ce9568d-90bc-4be7-ad84-ba76db4fed5f",
+  "source_name": "tech_forum_blackgray_search",
+  "source_url": "https://www.v2ex.com/t/1173091",
+  "crawl_time": "2026-05-26T02:31:08.195315Z",
+  "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+  "content_text": "想做一个去矩阵群控系统 ,想寻大佬解决方案,或者长期工作. - V2ex Image 3www.v2ex.com/t/1173091 想做一个去矩阵群控系统 ,想寻大佬解决方案,或者长期工作. 目前用的魔云腾 rk3588 docker 的但是感觉这种虚拟化容易被识别, 想寻现成解决方案,和 ram 系统定制大佬. 和矩阵系统源码"
+}

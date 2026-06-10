@@ -66,6 +66,9 @@ def test_build_acceptance_evidence_pack_joins_classification_entities_and_clues(
                 "key": "Telegram:risk01",
                 "evidence_trace_ids": ["trace-1", "trace-2"],
                 "source_names": ["v2ex-direct", "telegram-direct"],
+                "threshold_reason": "same_contact_appears_in_at_least_2_sources_within_48h",
+                "quality_level": "high",
+                "quality_reasons": ["cross_source_confirmed"],
             }
         ],
         clues_path,
@@ -93,7 +96,10 @@ def test_build_acceptance_evidence_pack_joins_classification_entities_and_clues(
     assert rows[0]["entities"][0]["source_snippet"] == "原始帖：群控脚本引流，联系 TG:risk01"
     assert rows[0]["entities"][0]["source_url"] is None
     assert rows[0]["clue_chain"][0]["clue_id"] == "clue-1"
+    assert rows[0]["clue_chain"][0]["clue_generation_basis"] == "same_contact_appears_in_at_least_2_sources_within_48h"
+    assert rows[0]["clue_chain"][0]["quality_level"] == "high"
     assert rows[0]["review_chain"]["status"] == "linked_to_cross_source_clue"
+    assert rows[0]["evidence_completeness"]["has_high_quality_clue"] is True
     assert rows[0]["evidence_completeness"]["has_raw_snippet"] is True
     assert rows[0]["evidence_completeness"]["has_classification"] is True
     assert rows[0]["evidence_completeness"]["has_entities"] is True
@@ -143,6 +149,47 @@ def test_build_acceptance_evidence_pack_adds_review_chain_when_cross_source_clue
     assert rows[0]["clue_chain"][0]["clue_type"] == "single_record_review_chain"
     assert rows[0]["clue_chain"][0]["evidence_trace_ids"] == ["trace-1"]
     assert rows[0]["evidence_completeness"]["has_clue_chain"] is True
+    assert rows[0]["evidence_completeness"]["has_high_quality_clue"] is False
+    assert rows[0]["evidence_completeness"]["has_cross_source_clue"] is False
+
+
+def test_build_acceptance_evidence_pack_distinguishes_single_source_clue_from_cross_source(tmp_path):
+    output_path = tmp_path / "evidence.jsonl"
+    report_path = tmp_path / "report.json"
+
+    report = build_evidence_pack(
+        [
+            {
+                "trace_id": "trace-1",
+                "source_trace_id": "trace-1",
+                "source_name": "article-direct",
+                "source_type": "public_account",
+                "content_text": "原文片段：接码平台风险分析",
+            }
+        ],
+        classifications=[],
+        entities=[],
+        clues=[
+            {
+                "clue_id": "clue-single-source",
+                "clue_type": "shared_tool_multi_record",
+                "risk_category": "账号交易",
+                "key": "接码",
+                "quality_score": 0.82,
+                "evidence_trace_ids": ["trace-1"],
+                "source_names": ["article-direct"],
+            }
+        ],
+        output_path=output_path,
+        report_path=report_path,
+    )
+
+    rows = load_jsonl(output_path)
+
+    assert report["review_status_counts"]["linked_to_high_quality_clue"] == 1
+    assert "linked_to_cross_source_clue" not in report["review_status_counts"]
+    assert rows[0]["review_chain"]["status"] == "linked_to_high_quality_clue"
+    assert rows[0]["evidence_completeness"]["has_high_quality_clue"] is True
     assert rows[0]["evidence_completeness"]["has_cross_source_clue"] is False
 
 
@@ -575,6 +622,8 @@ def test_build_clue_evidence_index_links_high_quality_clue_to_answer_chain():
             "key": "Telegram:risk01",
             "quality_score": 0.72,
             "quality_level": "medium",
+            "threshold_reason": "same_contact_appears_in_at_least_2_sources_within_48h",
+            "quality_reasons": ["cross_source_confirmed", "critical_entities_present"],
             "evidence_trace_ids": ["trace-1"],
         },
         {
@@ -592,6 +641,8 @@ def test_build_clue_evidence_index_links_high_quality_clue_to_answer_chain():
 
     assert index["report"]["high_quality_clue_count"] == 1
     assert index["report"]["indexed_clue_count"] == 1
+    assert index["rows"][0]["clue_generation_basis"] == "same_contact_appears_in_at_least_2_sources_within_48h"
+    assert index["rows"][0]["quality_reasons"] == ["cross_source_confirmed", "critical_entities_present"]
     chain = index["rows"][0]["answer_chain"]
     assert chain[0]["raw_snapshot"]["capture_snapshot_uri"] == "s3://snapshots/trace-1.html"
     assert chain[0]["raw_snapshot"]["raw_payload_uri"] == "s3://payloads/trace-1.json"

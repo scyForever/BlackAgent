@@ -116,7 +116,13 @@ def build_evidence_pack(
             or row.get("content_text")
             or ""
         )
-        review_status = "linked_to_cross_source_clue" if row_clues else "no_cross_source_clue_yet"
+        has_high_quality_clue = any(_is_high_quality_clue(item) for item in row_clues)
+        has_cross_source_clue = any(_is_cross_source_clue(item) for item in row_clues)
+        review_status = _review_status_for_clues(
+            has_linked_clue=bool(row_clues),
+            has_high_quality_clue=has_high_quality_clue,
+            has_cross_source_clue=has_cross_source_clue,
+        )
         cross_source_clue_chain = [_clue_card(item) for item in row_clues]
         clue_chain = cross_source_clue_chain or [
             _single_record_review_chain(
@@ -135,7 +141,8 @@ def build_evidence_pack(
             "has_classification": bool(classification),
             "has_entities": bool(row_entities),
             "has_clue_chain": bool(clue_chain),
-            "has_cross_source_clue": bool(row_clues),
+            "has_high_quality_clue": has_high_quality_clue,
+            "has_cross_source_clue": has_cross_source_clue,
         }
         for key, value in completeness.items():
             if value:
@@ -234,6 +241,10 @@ def build_clue_evidence_index(
                 "key": clue.get("key"),
                 "quality_score": clue.get("quality_score"),
                 "quality_level": clue.get("quality_level"),
+                "quality_reasons": _string_list(clue.get("quality_reasons") or _nested_value(clue, "quality", "quality_reasons")),
+                "clue_generation_basis": clue.get("threshold_reason")
+                or clue.get("generation_reason")
+                or clue.get("clue_generation_basis"),
                 "evidence_trace_ids": evidence_trace_ids,
                 "clickable_chain_uri": f"evidence-pack://clue/{_clue_uri_id(clue)}",
                 "answer_chain": answer_chain,
@@ -353,6 +364,29 @@ def _is_high_quality_clue(clue: dict[str, Any]) -> bool:
         return float(clue.get("quality_score")) >= 0.7
     except (TypeError, ValueError):
         return False
+
+
+def _is_cross_source_clue(clue: dict[str, Any]) -> bool:
+    source_names = {str(item).strip() for item in (clue.get("source_names") or []) if str(item).strip()}
+    source_types = {str(item).strip() for item in (clue.get("source_types") or []) if str(item).strip()}
+    if len(source_names) >= 2:
+        return True
+    return len(source_types) >= 2
+
+
+def _review_status_for_clues(
+    *,
+    has_linked_clue: bool,
+    has_high_quality_clue: bool,
+    has_cross_source_clue: bool,
+) -> str:
+    if has_cross_source_clue:
+        return "linked_to_cross_source_clue"
+    if has_high_quality_clue:
+        return "linked_to_high_quality_clue"
+    if has_linked_clue:
+        return "linked_to_candidate_clue"
+    return "no_cross_source_clue_yet"
 
 
 def _normalized_trace_ids(values: Iterable[Any]) -> list[str]:
@@ -629,7 +663,34 @@ def _clue_card(row: dict[str, Any]) -> dict[str, Any]:
         "source_names": [str(item) for item in (row.get("source_names") or [])],
         "confidence": row.get("confidence"),
         "quality_score": row.get("quality_score"),
+        "quality_level": row.get("quality_level"),
+        "quality_reasons": _string_list(row.get("quality_reasons") or _nested_value(row, "quality", "quality_reasons")),
+        "clue_generation_basis": row.get("threshold_reason")
+        or row.get("generation_reason")
+        or row.get("clue_generation_basis"),
     }
+
+
+def _nested_value(row: dict[str, Any], *keys: str) -> Any:
+    value: Any = row
+    for key in keys:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)):
+        values = [str(value)]
+    else:
+        try:
+            values = [str(item) for item in value]
+        except TypeError:
+            values = [str(value)]
+    return [item for item in (text.strip() for text in values) if item]
 
 
 def _single_record_review_chain(

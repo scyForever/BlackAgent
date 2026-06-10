@@ -1,0 +1,1007 @@
+{
+  "rows": [
+    {
+      "clue_id": "curated-clue-group-control-v2ex",
+      "clue_type": "entity_graph_tool_trade_cluster",
+      "risk_category": "工具交易",
+      "key": "群控/手机群控/群控脚本",
+      "quality_score": 0.96,
+      "quality_level": "high",
+      "quality_reasons": [
+        "original_raw_text_available",
+        "cleaned_text_joined",
+        "classification_joined",
+        "entities_joined",
+        "source_url_present",
+        "clue_generation_basis_attached",
+        "single_source_cluster_requires_followup",
+        "snapshot_available"
+      ],
+      "clue_generation_basis": "same_tool_trade_theme_repeated_across_multiple_authorized_forum_threads_with_tool_name_entities",
+      "evidence_trace_ids": [
+        "c25da0a8-f67c-49e5-b558-d1e27759d4fd",
+        "61e5786e-db4c-45d8-a40f-c4068ff2aa21",
+        "d1ee31bd-90ef-4964-a99e-8e12e0cdfb7f",
+        "5e98901f-ef6a-4581-9c60-17927746b617",
+        "01c3356e-6f2c-4b8a-950d-56cb1e070039",
+        "2ce9568d-90bc-4be7-ad84-ba76db4fed5f"
+      ],
+      "clickable_chain_uri": "evidence-pack://clue/curated-clue-group-control-v2ex",
+      "answer_chain": [
+        {
+          "trace_id": "c25da0a8-f67c-49e5-b558-d1e27759d4fd",
+          "raw_snapshot": {
+            "capture_snapshot_uri": "data/external_source_evidence_snapshots/c25da0a8-f67c-49e5-b558-d1e27759d4fd.json",
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+            "source_url": "https://www.v2ex.com/t/326364",
+            "raw_snippet": "求问 群控 核心思路 - V2ex Image 4www.v2ex.com/t/326364 问与答 - @chenjunqiang - 小弟厂需要弄一下群控的软件，就是一个 PC 机子可以控制几百台手机的那种，不知道有无大神实现过？想了解一下思路。",
+            "raw_text": "求问 群控 核心思路 - V2ex Image 4www.v2ex.com/t/326364 问与答 - @chenjunqiang - 小弟厂需要弄一下群控的软件，就是一个 PC 机子可以控制几百台手机的那种，不知道有无大神实现过？想了解一下思路。",
+            "crawl_time": "2026-05-26T02:31:08.195315Z",
+            "publish_time": "2026-05-26T02:31:08.195315Z",
+            "hydrated_trace_id": "c25da0a8-f67c-49e5-b558-d1e27759d4fd",
+            "hydrated_from_trace_id": "c25da0a8-f67c-49e5-b558-d1e27759d4fd"
+          },
+          "clean_text": "求问 群控 核心思路 - V2ex Image 4www.v2ex.com/t/326364 问与答 - @chenjunqiang - 小弟厂需要弄一下群控的软件,就是一个 PC 机子可以控制几百台手机的那种,不知道有无大神实现过?想了解一下思路。",
+          "classification": {
+            "risk_category": "工具交易",
+            "secondary_label": "群控脚本",
+            "confidence": 0.96,
+            "review_required": false,
+            "evidence": [
+              "群控",
+              "软件",
+              "theme:工具交易",
+              "slang:群控"
+            ],
+            "conflict_status": "RESOLVED"
+          },
+          "entities": [
+            {
+              "entity_type": "tool_name",
+              "normalized_value": "群控",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "求问 群控 核心思路 - V2ex Image 4www.v2ex.com/t/32636",
+              "source_url": "https://www.v2ex.com/t/326364",
+              "crawl_time": "2026-05-26T02:31:08.195315Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/c25da0a8-f67c-49e5-b558-d1e27759d4fd.json"
+            },
+            {
+              "entity_type": "url",
+              "normalized_value": "https://4www.v2ex.com/t/326364",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": "求问 群控 核心思路 - V2ex Image 4www.v2ex.com/t/326364 问与答 - @chenjunqiang - 小弟厂需要弄一下群控的软件，就是一",
+              "source_url": "https://www.v2ex.com/t/326364",
+              "crawl_time": "2026-05-26T02:31:08.195315Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/c25da0a8-f67c-49e5-b558-d1e27759d4fd.json"
+            },
+            {
+              "entity_type": "contact",
+              "normalized_value": "chenjunqiang",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "2ex Image 4www.v2ex.com/t/326364 问与答 - @chenjunqiang - 小弟厂需要弄一下群控的软件，就是一个 PC 机子可以控制几百台手机的那种，",
+              "source_url": "https://www.v2ex.com/t/326364",
+              "crawl_time": "2026-05-26T02:31:08.195315Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/c25da0a8-f67c-49e5-b558-d1e27759d4fd.json"
+            }
+          ],
+          "graph_relations": []
+        },
+        {
+          "trace_id": "61e5786e-db4c-45d8-a40f-c4068ff2aa21",
+          "raw_snapshot": {
+            "capture_snapshot_uri": "data/external_source_evidence_snapshots/61e5786e-db4c-45d8-a40f-c4068ff2aa21.json",
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+            "source_url": "https://www.v2ex.com/t/1030655",
+            "raw_snippet": "各位大佬，目前比较好用的群控软件有啥啊 - V2ex Image 1www.v2ex.com/t/1030655 程序员 - @ixlara - 公司新上了个项目，准备群控 10-20 台手机，想调研下收费与免费，哪个比较好",
+            "raw_text": "各位大佬，目前比较好用的群控软件有啥啊 - V2ex Image 1www.v2ex.com/t/1030655 程序员 - @ixlara - 公司新上了个项目，准备群控 10-20 台手机，想调研下收费与免费，哪个比较好",
+            "crawl_time": "2026-05-26T02:31:08.195315Z",
+            "publish_time": "2026-05-26T02:31:08.195315Z",
+            "hydrated_trace_id": "61e5786e-db4c-45d8-a40f-c4068ff2aa21",
+            "hydrated_from_trace_id": "61e5786e-db4c-45d8-a40f-c4068ff2aa21"
+          },
+          "clean_text": "各位大佬,目前比较好用的群控软件有啥啊 - V2ex Image 1www.v2ex.com/t/1030655 程序员 - @ixlara - 公司新上了个项目,准备群控 10-20 台手机,想调研下收费与免费,哪个比较好",
+          "classification": {
+            "risk_category": "工具交易",
+            "secondary_label": "群控脚本",
+            "confidence": 0.96,
+            "review_required": false,
+            "evidence": [
+              "群控",
+              "软件",
+              "theme:工具交易",
+              "slang:群控"
+            ],
+            "conflict_status": "RESOLVED"
+          },
+          "entities": [
+            {
+              "entity_type": "tool_name",
+              "normalized_value": "群控",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "各位大佬，目前比较好用的群控软件有啥啊 - V2ex Image 1www.v2ex.com/t/10306",
+              "source_url": "https://www.v2ex.com/t/1030655",
+              "crawl_time": "2026-05-26T02:31:08.195315Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/61e5786e-db4c-45d8-a40f-c4068ff2aa21.json"
+            },
+            {
+              "entity_type": "url",
+              "normalized_value": "https://1www.v2ex.com/t/1030655",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": "各位大佬，目前比较好用的群控软件有啥啊 - V2ex Image 1www.v2ex.com/t/1030655 程序员 - @ixlara - 公司新上了个项目，准备群控 10-20 台手机",
+              "source_url": "https://www.v2ex.com/t/1030655",
+              "crawl_time": "2026-05-26T02:31:08.195315Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/61e5786e-db4c-45d8-a40f-c4068ff2aa21.json"
+            },
+            {
+              "entity_type": "contact",
+              "normalized_value": "ixlara",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "ex Image 1www.v2ex.com/t/1030655 程序员 - @ixlara - 公司新上了个项目，准备群控 10-20 台手机，想调研下收费与免费，哪个比",
+              "source_url": "https://www.v2ex.com/t/1030655",
+              "crawl_time": "2026-05-26T02:31:08.195315Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/61e5786e-db4c-45d8-a40f-c4068ff2aa21.json"
+            }
+          ],
+          "graph_relations": []
+        },
+        {
+          "trace_id": "d1ee31bd-90ef-4964-a99e-8e12e0cdfb7f",
+          "raw_snapshot": {
+            "capture_snapshot_uri": "data/external_source_evidence_snapshots/d1ee31bd-90ef-4964-a99e-8e12e0cdfb7f.json",
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+            "source_url": "https://www.v2ex.com/t/370517",
+            "raw_snippet": "有什么手机群控解决方案？ - V2ex Image 6www.v2ex.com/t/370517 大概需求是用一台 PC 开上百个手机模拟器，每个模拟器设定不同的 GPS 定位。 每个模拟器对应一部真实手机，带 sim 卡的，可以携带外出，回来插 USB 同步。 目前在用逍遥，比较吃 GPU，而且不太方便。 不知道有没有更好的方案，或者已经有脚本实现了在逍遥上群控？",
+            "raw_text": "有什么手机群控解决方案？ - V2ex Image 6www.v2ex.com/t/370517 大概需求是用一台 PC 开上百个手机模拟器，每个模拟器设定不同的 GPS 定位。 每个模拟器对应一部真实手机，带 sim 卡的，可以携带外出，回来插 USB 同步。 目前在用逍遥，比较吃 GPU，而且不太方便。 不知道有没有更好的方案，或者已经有脚本实现了在逍遥上群控？",
+            "crawl_time": "2026-05-26T02:31:08.195315Z",
+            "publish_time": "2026-05-26T02:31:08.195315Z",
+            "hydrated_trace_id": "d1ee31bd-90ef-4964-a99e-8e12e0cdfb7f",
+            "hydrated_from_trace_id": "d1ee31bd-90ef-4964-a99e-8e12e0cdfb7f"
+          },
+          "clean_text": "有什么手机群控解决方案? - V2ex Image 6www.v2ex.com/t/370517 大概需求是用一台 PC 开上百个手机模拟器,每个模拟器设定不同的 GPS 定位。 每个模拟器对应一部真实手机,带 sim 卡的,可以携带外出,回来插 USB 同步。 目前在用逍遥,比较吃 GPU,而且不太方便。 不知道有没有更好的方案,或者已经有脚本实现了在逍遥上群控?",
+          "classification": {
+            "risk_category": "工具交易",
+            "secondary_label": "群控脚本",
+            "confidence": 0.94,
+            "review_required": false,
+            "evidence": [
+              "群控",
+              "脚本",
+              "theme:工具交易"
+            ],
+            "conflict_status": "RESOLVED"
+          },
+          "entities": [
+            {
+              "entity_type": "tool_name",
+              "normalized_value": "群控",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "有什么手机群控解决方案？ - V2ex Image 6www.v2ex.com/t/37051",
+              "source_url": "https://www.v2ex.com/t/370517",
+              "crawl_time": "2026-05-26T02:31:08.195315Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/d1ee31bd-90ef-4964-a99e-8e12e0cdfb7f.json"
+            },
+            {
+              "entity_type": "url",
+              "normalized_value": "https://6www.v2ex.com/t/370517",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": "有什么手机群控解决方案？ - V2ex Image 6www.v2ex.com/t/370517 大概需求是用一台 PC 开上百个手机模拟器，每个模拟器设定不同的 GPS 定位",
+              "source_url": "https://www.v2ex.com/t/370517",
+              "crawl_time": "2026-05-26T02:31:08.195315Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/d1ee31bd-90ef-4964-a99e-8e12e0cdfb7f.json"
+            },
+            {
+              "entity_type": "tool_name",
+              "normalized_value": "脚本",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "目前在用逍遥，比较吃 GPU，而且不太方便。 不知道有没有更好的方案，或者已经有脚本实现了在逍遥上群控？",
+              "source_url": "https://www.v2ex.com/t/370517",
+              "crawl_time": "2026-05-26T02:31:08.195315Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/d1ee31bd-90ef-4964-a99e-8e12e0cdfb7f.json"
+            }
+          ],
+          "graph_relations": []
+        },
+        {
+          "trace_id": "5e98901f-ef6a-4581-9c60-17927746b617",
+          "raw_snapshot": {
+            "capture_snapshot_uri": "data/external_source_evidence_snapshots/5e98901f-ef6a-4581-9c60-17927746b617.json",
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+            "source_url": "https://www.v2ex.com/t/558977",
+            "raw_snippet": "有点好奇，那种群控安卓机的技术是怎么实现的呢 - V2ex Image 5www.v2ex.com/t/558977 这是一个创建于 2206 天前的主题，其中的信息可能已经有所发展或是发生改变。 有点好奇，那种群控安卓机的技术是怎么实现的呢？ 我的猜测是安卓安装个软件，可以实现一些手势指令，然后电脑发送指令给那个软件，软件进行操作？",
+            "raw_text": "有点好奇，那种群控安卓机的技术是怎么实现的呢 - V2ex Image 5www.v2ex.com/t/558977 这是一个创建于 2206 天前的主题，其中的信息可能已经有所发展或是发生改变。 有点好奇，那种群控安卓机的技术是怎么实现的呢？ 我的猜测是安卓安装个软件，可以实现一些手势指令，然后电脑发送指令给那个软件，软件进行操作？",
+            "crawl_time": "2026-05-26T02:31:08.195315Z",
+            "publish_time": "2026-05-26T02:31:08.195315Z",
+            "hydrated_trace_id": "5e98901f-ef6a-4581-9c60-17927746b617",
+            "hydrated_from_trace_id": "5e98901f-ef6a-4581-9c60-17927746b617"
+          },
+          "clean_text": "有点好奇,那种群控安卓机的技术是怎么实现的呢 - V2ex Image 5www.v2ex.com/t/558977 这是一个创建于 2206 天前的主题,其中的信息可能已经有所发展或是发生改变。 有点好奇,那种群控安卓机的技术是怎么实现的呢? 我的猜测是安卓安装个软件,可以实现一些手势指令,然后电脑发送指令给那个软件,软件进行操作?",
+          "classification": {
+            "risk_category": "工具交易",
+            "secondary_label": "群控脚本",
+            "confidence": 0.96,
+            "review_required": false,
+            "evidence": [
+              "群控",
+              "软件",
+              "theme:工具交易",
+              "tool_update:软件",
+              "tool_update:操作"
+            ],
+            "conflict_status": "RESOLVED"
+          },
+          "entities": [
+            {
+              "entity_type": "tool_name",
+              "normalized_value": "群控",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "有点好奇，那种群控安卓机的技术是怎么实现的呢 - V2ex Image 5www.v2ex.com",
+              "source_url": "https://www.v2ex.com/t/558977",
+              "crawl_time": "2026-05-26T02:31:08.195315Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/5e98901f-ef6a-4581-9c60-17927746b617.json"
+            },
+            {
+              "entity_type": "url",
+              "normalized_value": "https://5www.v2ex.com/t/558977",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": "有点好奇，那种群控安卓机的技术是怎么实现的呢 - V2ex Image 5www.v2ex.com/t/558977 这是一个创建于 2206 天前的主题，其中的信息可能已经有所发展或是发生改变。",
+              "source_url": "https://www.v2ex.com/t/558977",
+              "crawl_time": "2026-05-26T02:31:08.195315Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/5e98901f-ef6a-4581-9c60-17927746b617.json"
+            }
+          ],
+          "graph_relations": []
+        },
+        {
+          "trace_id": "01c3356e-6f2c-4b8a-950d-56cb1e070039",
+          "raw_snapshot": {
+            "capture_snapshot_uri": "data/external_source_evidence_snapshots/01c3356e-6f2c-4b8a-950d-56cb1e070039.json",
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+            "source_url": "https://www.v2ex.com/t/1080223",
+            "raw_snippet": "ios 设备实现群控必须要越狱吗 - V2EX Image 2www.v2ex.com/t/1080223 2024-10-14T00:00:00.0000000 ios 设备实现群控必须要越狱吗 ninblue · 10 小时 41 分钟前 · 243 次点击 最近部门在做黑产识别，要求补齐一些识别群控特征的功能，想问问大佬们群控 ios 设备是不是都得越狱才行 3 条回复 • 2024-10-14 21:08:13 +08:00",
+            "raw_text": "ios 设备实现群控必须要越狱吗 - V2EX Image 2www.v2ex.com/t/1080223 2024-10-14T00:00:00.0000000 ios 设备实现群控必须要越狱吗 ninblue · 10 小时 41 分钟前 · 243 次点击 最近部门在做黑产识别，要求补齐一些识别群控特征的功能，想问问大佬们群控 ios 设备是不是都得越狱才行 3 条回复 • 2024-10-14 21:08:13 +08:00",
+            "crawl_time": "2026-05-26T02:31:08.195315Z",
+            "publish_time": "2026-05-26T02:31:08.195315Z",
+            "hydrated_trace_id": "01c3356e-6f2c-4b8a-950d-56cb1e070039",
+            "hydrated_from_trace_id": "01c3356e-6f2c-4b8a-950d-56cb1e070039"
+          },
+          "clean_text": "ios 设备实现群控必须要越狱吗 - V2EX Image 2www.v2ex.com/t/1080223 2024-10-14T00:00:00.0000000 ios 设备实现群控必须要越狱吗 ninblue · 10 小时 41 分钟前 · 243 次点击 最近部门在做黑产识别,要求补齐一些识别群控特征的功能,想问问大佬们群控 ios 设备是不是都得越狱才行 3 条回复 • 2024-10-14 21:08:13 +08:00",
+          "classification": {
+            "risk_category": "工具交易",
+            "secondary_label": "群控脚本",
+            "confidence": 0.94,
+            "review_required": false,
+            "evidence": [
+              "群控",
+              "功能",
+              "theme:工具交易"
+            ],
+            "conflict_status": "RESOLVED"
+          },
+          "entities": [
+            {
+              "entity_type": "tool_name",
+              "normalized_value": "群控",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "ios 设备实现群控必须要越狱吗 - V2EX Image 2www.v2ex.com/t/1080",
+              "source_url": "https://www.v2ex.com/t/1080223",
+              "crawl_time": "2026-05-26T02:31:08.195315Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/01c3356e-6f2c-4b8a-950d-56cb1e070039.json"
+            },
+            {
+              "entity_type": "url",
+              "normalized_value": "https://2www.v2ex.com/t/1080223",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": "ios 设备实现群控必须要越狱吗 - V2EX Image 2www.v2ex.com/t/1080223 2024-10-14T00:00:00.0000000 ios 设备实现群控必",
+              "source_url": "https://www.v2ex.com/t/1080223",
+              "crawl_time": "2026-05-26T02:31:08.195315Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/01c3356e-6f2c-4b8a-950d-56cb1e070039.json"
+            }
+          ],
+          "graph_relations": []
+        },
+        {
+          "trace_id": "2ce9568d-90bc-4be7-ad84-ba76db4fed5f",
+          "raw_snapshot": {
+            "capture_snapshot_uri": "data/external_source_evidence_snapshots/2ce9568d-90bc-4be7-ad84-ba76db4fed5f.json",
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+            "source_url": "https://www.v2ex.com/t/1173091",
+            "raw_snippet": "想做一个去矩阵群控系统 ,想寻大佬解决方案,或者长期工作. - V2ex Image 3www.v2ex.com/t/1173091 想做一个去矩阵群控系统 ,想寻大佬解决方案,或者长期工作. 目前用的魔云腾 rk3588 docker 的但是感觉这种虚拟化容易被识别, 想寻现成解决方案,和 ram 系统定制大佬. 和矩阵系统源码",
+            "raw_text": "想做一个去矩阵群控系统 ,想寻大佬解决方案,或者长期工作. - V2ex Image 3www.v2ex.com/t/1173091 想做一个去矩阵群控系统 ,想寻大佬解决方案,或者长期工作. 目前用的魔云腾 rk3588 docker 的但是感觉这种虚拟化容易被识别, 想寻现成解决方案,和 ram 系统定制大佬. 和矩阵系统源码",
+            "crawl_time": "2026-05-26T02:31:08.195315Z",
+            "publish_time": "2026-05-26T02:31:08.195315Z",
+            "hydrated_trace_id": "2ce9568d-90bc-4be7-ad84-ba76db4fed5f",
+            "hydrated_from_trace_id": "2ce9568d-90bc-4be7-ad84-ba76db4fed5f"
+          },
+          "clean_text": "想做一个去矩阵群控系统 ,想寻大佬解决方案,或者长期工作. - V2ex Image 3www.v2ex.com/t/1173091 想做一个去矩阵群控系统 ,想寻大佬解决方案,或者长期工作. 目前用的魔云腾 rk3588 docker 的但是感觉这种虚拟化容易被识别, 想寻现成解决方案,和 ram 系统定制大佬. 和矩阵系统源码",
+          "classification": {
+            "risk_category": "工具交易",
+            "secondary_label": "群控脚本",
+            "confidence": 0.86,
+            "review_required": false,
+            "evidence": [
+              "群控",
+              "theme:工具交易"
+            ],
+            "conflict_status": "RESOLVED"
+          },
+          "entities": [
+            {
+              "entity_type": "tool_name",
+              "normalized_value": "群控",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "想做一个去矩阵群控系统 ,想寻大佬解决方案,或者长期工作. - V2ex Image 3www.v",
+              "source_url": "https://www.v2ex.com/t/1173091",
+              "crawl_time": "2026-05-26T02:31:08.195315Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/2ce9568d-90bc-4be7-ad84-ba76db4fed5f.json"
+            },
+            {
+              "entity_type": "url",
+              "normalized_value": "https://3www.v2ex.com/t/1173091",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "个去矩阵群控系统 ,想寻大佬解决方案,或者长期工作. - V2ex Image 3www.v2ex.com/t/1173091 想做一个去矩阵群控系统 ,想寻大佬解决方案,或者长期工作. 目前用的魔云腾 r",
+              "source_url": "https://www.v2ex.com/t/1173091",
+              "crawl_time": "2026-05-26T02:31:08.195315Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/2ce9568d-90bc-4be7-ad84-ba76db4fed5f.json"
+            }
+          ],
+          "graph_relations": []
+        }
+      ]
+    },
+    {
+      "clue_id": "curated-clue-account-trade-realname",
+      "clue_type": "account_trade_theme_multi_source",
+      "risk_category": "账号交易",
+      "key": "实名号/卖号/号商/账号交易",
+      "quality_score": 0.96,
+      "quality_level": "high",
+      "quality_reasons": [
+        "original_raw_text_available",
+        "cleaned_text_joined",
+        "classification_joined",
+        "entities_joined",
+        "source_url_present",
+        "clue_generation_basis_attached",
+        "cross_source_theme_confirmed",
+        "snapshot_available"
+      ],
+      "clue_generation_basis": "account_trade_theme_appears_in_multiple_collection_sources_with_realname_or_merchant_terms",
+      "evidence_trace_ids": [
+        "048309c3-11a9-4054-a4f1-aa5dc113fc3f",
+        "b1354e48-13d1-4e30-a683-af0164c6548b",
+        "30999665-d69b-48bf-ae8f-32527bad2d88",
+        "fd250580-1d14-4841-8fed-ed8c03216992"
+      ],
+      "clickable_chain_uri": "evidence-pack://clue/curated-clue-account-trade-realname",
+      "answer_chain": [
+        {
+          "trace_id": "048309c3-11a9-4054-a4f1-aa5dc113fc3f",
+          "raw_snapshot": {
+            "capture_snapshot_uri": "data/external_source_evidence_snapshots/048309c3-11a9-4054-a4f1-aa5dc113fc3f.json",
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%AE%9E%E5%90%8D%E5%8F%B7",
+            "source_url": "https://tieba.baidu.com/p/10717820743",
+            "raw_snippet": "实名号能不能买？【三国谋定天下吧】_百度贴吧 Image 5tieba.baidu.com/p/10717820743 7 我看到不少，实名号价格哥三无差不多了 后面备注一个交易商行来了，以后可以换绑 这些卖号的也是天真，觉得备注几个字价格就可以和三无一样了 Nunber7 铁杆吧友 9 官方卖号，要求支付宝收款账户和出售账户绑定的身份证相同，也就是说你买了号也收不到钱 ...",
+            "raw_text": "实名号能不能买？【三国谋定天下吧】_百度贴吧 Image 5tieba.baidu.com/p/10717820743 7 我看到不少，实名号价格哥三无差不多了 后面备注一个交易商行来了，以后可以换绑 这些卖号的也是天真，觉得备注几个字价格就可以和三无一样了 Nunber7 铁杆吧友 9 官方卖号，要求支付宝收款账户和出售账户绑定的身份证相同，也就是说你买了号也收不到钱 ...",
+            "crawl_time": "2026-05-26T02:34:32.669993Z",
+            "publish_time": "2026-05-26T02:34:32.669993Z",
+            "hydrated_trace_id": "048309c3-11a9-4054-a4f1-aa5dc113fc3f",
+            "hydrated_from_trace_id": "048309c3-11a9-4054-a4f1-aa5dc113fc3f"
+          },
+          "clean_text": "实名号能不能买?【三国谋定天下吧】_百度贴吧 Image 5tieba.baidu.com/p/10717820743 7 我看到不少,实名号价格哥三无差不多了 后面备注一个交易商行来了,以后可以换绑 这些卖号的也是天真,觉得备注几个字价格就可以和三无一样了 Nunber7 铁杆吧友 9 官方卖号,要求支付宝收款账户和出售账户绑定的身份证相同,也就是说你买了号也收不到钱 ...",
+          "classification": {
+            "risk_category": "账号交易",
+            "secondary_label": "实名账号买卖",
+            "confidence": 0.94,
+            "review_required": false,
+            "evidence": [
+              "卖号",
+              "实名号",
+              "theme:账号交易"
+            ],
+            "conflict_status": "RESOLVED"
+          },
+          "entities": [
+            {
+              "entity_type": "url",
+              "normalized_value": "https://5tieba.baidu.com/p/10717820743",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": "实名号能不能买？【三国谋定天下吧】_百度贴吧 Image 5tieba.baidu.com/p/10717820743 7 我看到不少，实名号价格哥三无差不多了 后面备注一个交易商行来了，以后可以换",
+              "source_url": "https://tieba.baidu.com/p/10717820743",
+              "crawl_time": "2026-05-26T02:34:32.669993Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%AE%9E%E5%90%8D%E5%8F%B7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/048309c3-11a9-4054-a4f1-aa5dc113fc3f.json"
+            },
+            {
+              "entity_type": "settlement",
+              "normalized_value": "支付宝",
+              "confidence": 0.84,
+              "context_relevance": 0.5,
+              "source_snippet": "得备注几个字价格就可以和三无一样了 Nunber7 铁杆吧友 9 官方卖号，要求支付宝收款账户和出售账户绑定的身份证相同，也就是说你买了号也收不到钱 ...",
+              "source_url": "https://tieba.baidu.com/p/10717820743",
+              "crawl_time": "2026-05-26T02:34:32.669993Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%AE%9E%E5%90%8D%E5%8F%B7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/048309c3-11a9-4054-a4f1-aa5dc113fc3f.json"
+            }
+          ],
+          "graph_relations": []
+        },
+        {
+          "trace_id": "b1354e48-13d1-4e30-a683-af0164c6548b",
+          "raw_snapshot": {
+            "capture_snapshot_uri": "data/external_source_evidence_snapshots/b1354e48-13d1-4e30-a683-af0164c6548b.json",
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%8D%96%E5%8F%B7",
+            "source_url": "https://tieba.baidu.com/p/8603954584",
+            "raw_snippet": "第五人格等游戏卖号流程：从选择到售出的详细步骤 Image 7tieba.baidu.com/p/8603954584 你想知道第五人格游戏的卖号过程，以下是详细步骤：第一步，选择游戏。 在交易猫页面中，点击我要卖，选择游戏——第五人格，出售账号商品。 第二步，初步填写账号信息。 需要上传账号截图，并填写角色等级和认证信息、绑定信息。",
+            "raw_text": "第五人格等游戏卖号流程：从选择到售出的详细步骤 Image 7tieba.baidu.com/p/8603954584 你想知道第五人格游戏的卖号过程，以下是详细步骤：第一步，选择游戏。 在交易猫页面中，点击我要卖，选择游戏——第五人格，出售账号商品。 第二步，初步填写账号信息。 需要上传账号截图，并填写角色等级和认证信息、绑定信息。",
+            "crawl_time": "2026-05-26T02:27:48.952090Z",
+            "publish_time": "2026-05-26T02:27:48.952090Z",
+            "hydrated_trace_id": "b1354e48-13d1-4e30-a683-af0164c6548b",
+            "hydrated_from_trace_id": "b1354e48-13d1-4e30-a683-af0164c6548b"
+          },
+          "clean_text": "第五人格等游戏卖号流程:从选择到售出的详细步骤 Image 7tieba.baidu.com/p/8603954584 你想知道第五人格游戏的卖号过程,以下是详细步骤:第一步,选择游戏。 在交易猫页面中,点击我要卖,选择游戏——第五人格,出售账号商品。 第二步,初步填写账号信息。 需要上传账号截图,并填写角色等级和认证信息、绑定信息。",
+          "classification": {
+            "risk_category": "账号交易",
+            "secondary_label": "实名账号买卖",
+            "confidence": 0.86,
+            "review_required": false,
+            "evidence": [
+              "卖号",
+              "theme:账号交易",
+              "号商"
+            ],
+            "conflict_status": "RESOLVED"
+          },
+          "entities": [
+            {
+              "entity_type": "url",
+              "normalized_value": "https://7tieba.baidu.com/p/8603954584",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": "第五人格等游戏卖号流程：从选择到售出的详细步骤 Image 7tieba.baidu.com/p/8603954584 你想知道第五人格游戏的卖号过程，以下是详细步骤：第一步，选择游戏。 在交易猫页",
+              "source_url": "https://tieba.baidu.com/p/8603954584",
+              "crawl_time": "2026-05-26T02:27:48.952090Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%8D%96%E5%8F%B7",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/b1354e48-13d1-4e30-a683-af0164c6548b.json"
+            }
+          ],
+          "graph_relations": []
+        },
+        {
+          "trace_id": "30999665-d69b-48bf-ae8f-32527bad2d88",
+          "raw_snapshot": {
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%8F%B7%E5%95%86",
+            "source_url": "https://tieba.baidu.com/p/8710944638",
+            "raw_snippet": "买号需谨慎，避开号商陷阱选官方验号个人账号 Image 7tieba.baidu.com/p/8710944638 为什么不能买号商的号..罪其一:低价收入，高价抛出罪其二:无法出手，只能烂手里或者低价让他回收罪其三:不走包赔平台，出了事先跟你扯皮，你私自卖了他们还可能会申诉找回三宗罪，罪罪可诛啊，奉劝各位玩家还是要买有官方验号截图的个人",
+            "raw_text": "买号需谨慎，避开号商陷阱选官方验号个人账号 Image 7tieba.baidu.com/p/8710944638 为什么不能买号商的号..罪其一:低价收入，高价抛出罪其二:无法出手，只能烂手里或者低价让他回收罪其三:不走包赔平台，出了事先跟你扯皮，你私自卖了他们还可能会申诉找回三宗罪，罪罪可诛啊，奉劝各位玩家还是要买有官方验号截图的个人",
+            "crawl_time": "2026-05-26T02:28:38.526089Z",
+            "publish_time": "2026-05-26T02:28:38.526089Z"
+          },
+          "clean_text": "买号需谨慎,避开号商陷阱选官方验号个人账号 Image 7tieba.baidu.com/p/8710944638 为什么不能买号商的号..罪其一:低价收入,高价抛出罪其二:无法出手,只能烂手里或者低价让他回收罪其三:不走包赔平台,出了事先跟你扯皮,你私自卖了他们还可能会申诉找回三宗罪,罪罪可诛啊,奉劝各位玩家还是要买有官方验号截图的个人",
+          "classification": {
+            "risk_category": "账号交易",
+            "secondary_label": "实名账号买卖",
+            "confidence": 0.72,
+            "review_required": true,
+            "evidence": [
+              "theme:账号交易",
+              "theme:接码",
+              "号商"
+            ],
+            "conflict_status": "RESOLVED"
+          },
+          "entities": [
+            {
+              "entity_type": "invite_code",
+              "normalized_value": "Image",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": "买号需谨慎，避开号商陷阱选官方验号个人账号 Image 7tieba.baidu.com/p/8710944638 为什么不能买号商的",
+              "source_url": "https://tieba.baidu.com/p/8710944638",
+              "crawl_time": "2026-05-26T02:28:38.526089Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%8F%B7%E5%95%86",
+              "capture_snapshot_uri": ""
+            },
+            {
+              "entity_type": "url",
+              "normalized_value": "https://7tieba.baidu.com/p/8710944638",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": "买号需谨慎，避开号商陷阱选官方验号个人账号 Image 7tieba.baidu.com/p/8710944638 为什么不能买号商的号..罪其一:低价收入，高价抛出罪其二:无法出手，只能烂手里",
+              "source_url": "https://tieba.baidu.com/p/8710944638",
+              "crawl_time": "2026-05-26T02:28:38.526089Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%8F%B7%E5%95%86",
+              "capture_snapshot_uri": ""
+            }
+          ],
+          "graph_relations": []
+        },
+        {
+          "trace_id": "fd250580-1d14-4841-8fed-ed8c03216992",
+          "raw_snapshot": {
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%8F%B7%E5%95%86",
+            "source_url": "https://tieba.baidu.com/p/9222545853",
+            "raw_snippet": "揭露号商黑幕：无良操作、克扣款项，简直骗子无疑! Image 4tieba.baidu.com/p/9222545853 之后账号发现被找回交易号商，账号花了550元购买，然后号商需要我交200押金说怕我骗保（可以理解这一步），后续我等了7天没有结果，他说7天左右，我就一直在催在7天半的时候解决了，只退还了450元少了100，号商就一句话你号现在连200都不值，但是白情赔付 ...",
+            "raw_text": "揭露号商黑幕：无良操作、克扣款项，简直骗子无疑! Image 4tieba.baidu.com/p/9222545853 之后账号发现被找回交易号商，账号花了550元购买，然后号商需要我交200押金说怕我骗保（可以理解这一步），后续我等了7天没有结果，他说7天左右，我就一直在催在7天半的时候解决了，只退还了450元少了100，号商就一句话你号现在连200都不值，但是白情赔付 ...",
+            "crawl_time": "2026-05-26T02:28:38.526089Z",
+            "publish_time": "2026-05-26T02:28:38.526089Z"
+          },
+          "clean_text": "揭露号商黑幕:无良操作、克扣款项,简直骗子无疑! Image 4tieba.baidu.com/p/9222545853 之后账号发现被找回交易号商,账号花了550元购买,然后号商需要我交200押金说怕我骗保(可以理解这一步),后续我等了7天没有结果,他说7天左右,我就一直在催在7天半的时候解决了,只退还了450元少了100,号商就一句话你号现在连200都不值,但是白情赔付 ...",
+          "classification": {
+            "risk_category": "账号交易",
+            "secondary_label": "实名账号买卖",
+            "confidence": 0.72,
+            "review_required": true,
+            "evidence": [
+              "theme:账号交易",
+              "号商"
+            ],
+            "conflict_status": "RESOLVED"
+          },
+          "entities": [
+            {
+              "entity_type": "url",
+              "normalized_value": "https://4tieba.baidu.com/p/9222545853",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": "揭露号商黑幕：无良操作、克扣款项，简直骗子无疑! Image 4tieba.baidu.com/p/9222545853 之后账号发现被找回交易号商，账号花了550元购买，然后号商需要我交200押金说",
+              "source_url": "https://tieba.baidu.com/p/9222545853",
+              "crawl_time": "2026-05-26T02:28:38.526089Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%8F%B7%E5%95%86",
+              "capture_snapshot_uri": ""
+            }
+          ],
+          "graph_relations": []
+        }
+      ]
+    },
+    {
+      "clue_id": "curated-clue-code-receiving-platform",
+      "clue_type": "shared_tool_multi_record",
+      "risk_category": "账号交易",
+      "key": "接码/收码平台/验证码接收",
+      "quality_score": 0.9115,
+      "quality_level": "high",
+      "quality_reasons": [
+        "original_raw_text_available",
+        "cleaned_text_joined",
+        "classification_joined",
+        "entities_joined",
+        "source_url_present",
+        "clue_generation_basis_attached",
+        "single_source_cluster_requires_followup",
+        "snapshot_available"
+      ],
+      "clue_generation_basis": "same_tool_name_and_verification_code_receiving_context_repeated_in_authorized_rows",
+      "evidence_trace_ids": [
+        "ebd1766e-c80a-4ba5-8ca6-30e0126fa039",
+        "ee8fbdf0-047d-4e77-b767-12da5ba80967",
+        "1a9b8de2-2a2d-4d4e-8032-db7903922906"
+      ],
+      "clickable_chain_uri": "evidence-pack://clue/curated-clue-code-receiving-platform",
+      "answer_chain": [
+        {
+          "trace_id": "ebd1766e-c80a-4ba5-8ca6-30e0126fa039",
+          "raw_snapshot": {
+            "capture_snapshot_uri": "data/external_source_evidence_snapshots/ebd1766e-c80a-4ba5-8ca6-30e0126fa039.json",
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%9C%A8%E7%BA%BF%E6%8E%A5%E7%A0%81",
+            "source_url": "https://tieba.baidu.com/p/10225443169",
+            "raw_snippet": "所有收不到验证码的都看过来，有解决办法~~~【aion吧】_百度贴吧 Image 7tieba.baidu.com/p/10225443169 2025-11-19T00:00:00.0000000 所有收不到验证码的都..直接去迅游加速器里面的第三方收码平台，有香港和美国的虚拟号可以接码，美国的号已经卖完了，还剩香港的，动作要快....如果帮你解决了问题，麻烦顶下这个贴子让更多人看到~~~",
+            "raw_text": "所有收不到验证码的都看过来，有解决办法~~~【aion吧】_百度贴吧 Image 7tieba.baidu.com/p/10225443169 2025-11-19T00:00:00.0000000 所有收不到验证码的都..直接去迅游加速器里面的第三方收码平台，有香港和美国的虚拟号可以接码，美国的号已经卖完了，还剩香港的，动作要快....如果帮你解决了问题，麻烦顶下这个贴子让更多人看到~~~",
+            "crawl_time": "2026-05-26T02:28:02.704724Z",
+            "publish_time": "2026-05-26T02:28:02.704724Z",
+            "hydrated_trace_id": "ebd1766e-c80a-4ba5-8ca6-30e0126fa039",
+            "hydrated_from_trace_id": "ebd1766e-c80a-4ba5-8ca6-30e0126fa039"
+          },
+          "clean_text": "所有收不到验证码的都看过来,有解决办法~~~【aion吧】_百度贴吧 Image 7tieba.baidu.com/p/10225443169 2025-11-19T00:00:00.0000000 所有收不到验证码的都..直接去迅游加速器里面的第三方收码平台,有香港和美国的虚拟号可以接码,美国的号已经卖完了,还剩香港的,动作要快....如果帮你解决了问题,麻烦顶下这个贴子让更多人看到~~~",
+          "classification": {
+            "risk_category": "账号交易",
+            "secondary_label": "接码注册",
+            "confidence": 0.96,
+            "review_required": false,
+            "evidence": [
+              "接码",
+              "验证码",
+              "theme:接码",
+              "slang:接码"
+            ],
+            "conflict_status": "RESOLVED"
+          },
+          "entities": [
+            {
+              "entity_type": "url",
+              "normalized_value": "https://7tieba.baidu.com/p/10225443169",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": "有收不到验证码的都看过来，有解决办法~~~【aion吧】_百度贴吧 Image 7tieba.baidu.com/p/10225443169 2025-11-19T00:00:00.0000000 所有收不到验证码的都.",
+              "source_url": "https://tieba.baidu.com/p/10225443169",
+              "crawl_time": "2026-05-26T02:28:02.704724Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%9C%A8%E7%BA%BF%E6%8E%A5%E7%A0%81",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/ebd1766e-c80a-4ba5-8ca6-30e0126fa039.json"
+            },
+            {
+              "entity_type": "tool_name",
+              "normalized_value": "接码",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "不到验证码的都..直接去迅游加速器里面的第三方收码平台，有香港和美国的虚拟号可以接码，美国的号已经卖完了，还剩香港的，动作要快....如果帮你解决了问题，麻烦顶下这",
+              "source_url": "https://tieba.baidu.com/p/10225443169",
+              "crawl_time": "2026-05-26T02:28:02.704724Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%9C%A8%E7%BA%BF%E6%8E%A5%E7%A0%81",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/ebd1766e-c80a-4ba5-8ca6-30e0126fa039.json"
+            }
+          ],
+          "graph_relations": []
+        },
+        {
+          "trace_id": "ee8fbdf0-047d-4e77-b767-12da5ba80967",
+          "raw_snapshot": {
+            "capture_snapshot_uri": "data/external_source_evidence_snapshots/ee8fbdf0-047d-4e77-b767-12da5ba80967.json",
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%9C%A8%E7%BA%BF%E6%8E%A5%E7%A0%81",
+            "source_url": "https://tieba.baidu.com/p/10454286232",
+            "raw_snippet": "Sora2手机号码验证困难？国外接码或可解决 Image 6tieba.baidu.com/p/10454286232 2026-02-02T00:00:00.0000000 sora2手机号码验..rt，本人用的是谷歌邮箱注册的，但是玩了一天后就让我验证手机号码了，找了得有10多个接码网站都没有用，咋整呢xdm，我解决了只要用英文来生成就可以了，我现在成功生成了4个",
+            "raw_text": "Sora2手机号码验证困难？国外接码或可解决 Image 6tieba.baidu.com/p/10454286232 2026-02-02T00:00:00.0000000 sora2手机号码验..rt，本人用的是谷歌邮箱注册的，但是玩了一天后就让我验证手机号码了，找了得有10多个接码网站都没有用，咋整呢xdm，我解决了只要用英文来生成就可以了，我现在成功生成了4个",
+            "crawl_time": "2026-05-26T02:28:02.704724Z",
+            "publish_time": "2026-05-26T02:28:02.704724Z",
+            "hydrated_trace_id": "ee8fbdf0-047d-4e77-b767-12da5ba80967",
+            "hydrated_from_trace_id": "ee8fbdf0-047d-4e77-b767-12da5ba80967"
+          },
+          "clean_text": "Sora2手机号码验证困难?国外接码或可解决 Image 6tieba.baidu.com/p/10454286232 2026-02-02T00:00:00.0000000 sora2手机号码验..rt,本人用的是谷歌邮箱注册的,但是玩了一天后就让我验证手机号码了,找了得有10多个接码网站都没有用,咋整呢xdm,我解决了只要用英文来生成就可以了,我现在成功生成了4个",
+          "classification": {
+            "risk_category": "账号交易",
+            "secondary_label": "接码注册",
+            "confidence": 0.86,
+            "review_required": false,
+            "evidence": [
+              "接码",
+              "theme:接码"
+            ],
+            "conflict_status": "RESOLVED"
+          },
+          "entities": [
+            {
+              "entity_type": "tool_name",
+              "normalized_value": "接码",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "Sora2手机号码验证困难？国外接码或可解决 Image 6tieba.baidu.com/p/1045428623",
+              "source_url": "https://tieba.baidu.com/p/10454286232",
+              "crawl_time": "2026-05-26T02:28:02.704724Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%9C%A8%E7%BA%BF%E6%8E%A5%E7%A0%81",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/ee8fbdf0-047d-4e77-b767-12da5ba80967.json"
+            },
+            {
+              "entity_type": "url",
+              "normalized_value": "https://6tieba.baidu.com/p/10454286232",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "Sora2手机号码验证困难？国外接码或可解决 Image 6tieba.baidu.com/p/10454286232 2026-02-02T00:00:00.0000000 sora2手机号码验.",
+              "source_url": "https://tieba.baidu.com/p/10454286232",
+              "crawl_time": "2026-05-26T02:28:02.704724Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%9C%A8%E7%BA%BF%E6%8E%A5%E7%A0%81",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/ee8fbdf0-047d-4e77-b767-12da5ba80967.json"
+            }
+          ],
+          "graph_relations": []
+        },
+        {
+          "trace_id": "1a9b8de2-2a2d-4d4e-8032-db7903922906",
+          "raw_snapshot": {
+            "capture_snapshot_uri": "data/external_source_evidence_snapshots/1a9b8de2-2a2d-4d4e-8032-db7903922906.json",
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%9C%A8%E7%BA%BF%E6%8E%A5%E7%A0%81",
+            "source_url": "https://tieba.baidu.com/p/8543763936",
+            "raw_snippet": "接码平台二次使用显示不在线解决办法 Image 3tieba.baidu.com/p/8543763936 接码平台解答 谢谢..我想问一下 我用飞鱼接的码 然后二次想用的时候显示指定专属手机码不在线 这个咋办呐顶d有偿有偿",
+            "raw_text": "接码平台二次使用显示不在线解决办法 Image 3tieba.baidu.com/p/8543763936 接码平台解答 谢谢..我想问一下 我用飞鱼接的码 然后二次想用的时候显示指定专属手机码不在线 这个咋办呐顶d有偿有偿",
+            "crawl_time": "2026-05-26T02:28:02.704724Z",
+            "publish_time": "2026-05-26T02:28:02.704724Z",
+            "hydrated_trace_id": "1a9b8de2-2a2d-4d4e-8032-db7903922906",
+            "hydrated_from_trace_id": "1a9b8de2-2a2d-4d4e-8032-db7903922906"
+          },
+          "clean_text": "接码平台二次使用显示不在线解决办法 Image 3tieba.baidu.com/p/8543763936 接码平台解答 谢谢..我想问一下 我用飞鱼接的码 然后二次想用的时候显示指定专属手机码不在线 这个咋办呐顶d有偿有偿",
+          "classification": {
+            "risk_category": "账号交易",
+            "secondary_label": "待研判",
+            "confidence": 0.86,
+            "review_required": true,
+            "evidence": [
+              "接码",
+              "theme:接码"
+            ],
+            "conflict_status": "RESOLVED"
+          },
+          "entities": [
+            {
+              "entity_type": "tool_name",
+              "normalized_value": "接码平台",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "接码平台二次使用显示不在线解决办法 Image 3tieba.baidu.com/p/8",
+              "source_url": "https://tieba.baidu.com/p/8543763936",
+              "crawl_time": "2026-05-26T02:28:02.704724Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%9C%A8%E7%BA%BF%E6%8E%A5%E7%A0%81",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/1a9b8de2-2a2d-4d4e-8032-db7903922906.json"
+            },
+            {
+              "entity_type": "tool_name",
+              "normalized_value": "接码",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "接码平台二次使用显示不在线解决办法 Image 3tieba.baidu.com/p",
+              "source_url": "https://tieba.baidu.com/p/8543763936",
+              "crawl_time": "2026-05-26T02:28:02.704724Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%9C%A8%E7%BA%BF%E6%8E%A5%E7%A0%81",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/1a9b8de2-2a2d-4d4e-8032-db7903922906.json"
+            },
+            {
+              "entity_type": "url",
+              "normalized_value": "https://3tieba.baidu.com/p/8543763936",
+              "confidence": 1.0,
+              "context_relevance": 0.5,
+              "source_snippet": "接码平台二次使用显示不在线解决办法 Image 3tieba.baidu.com/p/8543763936 接码平台解答 谢谢..我想问一下 我用飞鱼接的码 然后二次想用的时候显示指定专",
+              "source_url": "https://tieba.baidu.com/p/8543763936",
+              "crawl_time": "2026-05-26T02:28:02.704724Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%9C%A8%E7%BA%BF%E6%8E%A5%E7%A0%81",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/1a9b8de2-2a2d-4d4e-8032-db7903922906.json"
+            }
+          ],
+          "graph_relations": []
+        }
+      ]
+    },
+    {
+      "clue_id": "curated-clue-mass-message-cloud-control",
+      "clue_type": "tool_trade_theme_multi_source",
+      "risk_category": "众包服务",
+      "key": "群发/云控/协议层开发",
+      "quality_score": 0.96,
+      "quality_level": "high",
+      "quality_reasons": [
+        "original_raw_text_available",
+        "cleaned_text_joined",
+        "classification_joined",
+        "entities_joined",
+        "source_url_present",
+        "clue_generation_basis_attached",
+        "cross_source_theme_confirmed",
+        "snapshot_available"
+      ],
+      "clue_generation_basis": "mass_messaging_or_cloud_control_tooling_context_appears_across_forum_and_social_collection_sources",
+      "evidence_trace_ids": [
+        "c4a05c24-7aa3-42be-a34b-d393234c7440",
+        "451d79ee-29b6-487a-8cec-d891d63dacf6",
+        "e1a98f10-0dbc-4e4b-9359-b3c9bf38a109",
+        "84a58e79-4b9b-497a-ad6e-1d269870cd8f"
+      ],
+      "clickable_chain_uri": "evidence-pack://clue/curated-clue-mass-message-cloud-control",
+      "answer_chain": [
+        {
+          "trace_id": "c4a05c24-7aa3-42be-a34b-d393234c7440",
+          "raw_snapshot": {
+            "capture_snapshot_uri": "data/external_source_evidence_snapshots/c4a05c24-7aa3-42be-a34b-d393234c7440.json",
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E5%8F%91",
+            "source_url": "https://www.v2ex.com/t/1213962",
+            "raw_snippet": "后端开发（Laravel/ PHP ）——textnow 云控系统协议层开发，报酬面谈 - V2EX Image 6www.v2ex.com/t/1213962 2026-05-19T23:29:01.0000000 项目背景 我们有一套自研的短信群发云控管理系统（ Avatar SMS ），前端 UI 已完成（纯原生 JS ，无框架），Laravel 后端骨架和 API 路由已搭好，现在需要一位有经验的后端开发者完成核心协议层业务逻辑。 已完成的部分（不需要你做） 前端 UI 全部页面（项目管理 / 客户管理 / 账号管理 / 任务管理 ...",
+            "raw_text": "后端开发（Laravel/ PHP ）——textnow 云控系统协议层开发，报酬面谈 - V2EX Image 6www.v2ex.com/t/1213962 2026-05-19T23:29:01.0000000 项目背景 我们有一套自研的短信群发云控管理系统（ Avatar SMS ），前端 UI 已完成（纯原生 JS ，无框架），Laravel 后端骨架和 API 路由已搭好，现在需要一位有经验的后端开发者完成核心协议层业务逻辑。 已完成的部分（不需要你做） 前端 UI 全部页面（项目管理 / 客户管理 / 账号管理 / 任务管理 ...",
+            "crawl_time": "2026-05-26T02:31:25.856310Z",
+            "publish_time": "2026-05-26T02:31:25.856310Z",
+            "hydrated_trace_id": "c4a05c24-7aa3-42be-a34b-d393234c7440",
+            "hydrated_from_trace_id": "c4a05c24-7aa3-42be-a34b-d393234c7440"
+          },
+          "clean_text": "后端开发(Laravel/ PHP )——textnow 云控系统协议层开发,报酬面谈 - V2EX Image 6www.v2ex.com/t/1213962 2026-05-19T23:29:01.0000000 项目背景 我们有一套自研的短信群发云控管理系统( Avatar SMS ),前端 UI 已完成(纯原生 JS ,无框架),Laravel 后端骨架和 API 路由已搭好,现在需要一位有经验的后端开发者完成核心协议层业务逻辑。 已完成的部分(不需要你做) 前端 UI 全部页面(项目管理 / 客户管理 / 账号管理 / 任务管理 ...",
+          "classification": {
+            "risk_category": "众包服务",
+            "secondary_label": "代投服务",
+            "confidence": 0.74,
+            "review_required": true,
+            "evidence": [
+              "群发",
+              "theme:众包任务",
+              "业务",
+              "客户"
+            ],
+            "conflict_status": "CONFLICT_REVIEW"
+          },
+          "entities": [
+            {
+              "entity_type": "url",
+              "normalized_value": "https://6www.v2ex.com/t/1213962",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": " ）——textnow 云控系统协议层开发，报酬面谈 - V2EX Image 6www.v2ex.com/t/1213962 2026-05-19T23:29:01.0000000 项目背景 我们有一套自",
+              "source_url": "https://www.v2ex.com/t/1213962",
+              "crawl_time": "2026-05-26T02:31:25.856310Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E5%8F%91",
+              "capture_snapshot_uri": "data/external_source_evidence_snapshots/c4a05c24-7aa3-42be-a34b-d393234c7440.json"
+            }
+          ],
+          "graph_relations": []
+        },
+        {
+          "trace_id": "451d79ee-29b6-487a-8cec-d891d63dacf6",
+          "raw_snapshot": {
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E7%BE%A4%E5%8F%91",
+            "source_url": "https://tieba.baidu.com/p/8372231266",
+            "raw_snippet": "欢迎大家使用豪迪群发器_豪迪群发器吧_百度贴吧 Image 8tieba.baidu.com/p/8372231266 欢迎大家使用豪迪群发..#豪迪软件##豪迪群发器#欢迎下载：http://www.8222.cn欢迎下载：http://www.haodisoft.com",
+            "raw_text": "欢迎大家使用豪迪群发器_豪迪群发器吧_百度贴吧 Image 8tieba.baidu.com/p/8372231266 欢迎大家使用豪迪群发..#豪迪软件##豪迪群发器#欢迎下载：http://www.8222.cn欢迎下载：http://www.haodisoft.com",
+            "crawl_time": "2026-05-26T02:28:57.088723Z",
+            "publish_time": "2026-05-26T02:28:57.088723Z"
+          },
+          "clean_text": "欢迎大家使用豪迪群发器_豪迪群发器吧_百度贴吧 Image 8tieba.baidu.com/p/8372231266 欢迎大家使用豪迪群发..#豪迪软件##豪迪群发器#欢迎下载:http://www.8222.cn欢迎下载:http://www.haodisoft.com",
+          "classification": {
+            "risk_category": "工具交易",
+            "secondary_label": "群控脚本",
+            "confidence": 0.74,
+            "review_required": true,
+            "evidence": [
+              "软件",
+              "下载",
+              "tool_update:软件",
+              "tool_update:下载"
+            ],
+            "conflict_status": "CONFLICT_REVIEW"
+          },
+          "entities": [
+            {
+              "entity_type": "url",
+              "normalized_value": "https://8tieba.baidu.com/p/8372231266",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": "欢迎大家使用豪迪群发器_豪迪群发器吧_百度贴吧 Image 8tieba.baidu.com/p/8372231266 欢迎大家使用豪迪群发..#豪迪软件##豪迪群发器#欢迎下载：http://ww",
+              "source_url": "https://tieba.baidu.com/p/8372231266",
+              "crawl_time": "2026-05-26T02:28:57.088723Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E7%BE%A4%E5%8F%91",
+              "capture_snapshot_uri": ""
+            },
+            {
+              "entity_type": "url",
+              "normalized_value": "http://www.8222.cn欢迎下载:http://www.haodisoft.com",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": "372231266 欢迎大家使用豪迪群发..#豪迪软件##豪迪群发器#欢迎下载：http://www.8222.cn欢迎下载：http://www.haodisoft.com",
+              "source_url": "https://tieba.baidu.com/p/8372231266",
+              "crawl_time": "2026-05-26T02:28:57.088723Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E7%BE%A4%E5%8F%91",
+              "capture_snapshot_uri": ""
+            }
+          ],
+          "graph_relations": []
+        },
+        {
+          "trace_id": "e1a98f10-0dbc-4e4b-9359-b3c9bf38a109",
+          "raw_snapshot": {
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E7%BE%A4%E5%8F%91",
+            "source_url": "https://tieba.baidu.com/p/9033134237",
+            "raw_snippet": "星途QQ群发器2024版：快速高效群发解决方案 Image 3tieba.baidu.com/p/9033134237 星途QQ群发器2024版提供快速高效群发体验，支持富文本内容，后台定时循环发送，有黑名单机制，采用独家不封号技术。",
+            "raw_text": "星途QQ群发器2024版：快速高效群发解决方案 Image 3tieba.baidu.com/p/9033134237 星途QQ群发器2024版提供快速高效群发体验，支持富文本内容，后台定时循环发送，有黑名单机制，采用独家不封号技术。",
+            "crawl_time": "2026-05-26T02:28:57.088723Z",
+            "publish_time": "2026-05-26T02:28:57.088723Z"
+          },
+          "clean_text": "星途QQ群发器2024版:快速高效群发解决方案 Image 3tieba.baidu.com/p/9033134237 星途QQ群发器2024版提供快速高效群发体验,支持富文本内容,后台定时循环发送,有黑名单机制,采用独家不封号技术。",
+          "classification": {
+            "risk_category": "众包服务",
+            "secondary_label": "代投服务",
+            "confidence": 0.74,
+            "review_required": true,
+            "evidence": [
+              "群发",
+              "theme:众包任务"
+            ],
+            "conflict_status": "CONFLICT_REVIEW"
+          },
+          "entities": [
+            {
+              "entity_type": "slang_term",
+              "normalized_value": "QQ",
+              "confidence": 0.76,
+              "context_relevance": 0.35,
+              "source_snippet": "星途QQ群发器2024版：快速高效群发解决方案 Image 3tieba.baidu.c",
+              "source_url": "https://tieba.baidu.com/p/9033134237",
+              "crawl_time": "2026-05-26T02:28:57.088723Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E7%BE%A4%E5%8F%91",
+              "capture_snapshot_uri": ""
+            },
+            {
+              "entity_type": "slang_term",
+              "normalized_value": "群组",
+              "confidence": 0.88,
+              "context_relevance": 0.35,
+              "source_snippet": "星途QQ群发器2024版：快速高效群发解决方案 Image 3tieba.baidu.co",
+              "source_url": "https://tieba.baidu.com/p/9033134237",
+              "crawl_time": "2026-05-26T02:28:57.088723Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E7%BE%A4%E5%8F%91",
+              "capture_snapshot_uri": ""
+            },
+            {
+              "entity_type": "url",
+              "normalized_value": "https://3tieba.baidu.com/p/9033134237",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": "星途QQ群发器2024版：快速高效群发解决方案 Image 3tieba.baidu.com/p/9033134237 星途QQ群发器2024版提供快速高效群发体验，支持富文本内容，后台定时循环发送",
+              "source_url": "https://tieba.baidu.com/p/9033134237",
+              "crawl_time": "2026-05-26T02:28:57.088723Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E7%BE%A4%E5%8F%91",
+              "capture_snapshot_uri": ""
+            }
+          ],
+          "graph_relations": []
+        },
+        {
+          "trace_id": "84a58e79-4b9b-497a-ad6e-1d269870cd8f",
+          "raw_snapshot": {
+            "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E7%BE%A4%E5%8F%91",
+            "source_url": "https://tieba.baidu.com/p/9475308545",
+            "raw_snippet": "速邮，一个非常好用而且免费的群发工具，主要是免费 Image 2tieba.baidu.com/p/9475308545 速邮群发一个非常好用而且免费的群发工具，主要是免费，有统计，还支持查看对方是否已读功能非常好用，支持多个发信smtp轮询防止同一个邮箱发送被收件服务器拉黑，还有多个邮件模板轮询防止被认为是广告给丢进垃圾箱，然后邮件原始文件是用了编码，进件率高，可以吊打很多付费群发了 ...",
+            "raw_text": "速邮，一个非常好用而且免费的群发工具，主要是免费 Image 2tieba.baidu.com/p/9475308545 速邮群发一个非常好用而且免费的群发工具，主要是免费，有统计，还支持查看对方是否已读功能非常好用，支持多个发信smtp轮询防止同一个邮箱发送被收件服务器拉黑，还有多个邮件模板轮询防止被认为是广告给丢进垃圾箱，然后邮件原始文件是用了编码，进件率高，可以吊打很多付费群发了 ...",
+            "crawl_time": "2026-05-26T02:28:57.088723Z",
+            "publish_time": "2026-05-26T02:28:57.088723Z"
+          },
+          "clean_text": "速邮,一个非常好用而且免费的群发工具,主要是免费 Image 2tieba.baidu.com/p/9475308545 速邮群发一个非常好用而且免费的群发工具,主要是免费,有统计,还支持查看对方是否已读功能非常好用,支持多个发信smtp轮询防止同一个邮箱发送被收件服务器拉黑,还有多个邮件模板轮询防止被认为是广告给丢进垃圾箱,然后邮件原始文件是用了编码,进件率高,可以吊打很多付费群发了 ...",
+          "classification": {
+            "risk_category": "众包服务",
+            "secondary_label": "代投服务",
+            "confidence": 0.94,
+            "review_required": false,
+            "evidence": [
+              "群发",
+              "广告",
+              "theme:众包任务"
+            ],
+            "conflict_status": "RESOLVED"
+          },
+          "entities": [
+            {
+              "entity_type": "url",
+              "normalized_value": "https://2tieba.baidu.com/p/9475308545",
+              "confidence": 1.0,
+              "context_relevance": 0.35,
+              "source_snippet": "速邮，一个非常好用而且免费的群发工具，主要是免费 Image 2tieba.baidu.com/p/9475308545 速邮群发一个非常好用而且免费的群发工具，主要是免费，有统计，还支持查看对方是否",
+              "source_url": "https://tieba.baidu.com/p/9475308545",
+              "crawl_time": "2026-05-26T02:28:57.088723Z",
+              "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E7%BE%A4%E5%8F%91",
+              "capture_snapshot_uri": ""
+            }
+          ],
+          "graph_relations": []
+        }
+      ]
+    }
+  ],
+  "report": {
+    "status": "completed",
+    "high_quality_clue_count": 4,
+    "indexed_clue_count": 4,
+    "answer_chain_card_count": 17,
+    "missing_evidence_trace_count": 0,
+    "claim_boundary": "clue_evidence_index_over_available_evidence_pack_artifacts_missing_artifacts_are_not_claimed_empty_answer_chains_are_not_fully_indexed"
+  }
+}
