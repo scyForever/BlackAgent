@@ -13,6 +13,7 @@ from collections import Counter, defaultdict
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import quote
 
 from src.cleaner.text_filter import (
     calculate_noise_score,
@@ -37,11 +38,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--classifications", default="data/classification_extraction_phase_classifications.jsonl")
     parser.add_argument("--entities", default="data/classification_extraction_phase_entities.jsonl")
     parser.add_argument("--clues", default="", help="Optional candidate-clue JSONL; falls back to no linked clues.")
+    parser.add_argument("--graph-relations", default="", help="Optional graph-relation JSONL to attach to clue evidence index.")
     parser.add_argument("--hydrated", default="", help="Optional hydrated target-page JSONL used to replace snippet-only source evidence.")
     parser.add_argument("--cleaning-drops", default="", help="Optional cleaning drop JSONL keyed by trace_id/source_trace_id.")
     parser.add_argument("--dropped", default="", help="Optional dropped-row JSONL keyed by trace_id/source_trace_id.")
     parser.add_argument("--output", default="data/collection_phase_multi_source_evidence_pack.jsonl")
     parser.add_argument("--report-out", default="data/collection_phase_multi_source_evidence_pack_report.json")
+    parser.add_argument(
+        "--clue-index-output",
+        default="",
+        help="Optional clue evidence-chain index JSON output.",
+    )
     return parser.parse_args()
 
 
@@ -189,6 +196,73 @@ def build_evidence_pack(
     return report
 
 
+def build_clue_evidence_index(
+    evidence_rows: list[dict[str, Any]],
+    clues: list[dict[str, Any]],
+    graph_relations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    evidence_by_trace = _evidence_rows_by_trace_alias(evidence_rows)
+    relations = _dict_rows(graph_relations or [])
+    rows: list[dict[str, Any]] = []
+    high_quality_clue_count = 0
+    indexed_clue_count = 0
+    missing_evidence_trace_count = 0
+
+    for clue in _dict_rows(clues):
+        if not _is_high_quality_clue(clue):
+            continue
+
+        high_quality_clue_count += 1
+        evidence_trace_ids = _normalized_trace_ids(clue.get("evidence_trace_ids") or [])
+        clue_trace_set = set(evidence_trace_ids)
+        answer_chain: list[dict[str, Any]] = []
+        for trace_id in evidence_trace_ids:
+            evidence_row = evidence_by_trace.get(trace_id)
+            if not evidence_row:
+                missing_evidence_trace_count += 1
+                continue
+            answer_chain.append(_answer_chain_card(evidence_row, matched_trace_id=trace_id, relations=relations, clue_trace_set=clue_trace_set))
+
+        if answer_chain:
+            indexed_clue_count += 1
+
+        rows.append(
+            {
+                "clue_id": clue.get("clue_id"),
+                "clue_type": clue.get("clue_type"),
+                "risk_category": clue.get("risk_category"),
+                "key": clue.get("key"),
+                "quality_score": clue.get("quality_score"),
+                "quality_level": clue.get("quality_level"),
+                "evidence_trace_ids": evidence_trace_ids,
+                "clickable_chain_uri": f"evidence-pack://clue/{_clue_uri_id(clue)}",
+                "answer_chain": answer_chain,
+            }
+        )
+
+    return {
+        "rows": rows,
+        "report": {
+            "status": "completed" if rows else "empty",
+            "high_quality_clue_count": high_quality_clue_count,
+            "indexed_clue_count": indexed_clue_count,
+            "answer_chain_card_count": sum(len(row["answer_chain"]) for row in rows),
+            "missing_evidence_trace_count": missing_evidence_trace_count,
+            "claim_boundary": (
+                "clue_evidence_index_over_available_evidence_pack_artifacts_"
+                "missing_artifacts_are_not_claimed_empty_answer_chains_are_not_fully_indexed"
+            ),
+        },
+    }
+
+
+def write_json(data: dict[str, Any], path: str | Path) -> Path:
+    resolved = _resolve(path)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return resolved
+
+
 def _latest_by_trace(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     by_trace: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -270,6 +344,119 @@ def _clues_by_evidence_trace(clues: list[dict[str, Any]]) -> dict[str, list[dict
             if normalized:
                 grouped[normalized].append(clue)
     return dict(grouped)
+
+
+def _is_high_quality_clue(clue: dict[str, Any]) -> bool:
+    if str(clue.get("quality_level") or "").strip().lower() == "high":
+        return True
+    try:
+        return float(clue.get("quality_score")) >= 0.7
+    except (TypeError, ValueError):
+        return False
+
+
+def _normalized_trace_ids(values: Iterable[Any]) -> list[str]:
+    trace_ids: list[str] = []
+    for value in values:
+        trace_id = str(value).strip()
+        if trace_id:
+            trace_ids.append(trace_id)
+    return trace_ids
+
+
+def _evidence_rows_by_trace_alias(evidence_rows: Iterable[Any]) -> dict[str, dict[str, Any]]:
+    by_trace: dict[str, dict[str, Any]] = {}
+    for row in _dict_rows(evidence_rows):
+        for trace_id in _evidence_row_trace_aliases(row):
+            by_trace.setdefault(trace_id, row)
+    return by_trace
+
+
+def _evidence_row_trace_aliases(row: dict[str, Any]) -> list[str]:
+    aliases: list[str] = []
+    for key in ("trace_id", "source_trace_id", "hash_id"):
+        value = str(row.get(key) or "").strip()
+        if value and value not in aliases:
+            aliases.append(value)
+    return aliases
+
+
+def _raw_snapshot_card(evidence_row: dict[str, Any]) -> dict[str, Any]:
+    source_evidence = evidence_row.get("source_evidence") if isinstance(evidence_row.get("source_evidence"), dict) else {}
+    card: dict[str, Any] = {}
+    for key in (
+        "capture_snapshot_uri",
+        "raw_payload_uri",
+        "source_url",
+        "raw_snippet",
+        "raw_text",
+        "crawl_time",
+        "publish_time",
+        "hydrated_trace_id",
+        "hydrated_from_trace_id",
+    ):
+        value = source_evidence.get(key) or evidence_row.get(key)
+        if value is not None and str(value) != "":
+            card[key] = value
+    return card
+
+
+def _answer_chain_card(
+    evidence_row: dict[str, Any],
+    *,
+    matched_trace_id: str,
+    relations: list[dict[str, Any]],
+    clue_trace_set: set[str],
+) -> dict[str, Any]:
+    displayed_trace_id = str(evidence_row.get("trace_id") or matched_trace_id).strip()
+    card = {
+        "trace_id": displayed_trace_id,
+        "raw_snapshot": _raw_snapshot_card(evidence_row),
+        "clean_text": evidence_row.get("clean_text"),
+        "classification": evidence_row.get("classification") or {},
+        "entities": evidence_row.get("entities") or [],
+        "graph_relations": _graph_relations_for_trace(
+            relations,
+            trace_id=matched_trace_id,
+            clue_trace_set=clue_trace_set,
+        ),
+    }
+    if matched_trace_id != displayed_trace_id:
+        card["matched_evidence_trace_id"] = matched_trace_id
+    return card
+
+
+def _graph_relations_for_trace(
+    graph_relations: list[dict[str, Any]],
+    *,
+    trace_id: str,
+    clue_trace_set: set[str],
+) -> list[dict[str, Any]]:
+    matched: list[dict[str, Any]] = []
+    for relation in graph_relations:
+        relation_trace_set = set(_relation_evidence_trace_ids(relation))
+        if trace_id in relation_trace_set and relation_trace_set & clue_trace_set:
+            matched.append(dict(relation))
+    return matched
+
+
+def _relation_evidence_trace_ids(relation: dict[str, Any]) -> list[str]:
+    for key in ("evidence_trace_ids", "evidence_traces", "trace_ids"):
+        value = relation.get(key)
+        if isinstance(value, list):
+            return _normalized_trace_ids(value)
+    trace_id = _trace_id(relation)
+    return [trace_id] if trace_id else []
+
+
+def _clue_uri_id(clue: dict[str, Any]) -> str:
+    clue_id = str(clue.get("clue_id") or "").strip()
+    if clue_id:
+        return quote(clue_id, safe="")
+    key = str(clue.get("key") or "").strip()
+    if key:
+        return quote(key, safe="")
+    return "unknown"
 
 
 def _trace_id(row: dict[str, Any]) -> str:
@@ -563,18 +750,32 @@ def _resolve(path: str | Path) -> Path:
 
 def main() -> int:
     args = parse_args()
+    clues = load_jsonl(args.clues) if args.clues else []
     report = build_evidence_pack(
         load_jsonl(args.acceptance_pack),
         cleaned=load_jsonl(args.cleaned) if args.cleaned else [],
         classifications=load_jsonl(args.classifications),
         entities=load_jsonl(args.entities),
-        clues=load_jsonl(args.clues) if args.clues else [],
+        clues=clues,
         hydrated=load_jsonl(args.hydrated) if args.hydrated else [],
         cleaning_drops=load_jsonl(args.cleaning_drops) if args.cleaning_drops else [],
         dropped=load_jsonl(args.dropped) if args.dropped else [],
         output_path=args.output,
         report_path=args.report_out,
     )
+    if args.clue_index_output:
+        if clues:
+            graph_relations = load_jsonl(args.graph_relations) if args.graph_relations else []
+            clue_index = build_clue_evidence_index(
+                load_jsonl(args.output),
+                clues=clues,
+                graph_relations=graph_relations,
+            )
+            write_json(clue_index, args.clue_index_output)
+        else:
+            clue_index_path = _resolve(args.clue_index_output)
+            if clue_index_path.exists():
+                clue_index_path.unlink()
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 

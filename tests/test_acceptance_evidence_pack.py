@@ -2,7 +2,13 @@ import json
 import subprocess
 import sys
 
-from scripts.build_acceptance_evidence_pack import build_evidence_pack, load_jsonl, write_jsonl
+from scripts.build_acceptance_evidence_pack import (
+    build_clue_evidence_index,
+    build_evidence_pack,
+    load_jsonl,
+    parse_args,
+    write_jsonl,
+)
 
 
 def test_build_acceptance_evidence_pack_joins_classification_entities_and_clues(tmp_path):
@@ -533,3 +539,399 @@ def test_build_acceptance_evidence_pack_cli_accepts_cleaning_drop_artifact(tmp_p
     row = load_jsonl(output_path)[0]
 
     assert row["source_evidence"]["cleaning_drop"]["reason"] == "too_short_after_cleaning"
+
+
+def test_build_clue_evidence_index_links_high_quality_clue_to_answer_chain():
+    evidence_rows = [
+        {
+            "trace_id": "trace-1",
+            "source_url": "https://forum.example/thread/1",
+            "raw_snippet": "原始帖：群控脚本引流，联系 TG:risk01",
+            "source_evidence": {
+                "capture_snapshot_uri": "s3://snapshots/trace-1.html",
+                "raw_payload_uri": "s3://payloads/trace-1.json",
+                "source_url": "https://forum.example/thread/1",
+                "raw_snippet": "原始帖：群控脚本引流，联系 TG:risk01",
+            },
+            "clean_text": "群控脚本引流 联系 TG:risk01",
+            "classification": {
+                "risk_category": "工具交易",
+                "confidence": 0.91,
+            },
+            "entities": [
+                {
+                    "entity_type": "contact",
+                    "normalized_value": "Telegram:risk01",
+                    "confidence": 1.0,
+                }
+            ],
+        }
+    ]
+    clues = [
+        {
+            "clue_id": "clue-1",
+            "clue_type": "shared_contact_48h",
+            "risk_category": "工具交易",
+            "key": "Telegram:risk01",
+            "quality_score": 0.72,
+            "quality_level": "medium",
+            "evidence_trace_ids": ["trace-1"],
+        },
+        {
+            "clue_id": "clue-low",
+            "clue_type": "shared_keyword",
+            "risk_category": "工具交易",
+            "key": "low",
+            "quality_score": 0.2,
+            "quality_level": "low",
+            "evidence_trace_ids": ["trace-1"],
+        },
+    ]
+
+    index = build_clue_evidence_index(evidence_rows, clues=clues)
+
+    assert index["report"]["high_quality_clue_count"] == 1
+    assert index["report"]["indexed_clue_count"] == 1
+    chain = index["rows"][0]["answer_chain"]
+    assert chain[0]["raw_snapshot"]["capture_snapshot_uri"] == "s3://snapshots/trace-1.html"
+    assert chain[0]["raw_snapshot"]["raw_payload_uri"] == "s3://payloads/trace-1.json"
+    assert chain[0]["clean_text"] == "群控脚本引流 联系 TG:risk01"
+    assert chain[0]["classification"]["risk_category"] == "工具交易"
+    assert chain[0]["entities"][0]["normalized_value"] == "Telegram:risk01"
+    assert index["rows"][0]["clickable_chain_uri"].startswith("evidence-pack://clue/")
+
+
+def test_build_clue_evidence_index_includes_high_quality_level_without_score_and_reports_missing_trace():
+    evidence_rows = [
+        {
+            "trace_id": "trace-1",
+            "source_evidence": {"capture_snapshot_uri": "s3://snapshots/trace-1.html"},
+            "clean_text": "清洗文本",
+            "classification": {},
+            "entities": [],
+        }
+    ]
+    clues = [
+        {
+            "clue_id": "clue-level-high",
+            "clue_type": "shared_contact_48h",
+            "risk_category": "账号交易",
+            "key": "Telegram:high",
+            "quality_level": "HIGH",
+            "evidence_trace_ids": ["trace-1", "trace-missing"],
+        },
+        {
+            "clue_id": "clue-low",
+            "clue_type": "shared_contact_48h",
+            "risk_category": "账号交易",
+            "key": "Telegram:low",
+            "quality_level": "medium",
+            "evidence_trace_ids": ["trace-1"],
+        },
+    ]
+    graph_relations = [
+        {
+            "relation_id": "rel-1",
+            "source_entity": "Telegram:high",
+            "target_entity": "trace-1",
+            "evidence_trace_ids": ["trace-1"],
+        },
+        {
+            "relation_id": "rel-other",
+            "source_entity": "Telegram:other",
+            "target_entity": "trace-other",
+            "evidence_trace_ids": ["trace-other"],
+        },
+    ]
+
+    index = build_clue_evidence_index(evidence_rows, clues=clues, graph_relations=graph_relations)
+
+    assert index["report"]["status"] == "completed"
+    assert index["report"]["high_quality_clue_count"] == 1
+    assert index["report"]["missing_evidence_trace_count"] == 1
+    assert index["rows"][0]["clue_id"] == "clue-level-high"
+    assert index["rows"][0]["quality_score"] is None
+    assert index["rows"][0]["answer_chain"][0]["graph_relations"][0]["relation_id"] == "rel-1"
+
+
+def test_build_clue_evidence_index_counts_all_missing_high_quality_clue_as_unindexed():
+    clues = [
+        {
+            "clue_id": "clue-missing",
+            "clue_type": "shared_contact_48h",
+            "risk_category": "工具交易",
+            "key": "Telegram:missing",
+            "quality_score": 0.8,
+            "evidence_trace_ids": ["missing-1", "missing-2"],
+        }
+    ]
+
+    index = build_clue_evidence_index([], clues=clues)
+
+    assert index["report"]["status"] == "completed"
+    assert index["report"]["high_quality_clue_count"] == 1
+    assert index["report"]["indexed_clue_count"] == 0
+    assert index["report"]["answer_chain_card_count"] == 0
+    assert index["report"]["missing_evidence_trace_count"] == 2
+    assert "not_fully_indexed" in index["report"]["claim_boundary"]
+    assert index["rows"][0]["answer_chain"] == []
+
+
+def test_build_clue_evidence_index_resolves_display_trace_and_aliases_with_clue_trace_on_card():
+    evidence_rows = [
+        {
+            "trace_id": "display-trace",
+            "source_trace_id": "source-trace",
+            "hash_id": "hash-trace",
+            "source_evidence": {"capture_snapshot_uri": "s3://snapshots/display.html"},
+            "clean_text": "display clean text",
+            "classification": {},
+            "entities": [],
+        }
+    ]
+    clues = [
+        {
+            "clue_id": "clue-display",
+            "quality_score": 0.7,
+            "evidence_trace_ids": ["display-trace", "source-trace", "hash-trace"],
+        }
+    ]
+
+    index = build_clue_evidence_index(evidence_rows, clues=clues)
+
+    assert index["report"]["indexed_clue_count"] == 1
+    assert [card["trace_id"] for card in index["rows"][0]["answer_chain"]] == [
+        "display-trace",
+        "display-trace",
+        "display-trace",
+    ]
+    assert index["rows"][0]["answer_chain"][0].get("matched_evidence_trace_id") is None
+    assert index["rows"][0]["answer_chain"][1]["matched_evidence_trace_id"] == "source-trace"
+    assert index["rows"][0]["answer_chain"][2]["matched_evidence_trace_id"] == "hash-trace"
+    assert [card["clean_text"] for card in index["rows"][0]["answer_chain"]] == [
+        "display clean text",
+        "display clean text",
+        "display clean text",
+    ]
+
+
+def test_build_clue_evidence_index_uri_escapes_unsafe_clue_id():
+    index = build_clue_evidence_index(
+        [{"trace_id": "trace-1", "source_evidence": {}, "clean_text": ""}],
+        clues=[
+            {
+                "clue_id": "clue /?#% 1",
+                "quality_score": 0.7,
+                "evidence_trace_ids": ["trace-1"],
+            }
+        ],
+    )
+
+    assert index["rows"][0]["clickable_chain_uri"] == "evidence-pack://clue/clue%20%2F%3F%23%25%201"
+
+
+def test_build_clue_evidence_index_matches_graph_relations_by_trace_alias_and_overlap():
+    evidence_rows = [
+        {
+            "trace_id": "display-trace",
+            "source_trace_id": "source-trace",
+            "source_evidence": {},
+            "clean_text": "clean",
+            "classification": {},
+            "entities": [],
+        }
+    ]
+    clues = [
+        {
+            "clue_id": "clue-rel",
+            "quality_score": 0.7,
+            "evidence_trace_ids": ["display-trace", "source-trace"],
+        }
+    ]
+    graph_relations = [
+        {"relation_id": "rel-source", "source_trace_id": "source-trace"},
+        {"relation_id": "rel-multi", "evidence_trace_ids": ["source-trace", "other-trace"]},
+    ]
+
+    index = build_clue_evidence_index(evidence_rows, clues=clues, graph_relations=graph_relations)
+
+    relations_by_card = {
+        card.get("matched_evidence_trace_id", card["trace_id"]): [relation["relation_id"] for relation in card["graph_relations"]]
+        for card in index["rows"][0]["answer_chain"]
+    }
+    assert relations_by_card["display-trace"] == []
+    assert relations_by_card["source-trace"] == ["rel-source", "rel-multi"]
+
+
+def test_parse_args_defaults_to_no_clue_index_output(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["build_acceptance_evidence_pack.py"])
+
+    args = parse_args()
+
+    assert args.clue_index_output == ""
+
+
+def test_build_acceptance_evidence_pack_cli_writes_clue_evidence_index_only_when_requested(tmp_path):
+    acceptance_path = tmp_path / "acceptance.jsonl"
+    clues_path = tmp_path / "clues.jsonl"
+    output_path = tmp_path / "evidence.jsonl"
+    report_path = tmp_path / "report.json"
+    clue_index_path = tmp_path / "clue_index.json"
+    default_old_path = tmp_path / "data" / "collection_phase_multi_source_clue_evidence_index.json"
+
+    write_jsonl(
+        [
+            {
+                "trace_id": "trace-1",
+                "source_trace_id": "trace-1",
+                "source_name": "direct",
+                "source_type": "forum",
+                "content_text": "原始帖：群控脚本引流，联系 TG:risk01",
+                "capture_snapshot_uri": "s3://snapshots/trace-1.html",
+            }
+        ],
+        acceptance_path,
+    )
+    write_jsonl(
+        [
+            {
+                "clue_id": "clue-1",
+                "clue_type": "shared_contact_48h",
+                "risk_category": "工具交易",
+                "key": "Telegram:risk01",
+                "quality_score": 0.7,
+                "evidence_trace_ids": ["trace-1"],
+            }
+        ],
+        clues_path,
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/build_acceptance_evidence_pack.py",
+            "--acceptance-pack",
+            str(acceptance_path),
+            "--classifications",
+            str(tmp_path / "missing_classifications.jsonl"),
+            "--entities",
+            str(tmp_path / "missing_entities.jsonl"),
+            "--clues",
+            str(clues_path),
+            "--output",
+            str(output_path),
+            "--report-out",
+            str(report_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert not default_old_path.exists()
+    assert not clue_index_path.exists()
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/build_acceptance_evidence_pack.py",
+            "--acceptance-pack",
+            str(acceptance_path),
+            "--classifications",
+            str(tmp_path / "missing_classifications.jsonl"),
+            "--entities",
+            str(tmp_path / "missing_entities.jsonl"),
+            "--clues",
+            str(clues_path),
+            "--output",
+            str(output_path),
+            "--report-out",
+            str(report_path),
+            "--clue-index-output",
+            str(clue_index_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    index = json.loads(clue_index_path.read_text(encoding="utf-8"))
+
+    assert index["report"]["indexed_clue_count"] == 1
+    assert index["rows"][0]["answer_chain"][0]["raw_snapshot"]["capture_snapshot_uri"] == "s3://snapshots/trace-1.html"
+
+
+def test_build_acceptance_evidence_pack_cli_binds_graph_relations_when_requested(tmp_path):
+    acceptance_path = tmp_path / "acceptance.jsonl"
+    clues_path = tmp_path / "clues.jsonl"
+    graph_relations_path = tmp_path / "graph_relations.jsonl"
+    output_path = tmp_path / "evidence.jsonl"
+    report_path = tmp_path / "report.json"
+    clue_index_path = tmp_path / "clue_index.json"
+
+    write_jsonl(
+        [
+            {
+                "trace_id": "trace-graph",
+                "source_trace_id": "trace-graph",
+                "source_name": "direct",
+                "source_type": "forum",
+                "content_text": "群控脚本引流 联系 TG:risk01",
+            }
+        ],
+        acceptance_path,
+    )
+    write_jsonl(
+        [
+            {
+                "clue_id": "clue-graph",
+                "clue_type": "shared_contact_48h",
+                "risk_category": "工具交易",
+                "key": "Telegram:risk01",
+                "quality_score": 0.7,
+                "evidence_trace_ids": ["trace-graph"],
+            }
+        ],
+        clues_path,
+    )
+    write_jsonl(
+        [
+            {
+                "relation_id": "rel-graph",
+                "source_entity": "Telegram:risk01",
+                "target_entity": "群控脚本",
+                "evidence_trace_ids": ["trace-graph", "trace-other"],
+            }
+        ],
+        graph_relations_path,
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/build_acceptance_evidence_pack.py",
+            "--acceptance-pack",
+            str(acceptance_path),
+            "--classifications",
+            str(tmp_path / "missing_classifications.jsonl"),
+            "--entities",
+            str(tmp_path / "missing_entities.jsonl"),
+            "--clues",
+            str(clues_path),
+            "--graph-relations",
+            str(graph_relations_path),
+            "--output",
+            str(output_path),
+            "--report-out",
+            str(report_path),
+            "--clue-index-output",
+            str(clue_index_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    index = json.loads(clue_index_path.read_text(encoding="utf-8"))
+
+    assert index["rows"][0]["answer_chain"][0]["graph_relations"][0]["relation_id"] == "rel-graph"

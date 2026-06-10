@@ -245,6 +245,203 @@ def test_ocr_manifest_report_tracks_required_image_kind_coverage(tmp_path):
     assert report["image_kind_coverage"]["complete"] is False
 
 
+def test_ocr_manifest_report_includes_real_scene_assessment_for_authorized_rows(tmp_path):
+    records = [
+        {
+            "trace_id": "ocr-pass",
+            "source_name": "analyst-authorized-screenshot",
+            "source_type": "Image",
+            "legal_basis": "INTERNAL_AUTHORIZED_SOURCE",
+            "image_kind": "screenshot",
+            "content_text": "caption TG:OCR021 tool-alpha",
+            "ocr_text": "TG:OCR021 tool-alpha",
+            "ocr_status": "completed",
+            "ocr_errors": [],
+            "expected_image_text": "TG:OCR021",
+            "expected_entities": [{"entity_type": "contact", "normalized_value": "OCR021"}],
+        },
+        {
+            "trace_id": "ocr-fail",
+            "source_name": "analyst-authorized-poster",
+            "source_type": "Image",
+            "legal_basis": "INTERNAL_AUTHORIZED_SOURCE",
+            "image_kind": "poster",
+            "content_text": "caption only",
+            "ocr_text": "",
+            "ocr_status": "missing_ocr_text",
+            "ocr_errors": ["no readable image text"],
+            "expected_image_text": "TG:OCR022",
+            "expected_entities": [{"entity_type": "contact", "normalized_value": "OCR022"}],
+        },
+    ]
+
+    report = build_ocr_hardset.build_report(
+        records,
+        output_path=tmp_path / "out.jsonl",
+        manifest_path=tmp_path / "manifest.jsonl",
+    )
+
+    assessment = report["real_scene_assessment"]
+    assert report["status"] == "completed"
+    assert assessment["target_range"] == {"min": 30, "max": 50}
+    assert assessment["authorized_manifest_count"] == 2
+    assert assessment["coverage_status"] == "insufficient_real_authorized_screenshots"
+    assert assessment["image_kind_counts"] == {"screenshot": 1, "poster": 1}
+    assert assessment["ocr_quality_metrics"]["evaluated_count"] == 2
+    assert assessment["entity_extraction_impact"]["expected_entity_count"] == 2
+    assert assessment["entity_extraction_impact"]["ocr_supported_entity_count"] == 1
+    assert assessment["failure_samples"][0]["trace_id"] == "ocr-fail"
+
+
+def test_generated_pbm_report_does_not_claim_real_scene_completion(tmp_path):
+    records = build_ocr_hardset.build_records(count=20, image_dir=tmp_path)
+
+    report = build_ocr_hardset.build_report(records, output_path=tmp_path / "out.jsonl")
+
+    assert report["status"] == "completed"
+    assert report["real_scene_assessment"]["authorized_manifest_count"] == 0
+    assert report["real_scene_assessment"]["coverage_status"] == "not_real_scene_manifest"
+    assert "not real-scene proof" in report["real_scene_assessment"]["claim_boundary"]
+
+
+def test_real_scene_assessment_requires_explicit_authorization_for_coverage(tmp_path):
+    authorized_records = [
+        {
+            "trace_id": f"authorized-{index:02d}",
+            "source_type": "Image",
+            "legal_basis": "INTERNAL_AUTHORIZED_SOURCE",
+            "image_kind": "screenshot",
+            "ocr_text": f"TG:AUTH{index:02d}",
+            "ocr_status": "completed",
+            "expected_image_text": f"TG:AUTH{index:02d}",
+            "expected_entities": [],
+        }
+        for index in range(30)
+    ]
+    records = [
+        *authorized_records,
+        {
+            "trace_id": "missing-authorization",
+            "source_type": "Image",
+            "legal_basis": "",
+            "image_kind": "poster",
+            "ocr_text": "TG:MISSING",
+            "ocr_status": "completed",
+            "expected_image_text": "TG:MISSING",
+            "expected_entities": [],
+        },
+        {
+            "trace_id": "unauthorized-row",
+            "source_type": "Image",
+            "legal_basis": "UNAUTHORIZED_SOURCE",
+            "image_kind": "poster",
+            "ocr_text": "TG:UNAUTH",
+            "ocr_status": "completed",
+            "expected_image_text": "TG:UNAUTH",
+            "expected_entities": [],
+        },
+    ]
+
+    report = build_ocr_hardset.build_report(
+        records,
+        output_path=tmp_path / "out.jsonl",
+        manifest_path=tmp_path / "manifest.jsonl",
+    )
+
+    assert report["status"] == "completed"
+    assert report["real_scene_assessment"]["authorized_manifest_count"] == 30
+    assert report["real_scene_assessment"]["coverage_status"] == "completed_real_authorized_screenshots"
+    assert report["real_scene_assessment"]["image_kind_counts"] == {"screenshot": 30}
+
+
+def test_real_scene_assessment_rejects_negative_authorization_substrings(tmp_path):
+    negative_values = (
+        "NOT_AUTHORIZED",
+        "NO_PERMISSION",
+        "NON_AUTHORIZED",
+        "UNLICENSED",
+        "REVOKED",
+        "EXPIRED",
+        "NOT_AUTHORIZED_SOURCE",
+        "NO_PERMISSION_SOURCE",
+        "NON_AUTHORIZED_MANIFEST",
+    )
+    records = [
+        {
+            "trace_id": f"negative-{index:02d}",
+            "source_type": "Image",
+            "legal_basis": negative_values[index % len(negative_values)],
+            "image_kind": "screenshot",
+            "ocr_text": f"TG:NEG{index:02d}",
+            "ocr_status": "completed",
+            "expected_image_text": f"TG:NEG{index:02d}",
+            "expected_entities": [],
+        }
+        for index in range(30)
+    ]
+
+    report = build_ocr_hardset.build_report(
+        records,
+        output_path=tmp_path / "out.jsonl",
+        manifest_path=tmp_path / "manifest.jsonl",
+    )
+
+    assert report["status"] == "completed"
+    assert report["real_scene_assessment"]["authorized_manifest_count"] == 0
+    assert report["real_scene_assessment"]["coverage_status"] == "insufficient_real_authorized_screenshots"
+
+
+def test_real_scene_assessment_rejects_ambiguous_authorization_tokens(tmp_path):
+    ambiguous_values = ("CONSENT_REQUIRED", "PERMISSION_PENDING", "PERMISSION_NEEDED", "LICENSED_REQUIRED")
+    records = [
+        {
+            "trace_id": f"ambiguous-{index:02d}",
+            "source_type": "Image",
+            "legal_basis": ambiguous_values[index % len(ambiguous_values)],
+            "image_kind": "screenshot",
+            "ocr_text": f"TG:AMB{index:02d}",
+            "ocr_status": "completed",
+            "expected_image_text": f"TG:AMB{index:02d}",
+            "expected_entities": [],
+        }
+        for index in range(30)
+    ]
+
+    report = build_ocr_hardset.build_report(
+        records,
+        output_path=tmp_path / "out.jsonl",
+        manifest_path=tmp_path / "manifest.jsonl",
+    )
+
+    assert report["status"] == "completed"
+    assert report["real_scene_assessment"]["authorized_manifest_count"] == 0
+    assert report["real_scene_assessment"]["coverage_status"] == "insufficient_real_authorized_screenshots"
+
+
+def test_real_scene_failure_samples_keep_string_ocr_errors_as_single_entry(tmp_path):
+    records = [
+        {
+            "trace_id": "string-error",
+            "source_type": "Image",
+            "legal_basis": "INTERNAL_AUTHORIZED_SOURCE",
+            "image_kind": "poster",
+            "ocr_text": "",
+            "ocr_status": "missing_ocr_text",
+            "ocr_errors": "single ocr failure",
+            "expected_image_text": "TG:ERR001",
+            "expected_entities": [],
+        }
+    ]
+
+    report = build_ocr_hardset.build_report(
+        records,
+        output_path=tmp_path / "out.jsonl",
+        manifest_path=tmp_path / "manifest.jsonl",
+    )
+
+    assert report["real_scene_assessment"]["failure_samples"][0]["ocr_errors"] == ["single ocr failure"]
+
+
 def test_ocr_report_records_per_engine_quality_latency_failure_and_cost_metrics(tmp_path):
     records = [
         {

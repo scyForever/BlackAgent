@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import re
 import sys
 from collections import Counter, defaultdict
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -124,6 +126,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--lifecycle-out",
         default="data/manual_review/slang_lifecycle_records.json",
         help="Lifecycle JSON generated from --review-csv-out when analyst decisions are present.",
+    )
+    parser.add_argument(
+        "--dictionary-update-out",
+        default="data/manual_review/slang_dictionary_update.json",
+        help="Export-only slang dictionary overlay generated from runtime-ready lifecycle records.",
     )
     parser.add_argument("--min-count", type=int, default=3, help="Minimum candidate frequency.")
     parser.add_argument("--max-candidates", type=int, default=80, help="Maximum candidates to emit.")
@@ -271,6 +278,10 @@ def lifecycle_records_from_review_csv(path: str | Path) -> dict[str, Any]:
             "approved_count": 0,
             "rejected_count": 0,
             "pending_count": 0,
+            "approved_reviewed_only_count": 0,
+            "reviewed_only_count": 0,
+            "invalid_target_stage_count": 0,
+            "invalid_target_stage_warnings": [],
             "runtime_ready_records": [],
             "lifecycle_flow": lifecycle_flow_metadata(),
             "activation_blocked_count": 0,
@@ -283,6 +294,9 @@ def lifecycle_records_from_review_csv(path: str | Path) -> dict[str, Any]:
     approved_count = 0
     rejected_count = 0
     pending_count = 0
+    approved_reviewed_only_count = 0
+    reviewed_only_count = 0
+    invalid_target_stage_warnings: list[str] = []
     activation_warnings: list[str] = []
     default_lifecycle_version = f"slang-lifecycle-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
     default_batch_id = f"slang-review-{target.stem}"
@@ -310,8 +324,8 @@ def lifecycle_records_from_review_csv(path: str | Path) -> dict[str, Any]:
             evaluation_gain = evaluation_gain_from_reports(baseline_eval_report, post_eval_report)
             baseline_eval_version = _eval_rule_version(baseline_eval_report)
             post_eval_version = _eval_rule_version(post_eval_report)
-            target_stage = _target_stage_from_row(row)
-            if status in {"approved", "approve", "reviewed", "accepted"}:
+            target_stage, invalid_target_stage = _target_stage_from_row(row)
+            if status in {"approved", "approve", "accepted"}:
                 manager.nominate(term, normalized, evidence_ids)
                 record = manager.review(
                     term,
@@ -326,6 +340,8 @@ def lifecycle_records_from_review_csv(path: str | Path) -> dict[str, Any]:
                     post_eval_version=post_eval_version,
                     evaluation_gain=evaluation_gain or None,
                 )
+                if invalid_target_stage is not None:
+                    invalid_target_stage_warnings.append(f"{term}:invalid_target_stage:{invalid_target_stage}")
                 if target_stage in {DynamicSlangLifecycleManager.GRAY_ROLLOUT, DynamicSlangLifecycleManager.ACTIVE}:
                     record = manager.gray_rollout(
                         term,
@@ -338,6 +354,8 @@ def lifecycle_records_from_review_csv(path: str | Path) -> dict[str, Any]:
                         post_eval_version=post_eval_version,
                         evaluation_gain=evaluation_gain or None,
                     )
+                else:
+                    approved_reviewed_only_count += 1
                 if target_stage == DynamicSlangLifecycleManager.ACTIVE:
                     activation_warnings.append(f"{term}:activation_deferred_until_gray_rollout_eval")
                 approved_count += 1
@@ -357,6 +375,22 @@ def lifecycle_records_from_review_csv(path: str | Path) -> dict[str, Any]:
                     evaluation_gain=evaluation_gain or None,
                 )
                 rejected_count += 1
+            elif status in {"reviewed", "review_only", "review-only"}:
+                manager.nominate(term, normalized, evidence_ids)
+                record = manager.review(
+                    term,
+                    approved=True,
+                    reviewer=reviewer,
+                    notes=notes,
+                    lifecycle_version=lifecycle_version,
+                    batch_id=batch_id,
+                    target_risk_category=target_risk_category,
+                    reviewed_at=review_date,
+                    baseline_eval_version=baseline_eval_version,
+                    post_eval_version=post_eval_version,
+                    evaluation_gain=evaluation_gain or None,
+                )
+                reviewed_only_count += 1
             else:
                 record = manager.nominate(term, normalized, evidence_ids)
                 pending_count += 1
@@ -370,6 +404,10 @@ def lifecycle_records_from_review_csv(path: str | Path) -> dict[str, Any]:
         "approved_count": approved_count,
         "rejected_count": rejected_count,
         "pending_count": pending_count,
+        "approved_reviewed_only_count": approved_reviewed_only_count,
+        "reviewed_only_count": reviewed_only_count,
+        "invalid_target_stage_count": len(invalid_target_stage_warnings),
+        "invalid_target_stage_warnings": invalid_target_stage_warnings,
         "activation_blocked_count": len(activation_warnings),
         "activation_warnings": activation_warnings,
         "records": records,
@@ -380,7 +418,8 @@ def lifecycle_records_from_review_csv(path: str | Path) -> dict[str, Any]:
         ],
         "lifecycle_flow": lifecycle_flow_metadata(),
         "claim_boundary": (
-            "Approved rows from review CSV enter gray rollout first; pending and reviewed-only records remain excluded."
+            "Only approved rows targeted to gray rollout or active become runtime-ready; approved rows targeted to "
+            "reviewed, pending rows, and reviewed-only records remain excluded from runtime overlays."
         ),
     }
 
@@ -432,8 +471,11 @@ def lifecycle_flow_metadata() -> dict[str, Any]:
     }
 
 
-def _target_stage_from_row(row: Mapping[str, Any]) -> str:
-    raw = str(row.get("target_stage") or DynamicSlangLifecycleManager.GRAY_ROLLOUT).strip().upper()
+def _target_stage_from_row(row: Mapping[str, Any]) -> tuple[str, str | None]:
+    raw_value = str(row.get("target_stage") or "").strip()
+    raw = raw_value.upper()
+    if not raw:
+        return DynamicSlangLifecycleManager.GRAY_ROLLOUT, None
     aliases = {
         "REVIEW": DynamicSlangLifecycleManager.REVIEWED,
         "REVIEWED": DynamicSlangLifecycleManager.REVIEWED,
@@ -445,11 +487,115 @@ def _target_stage_from_row(row: Mapping[str, Any]) -> str:
         "ACTIVE": DynamicSlangLifecycleManager.ACTIVE,
         "ACTIVATE": DynamicSlangLifecycleManager.ACTIVE,
     }
-    return aliases.get(raw, DynamicSlangLifecycleManager.GRAY_ROLLOUT)
+    if raw in aliases:
+        return aliases[raw], None
+    return DynamicSlangLifecycleManager.REVIEWED, raw_value
 
 
 def lifecycle_manager_from_records(records: Iterable[Mapping[str, Any] | Any]) -> DynamicSlangLifecycleManager:
     return DynamicSlangLifecycleManager.from_records(records)
+
+
+def slang_dictionary_update_from_lifecycle(
+    records: Iterable[Mapping[str, Any] | Any],
+    base_dictionary: Mapping[str, Any] | None = None,
+    rules_version: str | None = None,
+) -> dict[str, Any]:
+    accepted_terms: list[dict[str, Any]] = []
+    excluded_count = 0
+    dictionary_patch: dict[str, str] = {}
+    conflicts: list[dict[str, Any]] = []
+    duplicate_runtime_term_conflicts: list[dict[str, Any]] = []
+    first_runtime_terms: dict[str, dict[str, Any]] = {}
+    base_terms = {str(term): str(normalized) for term, normalized in (base_dictionary or {}).items()}
+    runtime_stages = {DynamicSlangLifecycleManager.GRAY_ROLLOUT, DynamicSlangLifecycleManager.ACTIVE}
+
+    for raw_record in records:
+        record = _lifecycle_record_mapping(raw_record)
+        if record is None:
+            excluded_count += 1
+            continue
+        stage = str(record.get("stage") or "").strip().upper()
+        term = str(record.get("term") or "").strip()
+        normalized = str(record.get("normalized_term") or term).strip() or term
+        if stage not in runtime_stages or not term:
+            excluded_count += 1
+            continue
+        accepted = {
+            "term": term,
+            "normalized_term": normalized,
+            "stage": stage,
+            "reviewer": record.get("reviewer"),
+            "lifecycle_version": record.get("lifecycle_version"),
+            "batch_id": record.get("batch_id"),
+            "target_risk_category": record.get("target_risk_category"),
+            "evidence_trace_ids": list(record.get("evidence_trace_ids") or []),
+            "evaluation_gain": dict(record.get("evaluation_gain") or {}),
+        }
+        if term not in dictionary_patch:
+            dictionary_patch[term] = normalized
+            first_runtime_terms[term] = accepted
+            if term in base_terms and base_terms[term] != normalized:
+                conflicts.append({"term": term, "base_normalized_term": base_terms[term], "overlay_normalized_term": normalized})
+        elif dictionary_patch[term] != normalized:
+            kept = first_runtime_terms[term]
+            duplicate_runtime_term_conflicts.append(
+                {
+                    "term": term,
+                    "kept_normalized_term": kept["normalized_term"],
+                    "conflicting_normalized_term": normalized,
+                    "kept_stage": kept["stage"],
+                    "conflicting_stage": stage,
+                }
+            )
+        accepted_terms.append(accepted)
+
+    derived_rules_version = rules_version or _rules_version_from_accepted_terms(accepted_terms)
+    payload: dict[str, Any] = {
+        "status": "completed" if accepted_terms else "no_runtime_terms",
+        "run_type": "slang_dictionary_overlay_from_lifecycle",
+        "rules_version": derived_rules_version,
+        "dictionary_patch": {"slang_dictionary": dictionary_patch},
+        "accepted_terms": accepted_terms,
+        "accepted_record_count": len(accepted_terms),
+        "unique_accepted_term_count": len(dictionary_patch),
+        "excluded_record_count": excluded_count,
+        "duplicate_runtime_term_conflicts": duplicate_runtime_term_conflicts,
+        "claim_boundary": (
+            "This is an overlay/export for reviewer-approved runtime slang terms; it does not automatically mutate "
+            "config/slang_dictionary.yaml or production rule configuration."
+        ),
+    }
+    if base_dictionary is not None:
+        payload["base_dictionary_term_count"] = len(base_terms)
+        payload["conflicts"] = conflicts
+    return payload
+
+
+def _lifecycle_record_mapping(record: Mapping[str, Any] | Any) -> dict[str, Any] | None:
+    if isinstance(record, Mapping):
+        return dict(record)
+    model_dump = getattr(record, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump()
+        return dict(dumped) if isinstance(dumped, Mapping) else None
+    if is_dataclass(record):
+        dumped = asdict(record)
+        return dict(dumped) if isinstance(dumped, Mapping) else None
+    return None
+
+
+def _rules_version_from_accepted_terms(accepted_terms: Iterable[Mapping[str, Any]]) -> str:
+    for term in accepted_terms:
+        evaluation_gain = term.get("evaluation_gain")
+        if isinstance(evaluation_gain, Mapping):
+            post_rule_version = str(evaluation_gain.get("post_rule_version") or "").strip()
+            if post_rule_version:
+                return post_rule_version
+        lifecycle_version = str(term.get("lifecycle_version") or "").strip()
+        if lifecycle_version:
+            return lifecycle_version
+    return f"slang-dictionary-overlay-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
 
 
 EVAL_GAIN_METRICS = (
@@ -524,9 +670,10 @@ def _numeric_metric(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
     try:
-        return float(value)
+        numeric_value = float(value)
     except (TypeError, ValueError):
         return None
+    return numeric_value if math.isfinite(numeric_value) else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -546,9 +693,18 @@ def main(argv: list[str] | None = None) -> int:
     lifecycle = lifecycle_records_from_review_csv(review_csv)
     lifecycle_out = _project_path(args.lifecycle_out)
     lifecycle_out.parent.mkdir(parents=True, exist_ok=True)
+    dictionary_update_path = None
+    if str(args.dictionary_update_out or "").strip():
+        dictionary_update = slang_dictionary_update_from_lifecycle(lifecycle.get("records") or [])
+        dictionary_update_path = _project_path(args.dictionary_update_out)
+        dictionary_update_path.parent.mkdir(parents=True, exist_ok=True)
+        dictionary_update_path.write_text(json.dumps(dictionary_update, ensure_ascii=False, indent=2), encoding="utf-8")
+        lifecycle["dictionary_update"] = str(dictionary_update_path)
     lifecycle_out.write_text(json.dumps(lifecycle, ensure_ascii=False, indent=2), encoding="utf-8")
     report["manual_review"]["review_csv"] = str(review_csv)
     report["manual_review"]["lifecycle_records"] = str(lifecycle_out)
+    if dictionary_update_path is not None:
+        report["manual_review"]["dictionary_update"] = str(dictionary_update_path)
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=True, indent=2))
     return 0

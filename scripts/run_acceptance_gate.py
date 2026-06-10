@@ -18,8 +18,15 @@ EXTERNAL_BALANCED_REPORT = "data/external_balanced_source_evidence_pack_report.j
 EXTERNAL_BALANCED_JSONL = "data/external_balanced_source_evidence_pack.jsonl"
 JOINED_EVIDENCE_REPORT = "data/collection_phase_multi_source_evidence_pack_report.json"
 JOINED_EVIDENCE_JSONL = "data/collection_phase_multi_source_evidence_pack.jsonl"
+CLUE_EVIDENCE_INDEX = "data/collection_phase_multi_source_clue_evidence_index.json"
+JOINED_CLUES_JSONL = "data/collection_phase_multi_source_clues.jsonl"
+JOINED_GRAPH_RELATIONS_JSONL = "data/collection_phase_multi_source_graph_relations.jsonl"
+SCALE_BENCHMARK_REPORT = "data/scale_benchmark_report.json"
+OCR_HARDSET_REPORT = "data/ocr_hardset_report.json"
 SOURCE_SMOKE_REPORT = "data/source_smoke_report.json"
 SOURCE_LIVE_SMOKE_REPORT = "data/source_live_smoke_report.json"
+AUTHORIZED_SOURCE_RERUN_REPORT = "data/authorized_source_rerun_pack_report.json"
+AUTHORIZED_SOURCE_RERUN_JSONL = "data/authorized_source_rerun_pack.jsonl"
 STALE_EVAL_REPORT = "data/eval_report.json"
 
 
@@ -118,12 +125,18 @@ COMMANDS = [
             "data/acceptance_direct_final3_raw_classifications.jsonl",
             "--entities",
             "data/acceptance_direct_final3_raw_entities.jsonl",
+            "--clues",
+            JOINED_CLUES_JSONL,
+            "--graph-relations",
+            JOINED_GRAPH_RELATIONS_JSONL,
             "--hydrated",
             "data/acceptance_direct_final3_hydrated_pages.jsonl",
             "--output",
             JOINED_EVIDENCE_JSONL,
             "--report-out",
             JOINED_EVIDENCE_REPORT,
+            "--clue-index-output",
+            CLUE_EVIDENCE_INDEX,
         ],
         "skip_evidence_pack",
     ),
@@ -275,14 +288,27 @@ def build_summary(
     clues = load_json(root_path / CLUE_RECALL_REPORT)
     external_report = load_json(root_path / EXTERNAL_BALANCED_REPORT)
     joined_report = load_json(root_path / JOINED_EVIDENCE_REPORT)
+    clue_evidence_index_exists = (root_path / CLUE_EVIDENCE_INDEX).exists()
+    scale_benchmark_exists = (root_path / SCALE_BENCHMARK_REPORT).exists()
+    ocr_hardset_exists = (root_path / OCR_HARDSET_REPORT).exists()
     source_smoke_exists = (root_path / SOURCE_SMOKE_REPORT).exists()
     source_live_smoke_exists = (root_path / SOURCE_LIVE_SMOKE_REPORT).exists()
+    authorized_source_rerun_report_exists = (root_path / AUTHORIZED_SOURCE_RERUN_REPORT).exists()
+    authorized_source_rerun_jsonl_exists = (root_path / AUTHORIZED_SOURCE_RERUN_JSONL).exists()
     source_smoke_report = load_json(root_path / SOURCE_SMOKE_REPORT) if source_smoke_exists else {}
     source_live_smoke_report = (
         load_json(root_path / SOURCE_LIVE_SMOKE_REPORT)
         if source_live_smoke_exists
         else {}
     )
+    authorized_source_rerun_report = (
+        load_json(root_path / AUTHORIZED_SOURCE_RERUN_REPORT)
+        if authorized_source_rerun_report_exists
+        else {}
+    )
+    clue_evidence_index = load_json(root_path / CLUE_EVIDENCE_INDEX) if clue_evidence_index_exists else {}
+    scale_benchmark_report = load_json(root_path / SCALE_BENCHMARK_REPORT) if scale_benchmark_exists else {}
+    ocr_hardset_report = load_json(root_path / OCR_HARDSET_REPORT) if ocr_hardset_exists else {}
 
     artifact_sources = {
         "manual_heldout": artifact_metadata(root_path, MANUAL_HELDOUT_REPORT),
@@ -292,10 +318,27 @@ def build_summary(
         "joined_evidence_pack_report": artifact_metadata(root_path, JOINED_EVIDENCE_REPORT),
         "joined_evidence_pack_jsonl": artifact_metadata(root_path, JOINED_EVIDENCE_JSONL),
     }
+    if clue_evidence_index_exists:
+        artifact_sources["clue_evidence_index"] = artifact_metadata(root_path, CLUE_EVIDENCE_INDEX)
+    if scale_benchmark_exists:
+        artifact_sources["scale_benchmark_report"] = artifact_metadata(root_path, SCALE_BENCHMARK_REPORT)
+    if ocr_hardset_exists:
+        artifact_sources["ocr_hardset_report"] = artifact_metadata(root_path, OCR_HARDSET_REPORT)
     if source_smoke_exists:
         artifact_sources["source_smoke_report"] = artifact_metadata(root_path, SOURCE_SMOKE_REPORT)
     if source_live_smoke_exists:
         artifact_sources["source_live_smoke_report"] = artifact_metadata(root_path, SOURCE_LIVE_SMOKE_REPORT)
+    authorized_source_rerun_pair_seen = authorized_source_rerun_report_exists or authorized_source_rerun_jsonl_exists
+    authorized_source_rerun_pair_complete = authorized_source_rerun_report_exists and authorized_source_rerun_jsonl_exists
+    if authorized_source_rerun_pair_seen:
+        artifact_sources["authorized_source_rerun_pack_report"] = artifact_metadata(
+            root_path,
+            AUTHORIZED_SOURCE_RERUN_REPORT,
+        )
+        artifact_sources["authorized_source_rerun_pack_jsonl"] = artifact_metadata(
+            root_path,
+            AUTHORIZED_SOURCE_RERUN_JSONL,
+        )
 
     stale_artifacts = []
     if (root_path / STALE_EVAL_REPORT).exists():
@@ -330,17 +373,70 @@ def build_summary(
             "credentialed live artifacts are attached and listed as authoritative sources."
         ),
     }
+    if clue_evidence_index_exists:
+        summary["clue_evidence_index"] = summarize_clue_evidence_index(clue_evidence_index)
+    if scale_benchmark_exists:
+        summary["scale_benchmark"] = summarize_scale_benchmark(scale_benchmark_report)
+    if ocr_hardset_exists:
+        summary["ocr_hardset"] = summarize_ocr_hardset(ocr_hardset_report)
     report_sources = {
         "manual_heldout": (MANUAL_HELDOUT_REPORT, manual),
         "clue_recall": (CLUE_RECALL_REPORT, clues),
         "external_balanced_pack_report": (EXTERNAL_BALANCED_REPORT, external_report),
         "joined_evidence_pack_report": (JOINED_EVIDENCE_REPORT, joined_report),
     }
+    if clue_evidence_index_exists:
+        report_sources["clue_evidence_index"] = (CLUE_EVIDENCE_INDEX, summary["clue_evidence_index"])
+    if scale_benchmark_exists:
+        report_sources["scale_benchmark_report"] = (SCALE_BENCHMARK_REPORT, summary["scale_benchmark"])
+    if ocr_hardset_exists:
+        report_sources["ocr_hardset_report"] = (OCR_HARDSET_REPORT, summary["ocr_hardset"])
     if source_smoke_exists:
         report_sources["source_smoke_report"] = (SOURCE_SMOKE_REPORT, source_smoke_report)
     if source_live_smoke_exists:
         report_sources["source_live_smoke_report"] = (SOURCE_LIVE_SMOKE_REPORT, source_live_smoke_report)
+    if authorized_source_rerun_report_exists:
+        summary["authorized_source_rerun"] = {
+            **summarize_authorized_source_rerun(authorized_source_rerun_report),
+            "artifact_pair_complete": authorized_source_rerun_pair_complete,
+            "artifact_paths": {
+                "report": AUTHORIZED_SOURCE_RERUN_REPORT,
+                "jsonl": AUTHORIZED_SOURCE_RERUN_JSONL,
+            },
+        }
+        report_sources["authorized_source_rerun_pack_report"] = (
+            AUTHORIZED_SOURCE_RERUN_REPORT,
+            authorized_source_rerun_report,
+        )
     gate_failures = collect_gate_failures(summary, report_sources)
+    if authorized_source_rerun_pair_seen and not authorized_source_rerun_pair_complete:
+        gate_failures.append(
+            {
+                "type": "authorized_source_rerun_artifact_pair_incomplete",
+                "name": "authorized_source_rerun_pack",
+                "report_path": AUTHORIZED_SOURCE_RERUN_REPORT,
+                "jsonl_path": AUTHORIZED_SOURCE_RERUN_JSONL,
+                "report_exists": authorized_source_rerun_report_exists,
+                "jsonl_exists": authorized_source_rerun_jsonl_exists,
+            }
+        )
+    if (
+        authorized_source_rerun_pair_complete
+        and authorized_source_rerun_report.get("status") == "completed"
+    ):
+        jsonl_validation = validate_jsonl_object_rows(
+            root_path / AUTHORIZED_SOURCE_RERUN_JSONL,
+            report=authorized_source_rerun_report,
+        )
+        if jsonl_validation.get("status") != "valid":
+            gate_failures.append(
+                {
+                    "type": "authorized_source_rerun_jsonl_invalid",
+                    "name": "authorized_source_rerun_pack_jsonl",
+                    "path": AUTHORIZED_SOURCE_RERUN_JSONL,
+                    "reason": jsonl_validation.get("reason"),
+                }
+            )
     summary["gate_failures"] = gate_failures
     if gate_failures:
         summary["status"] = "failed"
@@ -420,6 +516,297 @@ def summarize_evidence_pack(report: dict[str, Any]) -> dict[str, Any]:
         "warnings": report.get("warnings"),
         "claim_boundary": report.get("claim_boundary"),
     }
+
+
+def summarize_authorized_source_rerun(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "row_count": report.get("row_count"),
+        "real_external_row_count": report.get("real_external_row_count"),
+        "loopback_row_count": report.get("loopback_row_count"),
+        "credential_boundary": report.get("credential_boundary"),
+        "source_coverage": report.get("source_coverage"),
+        "snapshot_coverage": report.get("snapshot_coverage"),
+        "failure_summary": report.get("failure_summary"),
+        "collection_window": report.get("collection_window"),
+        "claim_boundary": report.get("claim_boundary"),
+    }
+
+
+def summarize_clue_evidence_index(index: dict[str, Any]) -> dict[str, Any]:
+    report = embedded_report(index, "report")
+    rows_value = index.get("rows")
+    rows = rows_value if isinstance(rows_value, list) else []
+    actual_answer_chain_card_count = _clue_index_answer_chain_card_count(rows)
+    invalid_reason = ""
+    if report.get("_artifact_error"):
+        invalid_reason = "invalid_embedded_report"
+    elif not isinstance(rows_value, list):
+        invalid_reason = "invalid_rows"
+    elif any(not isinstance(row, dict) for row in rows):
+        invalid_reason = "invalid_row"
+    elif any(not isinstance(row.get("answer_chain"), list) for row in rows):
+        invalid_reason = "invalid_answer_chain"
+    elif any(
+        not isinstance(card, dict)
+        for row in rows
+        for card in row.get("answer_chain", [])
+    ):
+        invalid_reason = "invalid_answer_chain_card"
+    elif _int_or_none(report.get("high_quality_clue_count")) is None:
+        invalid_reason = "invalid_high_quality_clue_count"
+    elif _int_or_none(report.get("indexed_clue_count")) is None:
+        invalid_reason = "invalid_indexed_clue_count"
+    elif _int_or_none(report.get("answer_chain_card_count")) is None:
+        invalid_reason = "invalid_answer_chain_card_count"
+    elif _int_or_none(report.get("missing_evidence_trace_count")) is None:
+        invalid_reason = "invalid_missing_evidence_trace_count"
+    elif _int_or_none(report.get("indexed_clue_count")) > len(rows):
+        invalid_reason = "indexed_clue_count_exceeds_rows"
+    elif _int_or_none(report.get("answer_chain_card_count")) != actual_answer_chain_card_count:
+        invalid_reason = "answer_chain_card_count_mismatch"
+    status = "invalid" if invalid_reason else report.get("status")
+    summary = {
+        "status": status,
+        "row_count": len(rows),
+        "high_quality_clue_count": report.get("high_quality_clue_count"),
+        "indexed_clue_count": report.get("indexed_clue_count"),
+        "answer_chain_card_count": report.get("answer_chain_card_count"),
+        "missing_evidence_trace_count": report.get("missing_evidence_trace_count"),
+        "claim_boundary": report.get("claim_boundary"),
+    }
+    if report.get("_artifact_error"):
+        summary["_artifact_error_type"] = report.get("_artifact_error_type")
+        summary["_artifact_error"] = report.get("_artifact_error")
+    elif invalid_reason:
+        summary["invalid_reason"] = invalid_reason
+    return summary
+
+
+def _clue_index_answer_chain_card_count(rows: list[Any]) -> int:
+    count = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        answer_chain = row.get("answer_chain")
+        if not isinstance(answer_chain, list):
+            continue
+        count += sum(1 for card in answer_chain if isinstance(card, dict))
+    return count
+
+
+def summarize_scale_benchmark(report: dict[str, Any]) -> dict[str, Any]:
+    scenarios = report.get("scenarios") if isinstance(report.get("scenarios"), list) else []
+    parsed_sample_sizes = [
+        _int_or_none(scenario.get("sample_size"))
+        for scenario in scenarios
+        if isinstance(scenario, dict)
+    ]
+    sample_sizes = [sample_size for sample_size in parsed_sample_sizes if sample_size is not None]
+    has_invalid_sample_size = len(sample_sizes) != len(parsed_sample_sizes)
+    cost_values = [
+        parsed
+        for scenario in scenarios
+        if isinstance(scenario, dict)
+        for parsed in [_float_or_none(scenario.get("estimated_llm_cost_usd"))]
+    ]
+    has_invalid_cost = any(parsed is None for parsed in cost_values)
+    is_invalid = has_invalid_cost or has_invalid_sample_size
+    total_cost = None if has_invalid_cost else round(sum(cost_values), 8)
+    return {
+        "status": "invalid" if is_invalid else report.get("status"),
+        "run_type": report.get("run_type"),
+        "profile": report.get("profile"),
+        "batch_size": report.get("batch_size"),
+        "default_defense_scales": report.get("default_defense_scales"),
+        "scenario_count": len(scenarios),
+        "sample_sizes": sample_sizes,
+        "max_sample_size": max(sample_sizes) if sample_sizes else None,
+        "estimated_llm_cost_usd_total": total_cost,
+        "claim_boundary": report.get("claim_boundary"),
+    }
+
+
+def summarize_ocr_hardset(report: dict[str, Any]) -> dict[str, Any]:
+    invalid_reason = ""
+    if report.get("_artifact_error"):
+        invalid_reason = "artifact_load_failed"
+    elif report.get("status") == "completed" and _int_or_none(report.get("record_count")) is None:
+        invalid_reason = "invalid_record_count"
+    elif report.get("status") == "completed" and not isinstance(report.get("ocr_quality_metrics"), dict):
+        invalid_reason = "invalid_ocr_quality_metrics"
+    elif report.get("status") == "completed" and not isinstance(report.get("image_kind_coverage"), dict):
+        invalid_reason = "invalid_image_kind_coverage"
+    elif report.get("status") == "completed" and not isinstance(report.get("real_scene_assessment"), dict):
+        invalid_reason = "invalid_real_scene_assessment"
+    status = "invalid" if invalid_reason and invalid_reason != "artifact_load_failed" else report.get("status")
+    if report.get("_artifact_error"):
+        status = report.get("status")
+    return {
+        "status": status,
+        "run_type": report.get("run_type"),
+        "record_count": report.get("record_count"),
+        "ocr_quality_metrics": report.get("ocr_quality_metrics"),
+        "image_kind_coverage": report.get("image_kind_coverage"),
+        "real_scene_assessment": report.get("real_scene_assessment"),
+        "claim_boundary": report.get("claim_boundary"),
+        **({"invalid_reason": invalid_reason} if invalid_reason and invalid_reason != "artifact_load_failed" else {}),
+        **({"_artifact_error_type": report.get("_artifact_error_type"), "_artifact_error": report.get("_artifact_error")} if report.get("_artifact_error") else {}),
+    }
+
+
+def embedded_report(artifact: dict[str, Any], key: str) -> dict[str, Any]:
+    if artifact.get("_artifact_error"):
+        return artifact
+    candidate = artifact.get(key)
+    if isinstance(candidate, dict):
+        return candidate
+    if key in artifact:
+        return {
+            "status": "invalid",
+            "_artifact_error_type": "InvalidEmbeddedReport",
+            "_artifact_error": f"expected object at {key}",
+        }
+    return artifact
+
+
+def validate_jsonl_object_rows(path: Path, *, report: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not path.exists():
+        return {"status": "invalid", "reason": "missing_jsonl"}
+    rows: list[dict[str, Any]] = []
+    saw_non_empty_line = False
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            saw_non_empty_line = True
+            payload = json.loads(line)
+            if not isinstance(payload, dict) or not payload:
+                return {"status": "invalid", "reason": "non_object_jsonl_row"}
+            rows.append(payload)
+    except json.JSONDecodeError:
+        return {"status": "invalid", "reason": "malformed_jsonl"}
+    if not saw_non_empty_line:
+        return {"status": "invalid", "reason": "empty_jsonl"}
+    object_count = len(rows)
+    if object_count == 0:
+        return {"status": "invalid", "reason": "no_json_object_rows"}
+    if report:
+        if report.get("status") == "completed":
+            report_shape_error = _authorized_rerun_completed_report_shape_error(report)
+            if report_shape_error:
+                return {"status": "invalid", "reason": report_shape_error}
+        row_count = _int_or_none(report.get("row_count"))
+        if row_count is not None and object_count != row_count:
+            return {"status": "invalid", "reason": "row_count_mismatch", "object_row_count": object_count}
+        real_external_count = sum(1 for row in rows if row.get("is_real_external_source") is True)
+        expected_real_external_count = _int_or_none(report.get("real_external_row_count"))
+        if expected_real_external_count is not None and real_external_count != expected_real_external_count:
+            return {
+                "status": "invalid",
+                "reason": "real_external_row_count_mismatch",
+                "real_external_row_count": real_external_count,
+            }
+        if any(
+            row.get("is_real_external_source") is True
+            and not _is_claimable_authorized_rerun_jsonl_row(row)
+            for row in rows
+        ):
+            return {"status": "invalid", "reason": "real_external_row_without_claimable_evidence"}
+        if report.get("status") == "completed" and not any(_is_claimable_authorized_rerun_jsonl_row(row) for row in rows):
+            return {"status": "invalid", "reason": "completed_report_without_claimable_rows"}
+        covered_group_mismatch = _authorized_rerun_group_mismatch(rows, report)
+        if covered_group_mismatch:
+            return {
+                "status": "invalid",
+                "reason": "covered_group_count_mismatch",
+                **covered_group_mismatch,
+            }
+    return {"status": "valid", "object_row_count": object_count}
+
+
+def _authorized_rerun_completed_report_shape_error(report: dict[str, Any]) -> str:
+    if _int_or_none(report.get("row_count")) is None:
+        return "missing_report_row_count"
+    if _int_or_none(report.get("real_external_row_count")) is None:
+        return "missing_report_real_external_row_count"
+    covered_groups = nested(report, "source_coverage", "covered_groups")
+    if not isinstance(covered_groups, dict):
+        return "missing_report_covered_groups"
+    for value in covered_groups.values():
+        if _int_or_none(value) is None:
+            return "missing_report_covered_groups"
+    return ""
+
+
+def _is_claimable_authorized_rerun_jsonl_row(row: dict[str, Any]) -> bool:
+    return (
+        row.get("is_real_external_source") is True
+        and bool(row.get("capture_snapshot_uri"))
+        and bool(row.get("raw_payload_uri"))
+        and bool(row.get("source_groups"))
+    )
+
+
+def _authorized_rerun_group_mismatch(rows: list[dict[str, Any]], report: dict[str, Any]) -> dict[str, Any]:
+    checked_groups = (
+        "real_telegram",
+        "public_account_or_article",
+        "secondhand_market",
+        "crowdsourcing_platform",
+        "im_or_group",
+        "social_or_forum",
+        "vertical_or_technical",
+    )
+    covered_groups = nested(report, "source_coverage", "covered_groups") or {}
+    if not isinstance(covered_groups, dict):
+        return {}
+    actual_counts = {group: 0 for group in checked_groups}
+    for row in rows:
+        if row.get("is_real_external_source") is not True:
+            continue
+        groups = _source_groups_from_jsonl_row(row)
+        for group in checked_groups:
+            if group in groups:
+                actual_counts[group] += 1
+    for group in checked_groups:
+        expected = _int_or_none(covered_groups.get(group))
+        if expected is None or expected == 0:
+            continue
+        if actual_counts.get(group, 0) != expected:
+            return {
+                "group": group,
+                "expected_count": expected,
+                "actual_count": actual_counts.get(group, 0),
+            }
+    return {}
+
+
+def _source_groups_from_jsonl_row(row: dict[str, Any]) -> set[str]:
+    groups = row.get("source_groups")
+    if isinstance(groups, str):
+        return {item.strip() for item in groups.split(",") if item.strip()}
+    if isinstance(groups, list):
+        return {str(item).strip() for item in groups if str(item).strip()}
+    return set()
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def demo_paths() -> dict[str, Any]:

@@ -208,6 +208,7 @@ def build_report(
             "optional_operator_engines": ["TesseractCliOCREngine", "cloud_ocr_callable"],
             "comparison_contract": "OCRImageTextAdapter accepts multiple named engines and records per-engine outputs.",
         },
+        "real_scene_assessment": _real_scene_assessment(records, manifest_path=manifest_path),
         "claim_boundary": (
             "This hard set validates the image-text contract and deterministic pixel OCR path; production OCR quality "
             "still depends on the injected external engine and separately authorized screenshots/posters."
@@ -347,6 +348,150 @@ def _ocr_quality_metrics(records: Iterable[dict[str, Any]]) -> dict[str, int | f
         "substring_match_count": substring_match_count,
         "substring_match_rate": _rate(substring_match_count, evaluated_count),
     }
+
+
+def _real_scene_assessment(records: Iterable[dict[str, Any]], *, manifest_path: str | Path | None) -> dict[str, Any]:
+    record_list = list(records)
+    target_range = {"min": 30, "max": 50}
+    real_records = _authorized_real_scene_records(record_list, manifest_path=manifest_path)
+    authorized_count = len(real_records)
+    if not manifest_path:
+        coverage_status = "not_real_scene_manifest"
+    elif authorized_count >= target_range["min"]:
+        coverage_status = "completed_real_authorized_screenshots"
+    else:
+        coverage_status = "insufficient_real_authorized_screenshots"
+    return {
+        "target_range": target_range,
+        "authorized_manifest_count": authorized_count,
+        "coverage_status": coverage_status,
+        "image_kind_counts": _counts(record.get("image_kind") for record in real_records if record.get("image_kind")),
+        "image_kind_coverage": _image_kind_coverage(real_records),
+        "ocr_quality_metrics": _ocr_quality_metrics(real_records),
+        "entity_extraction_impact": _entity_extraction_impact(real_records),
+        "failure_samples": _real_scene_failure_samples(real_records),
+        "claim_boundary": (
+            "Generated PBM hardset is not real-scene proof; manifest rows are only as authorized as the supplied manifest."
+            if not manifest_path
+            else "Real-scene OCR claims are limited to supplied authorized manifest rows; generated PBM hardset is not real-scene proof."
+        ),
+    }
+
+
+def _authorized_real_scene_records(
+    records: Iterable[dict[str, Any]], *, manifest_path: str | Path | None
+) -> list[dict[str, Any]]:
+    if not manifest_path:
+        return []
+    allowed_kinds = {"chat", "poster", "qr", "screenshot"}
+    output: list[dict[str, Any]] = []
+    for record in records:
+        image_kind = str(record.get("image_kind") or "").strip().lower()
+        source_type = str(record.get("source_type") or "").strip().lower()
+        legal_basis = str(record.get("legal_basis") or "").strip().upper()
+        has_image = bool(record.get("image_path") or record.get("screenshot_path") or record.get("image_evidence"))
+        is_authorized = _has_explicit_authorization(legal_basis)
+        if is_authorized and (image_kind in allowed_kinds or source_type == "image" or has_image):
+            output.append(record)
+    return output
+
+
+def _has_explicit_authorization(legal_basis: str) -> bool:
+    tokens = re.findall(r"[A-Z0-9]+", str(legal_basis or "").upper())
+    if not tokens:
+        return False
+    token_text = "_".join(tokens)
+    authorized_legal_bases = {
+        "PUBLIC_COMPLIANT_DATA",
+        "AUTHORIZED_PARTNER",
+        "THIRD_PARTY_AUTHORIZED_FEED",
+        "INTERNAL_AUTHORIZED_SOURCE",
+        "AUTHORIZED_SOURCE",
+        "CONSENTED_CAPTURE",
+        "LICENSED_DATA",
+        "PERMISSION_GRANTED",
+    }
+    return token_text in authorized_legal_bases
+
+
+def _entity_extraction_impact(records: Iterable[dict[str, Any]]) -> dict[str, int | float]:
+    expected_count = 0
+    supported_count = 0
+    for record in records:
+        haystack = normalize_for_metric(f"{record.get('ocr_text') or ''} {record.get('content_text') or ''}")
+        for entity in record.get("expected_entities", []) or []:
+            if not isinstance(entity, Mapping):
+                continue
+            expected = normalize_for_metric(entity.get("normalized_value"))
+            if not expected:
+                continue
+            expected_count += 1
+            if expected in haystack:
+                supported_count += 1
+    missing_count = expected_count - supported_count
+    return {
+        "expected_entity_count": expected_count,
+        "ocr_supported_entity_count": supported_count,
+        "missing_entity_count": missing_count,
+        "missing_entity_rate": _rate(missing_count, expected_count),
+    }
+
+
+def _real_scene_failure_samples(records: Iterable[dict[str, Any]], *, limit: int = 5) -> list[dict[str, Any]]:
+    samples: list[dict[str, Any]] = []
+    for record in records:
+        reasons = _real_scene_failure_reasons(record)
+        if not reasons:
+            continue
+        samples.append(
+            {
+                "trace_id": record.get("trace_id"),
+                "ocr_status": record.get("ocr_status"),
+                "reason": ";".join(reasons),
+                "ocr_errors": _normalized_error_items(record.get("ocr_errors"))[:3],
+            }
+        )
+        if len(samples) >= limit:
+            break
+    return samples
+
+
+def _normalized_error_items(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        return [json.dumps(value, ensure_ascii=False, sort_keys=True)]
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+def _real_scene_failure_reasons(record: Mapping[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    status = str(record.get("ocr_status") or "").strip()
+    if status and status not in {"completed"}:
+        reasons.append(status)
+    expected = normalize_for_metric(record.get("expected_image_text"))
+    actual = normalize_for_metric(record.get("ocr_text") or record.get("content_text"))
+    if expected and not actual:
+        reasons.append("missing_ocr_text")
+    elif expected and expected not in actual:
+        reasons.append("missing_expected_image_text")
+    missing_entities = []
+    haystack = normalize_for_metric(f"{record.get('ocr_text') or ''} {record.get('content_text') or ''}")
+    for entity in record.get("expected_entities", []) or []:
+        if not isinstance(entity, Mapping):
+            continue
+        value = normalize_for_metric(entity.get("normalized_value"))
+        if value and value not in haystack:
+            missing_entities.append(value)
+    if missing_entities:
+        reasons.append("missing_expected_entities")
+    if record.get("ocr_errors") and "ocr_error" not in reasons:
+        reasons.append("ocr_errors")
+    return reasons
 
 
 def _ocr_engine_quality_metrics(records: Iterable[dict[str, Any]]) -> dict[str, dict[str, int | float]]:

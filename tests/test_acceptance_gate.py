@@ -101,6 +101,65 @@ def _write_completed_acceptance_artifacts(root):
     _write_text(data / "collection_phase_multi_source_evidence_pack.jsonl", '{"id":"joined"}\n')
     _write_json(data / "source_smoke_report.json", {"status": "completed"})
     _write_json(data / "source_live_smoke_report.json", {"status": "completed"})
+    _write_json(
+        data / "collection_phase_multi_source_clue_evidence_index.json",
+        {
+            "rows": [{"clue_id": "clue-1", "answer_chain": [{"trace_id": "trace-1"}]}],
+            "report": {
+                "status": "completed",
+                "high_quality_clue_count": 2,
+                "indexed_clue_count": 1,
+                "answer_chain_card_count": 1,
+                "missing_evidence_trace_count": 1,
+                "claim_boundary": "clue index only",
+            },
+        },
+    )
+    _write_json(
+        data / "scale_benchmark_report.json",
+        {
+            "status": "completed",
+            "run_type": "scale_benchmark_core_routing",
+            "profile": "fast",
+            "batch_size": 1000,
+            "default_defense_scales": [1000, 10000, 100000],
+            "scenarios": [
+                {
+                    "sample_size": 1000,
+                    "llm_call_count": 0,
+                    "estimated_llm_tokens": 0,
+                    "estimated_llm_cost_usd": 0.0,
+                    "clue_recall_proxy": 0.61,
+                    "recall_change_vs_previous_scale": None,
+                },
+                {
+                    "sample_size": 10000,
+                    "llm_call_count": 2,
+                    "estimated_llm_tokens": 800,
+                    "estimated_llm_cost_usd": 0.00012,
+                    "clue_recall_proxy": 0.63,
+                    "recall_change_vs_previous_scale": 0.02,
+                },
+            ],
+            "claim_boundary": "deterministic local throughput and routing-cost proof; not a live LLM latency or live LLM cost proof",
+        },
+    )
+    _write_json(
+        data / "ocr_hardset_report.json",
+        {
+            "status": "completed",
+            "run_type": "generated_pbm_hardset",
+            "record_count": 20,
+            "ocr_quality_metrics": {"evaluated_count": 20, "exact_match_rate": 1.0},
+            "image_kind_coverage": {"complete": True},
+            "real_scene_assessment": {
+                "target_range": {"min": 30, "max": 50},
+                "authorized_manifest_count": 30,
+                "coverage_status": "completed_real_authorized_screenshots",
+            },
+            "claim_boundary": "OCR report only",
+        },
+    )
     _write_json(data / "eval_report.json", {"status": "completed", "primary_classification_f1": 0.11})
 
 
@@ -120,6 +179,9 @@ def test_summary_aggregates_current_artifacts_and_marks_stale_eval_report(tmp_pa
     assert "data/external_balanced_source_evidence_pack.jsonl" in source_paths
     assert "data/collection_phase_multi_source_evidence_pack_report.json" in source_paths
     assert "data/collection_phase_multi_source_evidence_pack.jsonl" in source_paths
+    assert "data/collection_phase_multi_source_clue_evidence_index.json" in source_paths
+    assert "data/scale_benchmark_report.json" in source_paths
+    assert "data/ocr_hardset_report.json" in source_paths
     assert "data/source_smoke_report.json" in source_paths
     assert "data/source_live_smoke_report.json" in source_paths
     assert "data/eval_report.json" not in source_paths
@@ -169,6 +231,18 @@ def test_summary_aggregates_current_artifacts_and_marks_stale_eval_report(tmp_pa
     assert summary["evidence_pack"]["joined_multi_source"]["source_evidence_counts"]["has_source_evidence"] == 300
     assert summary["evidence_pack"]["joined_multi_source"]["source_evidence_counts_by_category"]["账号交易"] == 44
     assert summary["evidence_pack"]["joined_multi_source"]["claim_boundary"] == "joined pack only"
+    assert summary["clue_evidence_index"]["high_quality_clue_count"] == 2
+    assert summary["clue_evidence_index"]["indexed_clue_count"] == 1
+    assert summary["clue_evidence_index"]["answer_chain_card_count"] == 1
+    assert summary["clue_evidence_index"]["missing_evidence_trace_count"] == 1
+    assert summary["scale_benchmark"]["default_defense_scales"] == [1000, 10000, 100000]
+    assert summary["scale_benchmark"]["scenario_count"] == 2
+    assert summary["scale_benchmark"]["sample_sizes"] == [1000, 10000]
+    assert summary["scale_benchmark"]["estimated_llm_cost_usd_total"] == 0.00012
+    assert summary["scale_benchmark"]["claim_boundary"].startswith("deterministic local")
+    assert summary["ocr_hardset"]["record_count"] == 20
+    assert summary["ocr_hardset"]["real_scene_assessment"]["authorized_manifest_count"] == 30
+    assert summary["ocr_hardset"]["real_scene_assessment"]["coverage_status"] == "completed_real_authorized_screenshots"
 
     assert "offline_stable_demo" in summary["demo_paths"]
     assert "authorized_network_demo" in summary["demo_paths"]
@@ -249,6 +323,236 @@ def test_empty_existing_smoke_artifact_fails_summary_status(tmp_path):
     } in summary["gate_failures"]
 
 
+def test_absent_optional_artifacts_do_not_fail_summary(tmp_path):
+    _write_completed_acceptance_artifacts(tmp_path)
+    for name in (
+        "collection_phase_multi_source_clue_evidence_index.json",
+        "scale_benchmark_report.json",
+        "ocr_hardset_report.json",
+    ):
+        (tmp_path / "data" / name).unlink()
+
+    summary = run_acceptance_gate.build_summary(root=tmp_path, command_results=[])
+
+    assert summary["status"] == "completed"
+    assert "clue_evidence_index" not in summary["artifact_sources"]
+    assert "scale_benchmark_report" not in summary["artifact_sources"]
+    assert "ocr_hardset_report" not in summary["artifact_sources"]
+    assert "clue_evidence_index" not in summary
+    assert "scale_benchmark" not in summary
+    assert "ocr_hardset" not in summary
+
+
+def test_malformed_present_optional_scale_artifact_fails_without_crashing(tmp_path):
+    _write_completed_acceptance_artifacts(tmp_path)
+    _write_json(
+        tmp_path / "data" / "scale_benchmark_report.json",
+        {
+            "status": "completed",
+            "default_defense_scales": [1000, 10000, 100000],
+            "scenarios": [
+                {"sample_size": 1000, "estimated_llm_cost_usd": "not-a-number"},
+                {"estimated_llm_cost_usd": 0.1},
+            ],
+        },
+    )
+
+    summary = run_acceptance_gate.build_summary(root=tmp_path, command_results=[])
+
+    assert summary["status"] == "failed"
+    assert summary["scale_benchmark"]["estimated_llm_cost_usd_total"] is None
+    assert summary["scale_benchmark"]["sample_sizes"] == [1000]
+    assert {
+        "type": "report_not_completed",
+        "name": "scale_benchmark_report",
+        "path": "data/scale_benchmark_report.json",
+        "status": "invalid",
+    } in summary["gate_failures"]
+
+
+def test_missing_scale_cost_field_fails_without_overclaiming_zero(tmp_path):
+    _write_completed_acceptance_artifacts(tmp_path)
+    _write_json(
+        tmp_path / "data" / "scale_benchmark_report.json",
+        {
+            "status": "completed",
+            "default_defense_scales": [1000, 10000, 100000],
+            "scenarios": [{"sample_size": 1000}],
+        },
+    )
+
+    summary = run_acceptance_gate.build_summary(root=tmp_path, command_results=[])
+
+    assert summary["status"] == "failed"
+    assert summary["scale_benchmark"]["status"] == "invalid"
+    assert summary["scale_benchmark"]["estimated_llm_cost_usd_total"] is None
+    assert {
+        "type": "report_not_completed",
+        "name": "scale_benchmark_report",
+        "path": "data/scale_benchmark_report.json",
+        "status": "invalid",
+    } in summary["gate_failures"]
+
+
+def test_malformed_scale_sample_sizes_fail_without_crashing(tmp_path):
+    _write_completed_acceptance_artifacts(tmp_path)
+    _write_json(
+        tmp_path / "data" / "scale_benchmark_report.json",
+        {
+            "status": "completed",
+            "default_defense_scales": [1000, 10000, 100000],
+            "scenarios": [
+                {"estimated_llm_cost_usd": 0.0},
+                {"sample_size": "", "estimated_llm_cost_usd": 0.1},
+                {"sample_size": "not-a-number", "estimated_llm_cost_usd": 0.2},
+            ],
+        },
+    )
+
+    summary = run_acceptance_gate.build_summary(root=tmp_path, command_results=[])
+
+    assert summary["status"] == "failed"
+    assert summary["scale_benchmark"]["status"] == "invalid"
+    assert summary["scale_benchmark"]["sample_sizes"] == []
+    assert {
+        "type": "report_not_completed",
+        "name": "scale_benchmark_report",
+        "path": "data/scale_benchmark_report.json",
+        "status": "invalid",
+    } in summary["gate_failures"]
+
+
+def test_malformed_ocr_optional_artifact_fails_summary(tmp_path):
+    _write_completed_acceptance_artifacts(tmp_path)
+    _write_json(
+        tmp_path / "data" / "ocr_hardset_report.json",
+        {
+            "status": "completed",
+            "record_count": "twenty",
+            "real_scene_assessment": "not-a-dict",
+        },
+    )
+
+    summary = run_acceptance_gate.build_summary(root=tmp_path, command_results=[])
+
+    assert summary["status"] == "failed"
+    assert summary["ocr_hardset"]["status"] == "invalid"
+    assert {
+        "type": "report_not_completed",
+        "name": "ocr_hardset_report",
+        "path": "data/ocr_hardset_report.json",
+        "status": "invalid",
+    } in summary["gate_failures"]
+
+
+def test_malformed_clue_index_rows_or_count_fails_summary(tmp_path):
+    _write_completed_acceptance_artifacts(tmp_path)
+    _write_json(
+        tmp_path / "data" / "collection_phase_multi_source_clue_evidence_index.json",
+        {
+            "rows": "not-a-list",
+            "report": {
+                "status": "completed",
+                "high_quality_clue_count": 1,
+                "indexed_clue_count": 1,
+                "answer_chain_card_count": 1,
+                "missing_evidence_trace_count": 0,
+            },
+        },
+    )
+
+    summary = run_acceptance_gate.build_summary(root=tmp_path, command_results=[])
+
+    assert summary["status"] == "failed"
+    assert summary["clue_evidence_index"]["status"] == "invalid"
+    assert {
+        "type": "report_not_completed",
+        "name": "clue_evidence_index",
+        "path": "data/collection_phase_multi_source_clue_evidence_index.json",
+        "status": "invalid",
+    } in summary["gate_failures"]
+
+
+def test_malformed_clue_index_row_shape_or_card_count_fails_summary(tmp_path):
+    _write_completed_acceptance_artifacts(tmp_path)
+    _write_json(
+        tmp_path / "data" / "collection_phase_multi_source_clue_evidence_index.json",
+        {
+            "rows": ["not-a-dict-row"],
+            "report": {
+                "status": "completed",
+                "high_quality_clue_count": 1,
+                "indexed_clue_count": 1,
+                "answer_chain_card_count": 999,
+                "missing_evidence_trace_count": 0,
+            },
+        },
+    )
+
+    summary = run_acceptance_gate.build_summary(root=tmp_path, command_results=[])
+
+    assert summary["status"] == "failed"
+    assert summary["clue_evidence_index"]["status"] == "invalid"
+    assert {
+        "type": "report_not_completed",
+        "name": "clue_evidence_index",
+        "path": "data/collection_phase_multi_source_clue_evidence_index.json",
+        "status": "invalid",
+    } in summary["gate_failures"]
+
+
+def test_malformed_clue_index_answer_chain_shape_fails_summary(tmp_path):
+    _write_completed_acceptance_artifacts(tmp_path)
+    _write_json(
+        tmp_path / "data" / "collection_phase_multi_source_clue_evidence_index.json",
+        {
+            "rows": [{"clue_id": "clue-1", "answer_chain": "not-a-list"}],
+            "report": {
+                "status": "completed",
+                "high_quality_clue_count": 1,
+                "indexed_clue_count": 0,
+                "answer_chain_card_count": 0,
+                "missing_evidence_trace_count": 0,
+            },
+        },
+    )
+
+    summary = run_acceptance_gate.build_summary(root=tmp_path, command_results=[])
+
+    assert summary["status"] == "failed"
+    assert summary["clue_evidence_index"]["status"] == "invalid"
+    assert {
+        "type": "report_not_completed",
+        "name": "clue_evidence_index",
+        "path": "data/collection_phase_multi_source_clue_evidence_index.json",
+        "status": "invalid",
+    } in summary["gate_failures"]
+
+
+def test_malformed_clue_index_nested_report_fails_summary(tmp_path):
+    _write_completed_acceptance_artifacts(tmp_path)
+    _write_json(
+        tmp_path / "data" / "collection_phase_multi_source_clue_evidence_index.json",
+        {
+            "status": "completed",
+            "rows": [],
+            "report": "not-a-dict",
+        },
+    )
+
+    summary = run_acceptance_gate.build_summary(root=tmp_path, command_results=[])
+
+    assert summary["status"] == "failed"
+    assert summary["clue_evidence_index"]["status"] == "invalid"
+    assert any(
+        failure["type"] == "artifact_parse_error"
+        and failure["name"] == "clue_evidence_index"
+        and failure["path"] == "data/collection_phase_multi_source_clue_evidence_index.json"
+        and failure["error_type"] == "InvalidEmbeddedReport"
+        for failure in summary["gate_failures"]
+    )
+
+
 def test_malformed_required_artifact_writes_failure_summary(tmp_path):
     _write_completed_acceptance_artifacts(tmp_path)
     (tmp_path / "data" / "manual_heldout_eval_current.json").write_text("{not json", encoding="utf-8")
@@ -274,3 +578,7 @@ def test_main_skip_commands_writes_summary_and_exits_zero(tmp_path, monkeypatch)
     assert exit_code == 0
     assert saved["status"] == "completed"
     assert {result["status"] for result in saved["commands"]} == {"skipped"}
+    evidence_command = next(result["command"] for result in saved["commands"] if result["name"] == "evidence_pack")
+    assert "--clues data/collection_phase_multi_source_clues.jsonl" in evidence_command
+    assert "--graph-relations data/collection_phase_multi_source_graph_relations.jsonl" in evidence_command
+    assert "--clue-index-output data/collection_phase_multi_source_clue_evidence_index.json" in evidence_command
