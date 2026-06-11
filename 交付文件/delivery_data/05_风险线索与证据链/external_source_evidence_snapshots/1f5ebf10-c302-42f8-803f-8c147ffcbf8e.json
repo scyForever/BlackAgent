@@ -1,0 +1,8 @@
+{
+  "trace_id": "1f5ebf10-c302-42f8-803f-8c147ffcbf8e",
+  "source_name": "tieba_blackgray_search",
+  "source_url": "https://tieba.baidu.com/p/7623299187",
+  "crawl_time": "2026-05-26T02:28:12.163540Z",
+  "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E7%9F%AD%E4%BF%A1%E9%AA%8C%E8%AF%81%E7%A0%81",
+  "content_text": "战网短信验证问题解答及更改方法 Image 6tieba.baidu.com/p/7623299187 3.将收到的短信验证码填入，点击\"验证密码\"确认绑定 4.绑定成功! 之后所有的验证码和短信通知都会发送至您的手机上。 哪些情况需要输入短信验证码： 当您无法登录战网通行证，申请以下4种服务就需要输入短信验证码帮助您修复账号。"
+}

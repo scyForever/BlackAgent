@@ -1,0 +1,268 @@
+risk_taxonomy:
+  fraud_traffic:
+    name: 诈骗引流
+    severity: high
+    primary_terms:
+      - 引流
+      - 导流
+      - 私域
+      - 返利
+      - 高佣
+      - 开户链接
+      - 拉新
+      - 落地页
+      - 跑分
+      - 代付
+    promotion_markers:
+      - 私聊
+      - 进群
+      - 联系
+      - 开户
+      - 拉新
+  account_trade:
+    name: 账号交易
+    severity: high
+    primary_terms:
+      - 账号买卖
+      - 卖号
+      - 收号
+      - 出号
+      - 批量出号
+      - 成品号
+      - 实名号
+      - 老号
+      - 白号
+      - 接码
+      - 验证码
+      - 短信验证码
+      - 实卡
+      - 虚拟号码
+      - 云短信
+      - 飞机号
+      - 电报号
+      - verified account
+      - 实名认证
+    required_entity_any_of:
+      - contact
+      - price
+      - platform
+    promotion_markers:
+      - 出售
+      - 出号
+      - 收号
+      - 联系
+      - 价格
+  tool_trade:
+    name: 工具交易
+    severity: high
+    primary_terms:
+      - 群控
+      - 云控
+      - 脚本
+      - 协议号
+      - 卡密
+      - 拉群端
+      - 开控
+      - 配置
+      - 后台
+      - session
+      - 自动注册
+      - 自动化工具
+      - 改机
+      - 外挂
+      - 接码平台
+      - 打粉工具
+      - 软件
+      - 更新
+      - 版本
+      - 功能
+      - 下载
+      - 新增
+      - 停用
+    required_entity_any_of:
+      - contact
+      - url
+      - tool_name
+    promotion_markers:
+      - 出售
+      - 低价
+      - 联系
+      - 卡密
+      - 开控
+      - 后台
+  click_farming:
+    name: 刷单作弊
+    severity: medium
+    primary_terms:
+      - 刷单
+      - 补单
+      - 放单
+      - 点赞任务
+      - 关注任务
+      - 做任务
+      - 垫付
+      - 返佣
+    promotion_markers:
+      - 日结
+      - 兼职
+      - 订单
+      - 卡单
+      - 支付失败
+  crowd_service:
+    name: 众包服务
+    severity: medium
+    primary_terms:
+      - 拉人
+      - 拉群
+      - 群发
+      - 私信
+      - 代发
+      - 接单
+      - 工作室
+      - 精准客户
+      - 采集群成员
+      - 活粉
+      - 代投
+      - 投放
+      - 打粉
+      - 代运营
+      - 矩阵
+      - 分成
+      - 转化
+      - 获客
+      - 保开群
+      - 机房
+      - 首页展示
+      - SEO
+      - 排名
+      - 推广
+      - 广告
+    promotion_markers:
+      - 业务联系
+      - 长期合作
+      - 老板
+      - 对接
+      - 担保
+      - 低价
+      - 包量
+
+secondary_labels:
+  诈骗引流:
+    返利引流:
+      terms: [返利, 高佣, 拉新]
+    跑分代付:
+      terms: [跑分, 代付, 流水]
+    私域导流:
+      terms: [私聊, 进群, 开户链接, 引流, 导流, 私域, 加v, 加微, 落地页]
+  工具交易:
+    群控脚本:
+      terms: [群控, 云控, 脚本, 协议号, 自动化工具, 拉群端, 开控, 后台, session, 软件, 更新, 版本, 功能, 下载, 新增, 停用, 私信功能, 群发版]
+    改机外挂:
+      terms: [改机, 外挂, 设备指纹]
+    卡密交易:
+      terms: [卡密, 授权码, 激活码]
+  账号交易:
+    接码注册:
+      terms: [接码, 验证码, 短信验证码, 批量注册, 虚拟号码, 云短信, 实卡]
+    实名账号买卖:
+      terms: [实名号, 卖号, 收号, 老号, 白号, 成品号, 出号, 号商, 实名认证]
+    账号养号:
+      terms: [养号, 权重号, 资料号, 飞机号, 电报号]
+  刷单作弊:
+    刷单返佣:
+      terms: [刷单, 补单, 返佣]
+    点赞关注任务:
+      terms: [点赞任务, 关注任务, 做任务]
+    垫付兼职:
+      terms: [垫付, 日结, 兼职]
+    订单卡单:
+      terms: [卡单, 支付失败, 支付通道, 下单, 订单, 发货, 补发, 退款, 售后]
+    卡单玩法:
+      terms: [卡单, 游戏, 单人局, 战局, 卖金, 文件, paypal, steam, 模组, 封号, 荒野大镖客]
+    手工做单:
+      terms: [手工单, 做单, 平台单, 线下订单, 打单]
+  众包服务:
+    拉群获客:
+      terms: [拉人, 拉群, 进群, 入群, 指定群, 拉满, 保开群, 邀请, 批量邀请, 加群, 机房, 秒出, 稳定不封]
+    打粉卖量:
+      terms: [打粉, 活粉, 活人粉, 僵尸粉, 克隆粉, 粉价, 全品类粉, 卖量]
+    代投服务:
+      terms: [群发, 私信, 代发, 广告, 投放, 代投, seo, SEO, 排名, 首页展示, 推广, 引流, 导流, 接单, 业务, 客户, 担保, 包量]
+    代运营:
+      terms: [代运营, 矩阵, 运营, 托管, 分成, 转化, 涨粉, 获客, 卖服务]
+
+theme_priors:
+  众包任务:
+    risk_category: 众包服务
+    bonus: 2
+  工具交易:
+    risk_category: 工具交易
+    bonus: 2
+  账号交易:
+    risk_category: 账号交易
+    bonus: 2
+  接码:
+    risk_category: 账号交易
+    bonus: 2
+  诈骗引流:
+    risk_category: 诈骗引流
+    bonus: 2
+  刷单作弊:
+    risk_category: 刷单作弊
+    bonus: 2
+
+classifier_policy:
+  review_only_categories: []
+  review_only_secondary_labels: [拉群语义, 打粉引流, 订单卡单, 卡单玩法, 手工做单]
+  review_auto_clear:
+    secondary_labels: [代投服务, 拉群获客, 打粉卖量, 代运营]
+    conflict_secondary_labels: [群控脚本, 拉群获客, 代投服务]
+    min_confidence: 0.78
+    min_evidence: 2
+    conflict_min_confidence: 0.90
+    conflict_min_margin: 2
+    require_resolved_conflict: true
+    require_non_theme_only: true
+  secondary_label_gate:
+    min_markers_for_final: 2
+    allow_single_marker_with_entity_context: true
+    entity_context_markers:
+      - "tg:"
+      - "@"
+      - "http"
+      - "www."
+      - 联系
+      - 客服
+      - usdt
+      - 价格
+      - 低价
+      - 验证码
+      - 手机号
+      - 邀请码
+      - 业务
+      - 接单
+      - 老板
+      - 合作
+      - 出售
+      - 出号
+      - 卖
+      - 买
+      - sale
+      - for sale
+      - 稳定
+      - 不封
+      - 24小时
+  category_priority:
+    众包服务: 5
+    工具交易: 4
+    账号交易: 3
+    诈骗引流: 2
+    刷单作弊: 1
+    unknown: 0
+  promotion_marker_groups:
+    crowd: [业务联系, 长期合作, 老板, 对接, 担保, 测试联系, 低价, 价格, 售后, 方案, 客服, 咨询, 量大, 包量, 优惠]
+    tool: [拉群端, 开控, 配置, 后台, session, 自动注册, 官方软件, 启动, 更新内容, 粉丝列表]
+    tool_update: [更新, 版本, 功能, 教程, 软件, 下载, 新增, 修复, 操作, 文档, 演示视频, 停用]
+    click: [卡单, 支付失败, 支付通道, 下单, 订单, 发货, 补发, 退款, 售后, 手工单, 做单]
+    click_core: [刷单, 补单, 垫付, 返佣, 做单, 手工单, 卡单]
+    solicitation: [出售, 出号, 卖号, 收号, 上车, 招募, 接单, 联系, 客服, 低价, 价格, 报价, 接洽, 合作, 代发, 代投, 包量, 秒出]

@@ -1,9 +1,0 @@
-{
-  "trace_id": "8128cfa2-891d-498c-905b-438d51fd65af",
-  "source_name": "direct_public_article_news_blog_search",
-  "source_url": "https://zhuanlan.zhihu.com/p/2015863232707978647",
-  "crawl_time": "2026-06-08T17:08:16.336614Z",
-  "raw_payload_uri": "https://www.bing.com/search?q=%E8%B4%A6%E5%8F%B7%E4%B9%B0%E5%8D%96%20%E6%96%87%E7%AB%A0",
-  "original_capture_snapshot_uri": "",
-  "content_text": "zhihu.com https://zhuanlan.zhihu.com 2026年3月13日 · 写在最后 2026 年的 Google 账号注册确实比前几年严格了不少，但只要环境干净、步骤正确，成功率还是很高的。 关键是 耐心 ——遇到验证失败别急着重复尝试，换换节点、等等时 …"
-}

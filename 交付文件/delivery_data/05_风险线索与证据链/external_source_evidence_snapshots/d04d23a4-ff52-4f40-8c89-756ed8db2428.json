@@ -1,0 +1,9 @@
+{
+  "trace_id": "d04d23a4-ff52-4f40-8c89-756ed8db2428",
+  "source_name": "tieba_task_fraud_search",
+  "source_url": "https://tieba.baidu.com/p/7761236508",
+  "crawl_time": "2026-05-26T02:34:14.339920Z",
+  "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E5%8D%A1%E5%8D%95",
+  "original_capture_snapshot_uri": "",
+  "content_text": "藏宝阁卖金遭恶意卡单？反击策略分享 Image 9tieba.baidu.com/p/7761236508 【讨论贴】藏宝阁卖金..楼主区的金价已经涨到255了，但是发现自己251.5的菜还没卖出去，发现好像是被人卡单了 (就是一直下单不买)，怎么破开这个僵局?我朋友也被卡单了这种卡单的卖金商人好烦..."
+}

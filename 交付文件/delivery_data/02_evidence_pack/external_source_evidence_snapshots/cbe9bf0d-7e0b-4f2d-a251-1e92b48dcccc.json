@@ -1,9 +1,0 @@
-{
-  "trace_id": "cbe9bf0d-7e0b-4f2d-a251-1e92b48dcccc",
-  "source_name": "direct_technical_reddit_search",
-  "source_url": "https://developer.aliyun.com/article/1692927",
-  "crawl_time": "2026-06-08T17:06:48.935523Z",
-  "raw_payload_uri": "https://www.bing.com/search?q=site%3Areddit.com%2Fr%20selenium%20automation",
-  "original_capture_snapshot_uri": "",
-  "content_text": "aliyun.com https://developer.aliyun.com › article 2025年12月12日 · Selenium IDE 是一款开源跨浏览器的Web自动化测试工具，支持“录制-回放”操作，无需编程即可实现UI级端到端测试。 基于Electron开发，兼容主流浏览器，可导出多种语言脚本，轻松 …"
-}

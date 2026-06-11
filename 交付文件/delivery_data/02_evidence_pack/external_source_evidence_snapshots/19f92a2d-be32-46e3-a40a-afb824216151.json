@@ -1,9 +1,0 @@
-{
-  "trace_id": "19f92a2d-be32-46e3-a40a-afb824216151",
-  "source_name": "direct_technical_github_discussions_search",
-  "source_url": "https://docs.telethon.dev/",
-  "crawl_time": "2026-06-08T17:11:38.289988Z",
-  "raw_payload_uri": "https://www.bing.com/search?q=site%3Agithub.com%2Fdiscussions%20telethon%20userbot",
-  "original_capture_snapshot_uri": "",
-  "content_text": "telethon.dev https://docs. telethon .dev 2026年4月11日 · Used Telethon before v1.0? See Compatibility and Convenience. Coming from Bot API or want to create new bots? See HTTP Bot API vs MTProto. Need the full API reference? …"
-}

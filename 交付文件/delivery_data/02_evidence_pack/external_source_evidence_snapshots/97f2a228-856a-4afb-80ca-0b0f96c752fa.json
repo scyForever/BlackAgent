@@ -1,9 +1,0 @@
-{
-  "trace_id": "97f2a228-856a-4afb-80ca-0b0f96c752fa",
-  "source_name": "direct_technical_forum_search",
-  "source_url": "https://blog.csdn.net/qq_42924330/article/details/154869073",
-  "crawl_time": "2026-06-08T17:04:18.876705Z",
-  "raw_payload_uri": "https://www.bing.com/search?q=site%3Awww.v2ex.com%20%E8%84%9A%E6%9C%AC",
-  "original_capture_snapshot_uri": "",
-  "content_text": "csdn.net https://blog.csdn.net › article › details 2025年11月15日 · 本文是一份面向初学者的脚本编写指南，从基础概念到实战应用全面解析脚本编程。 首先明确定义：脚本是由解释器逐行执行的指令集合，具有自动化、解释执行、快速开发等特点，广 …"
-}

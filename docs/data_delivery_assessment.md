@@ -130,58 +130,44 @@
 
 ## 6. 建议交付包结构
 
-建议不要直接压缩整个 `data/`。可以按以下结构复制主文件：
+该结构已落地为 `交付文件/delivery_data/`，并按 `Agent.docx`「分阶段目标」重排：每个阶段目录直接对应该阶段产出物，全量生产 run 与 final3 答辩 run 已**合并到一起**（不相交、无损并集，每条记录带 `delivery_source_run`）。由 `scripts/build_phase_delivery_package.py` 从 `data/` · `config/` · `tests/evaluation/` 复跑生成；不要直接压缩整个 `data/`。
 
 ```text
 delivery_data/
-  00_summary/
+  README.md / delivery_manifest.json          # 结构说明 + 机器可读清单
+  00_总览与验收/                              # 验收摘要 + 评测证据
     final_acceptance_summary.json
-    docs/交付文档.md
-  01_final3_collection/
-    acceptance_direct_final3_delivery_manifest.json
-    acceptance_direct_final3_raw_dataset.jsonl
-    acceptance_direct_final3_cleaned_corpus.jsonl
-    acceptance_direct_final3_high_risk_corpus.jsonl
-    acceptance_direct_final3_raw_classifications.jsonl
-    acceptance_direct_final3_raw_entities.jsonl
-    acceptance_direct_final3_classifications.jsonl
-    acceptance_direct_final3_entities.jsonl
-    acceptance_direct_final3_hydrated_pages.jsonl
-    acceptance_direct_final3_defense_quota_sample.jsonl
-  02_evidence_pack/
-    collection_phase_multi_source_acceptance_pack.jsonl
-    collection_phase_multi_source_evidence_pack.jsonl
-    collection_phase_multi_source_evidence_pack_report.json
-    collection_phase_multi_source_clue_evidence_index.json
-    collection_phase_multi_source_curated_clues.jsonl
-    external_balanced_source_evidence_pack.jsonl
-    external_balanced_source_evidence_pack_report.json
-    authorized_source_rerun_pack.jsonl
-    authorized_source_rerun_pack_report.json
-    external_source_evidence_snapshots/
-  03_manual_eval/
-    manual_heldout_report.json
-    manual_heldout_eval_current.json
+    manual_heldout_eval_current.json          # 分类 F1 0.8662 / 实体 F1 0.9484
     eval_manual_heldout_clue_recall_report.json
-    manual_review/heldout_review_task.csv
-    tests/evaluation/manual_heldout_classification.jsonl
-    tests/evaluation/manual_heldout_clues.jsonl
-  04_stage_corpora/
-    collection_phase_delivery_manifest.json
-    collection_phase_raw_dataset.jsonl
-    cleaning_phase_cleaned_corpus.jsonl
-    cleaning_phase_high_risk_corpus.jsonl
-    cleaning_phase_summary.json
-    classification_extraction_phase_classifications.jsonl
-    classification_extraction_phase_entities.jsonl
-    classification_extraction_phase_summary.json
-  05_model_ocr_benchmark/
-    eval_llm_ablation.json
-    eval_llm_hard_ablation.json
+    manual_heldout_report.json
+    manual_heldout_classification.jsonl       # 193 行分类 gold（源自 tests/evaluation/）
+    manual_heldout_clues.jsonl                # 24 条线索 gold（源自 tests/evaluation/）
+    heldout_review_task.csv
     latest_llm_value_report.json
-    ocr_hardset_report.json
-    scale_benchmark_report.json
+    eval_llm_ablation.json / eval_llm_hard_ablation.json
+    scale_benchmark_report.json / ocr_hardset_report.json
+    BlackAgent_真实样例逐步明细.md / BlackAgent_原始数据完整内容.md
+  01_数据采集_原始情报数据集/                  # 产出物：原始情报数据集
+    raw_dataset.jsonl                         # 4568 = 全量 4163 ∪ final3 405
+    hydrated_pages.jsonl
+    external_balanced_source_evidence_pack.jsonl
+  02_智能清洗_清洗后高质量语料/                # 产出物：清洗后高质量语料
+    cleaned_corpus.jsonl                      # 3732 = 3464 ∪ 268
+    high_risk_corpus.jsonl                    # 1246 = 1095 ∪ 151
+  03_意图分类_风险分类与标签体系/              # 产出物：分类结果 + 标签体系
+    classifications.jsonl                     # 3732 = 3464 ∪ 268
+    risk_taxonomy.yaml                        # 标签体系
+  04_实体抽取_结构化实体库/                    # 产出物：结构化实体库
+    entities.jsonl                            # 22416 = 21774 ∪ 642
+  05_风险线索与证据链/                         # 愿景产出：风险线索 + 证据链
+    collection_phase_multi_source_evidence_pack.jsonl        # 500 行 joined
+    collection_phase_multi_source_evidence_pack_report.json  # 17 高质量 / 8 跨源
+    collection_phase_multi_source_clue_evidence_index.json   # 4 线索 / 17 卡
+    collection_phase_multi_source_curated_clues.jsonl
+    external_source_evidence_snapshots/                      # 156 份 snapshot
 ```
+
+精简：raw 级分类/实体中间件、证据输入包 `collection_phase_multi_source_acceptance_pack.jsonl`、授权源复跑包 `authorized_source_rerun_pack.jsonl`、final3 旧 manifest 已移出主交付（仍在 git 历史与 `data/` 可查）。
 
 ## 7. 当前缺口和下一步
 

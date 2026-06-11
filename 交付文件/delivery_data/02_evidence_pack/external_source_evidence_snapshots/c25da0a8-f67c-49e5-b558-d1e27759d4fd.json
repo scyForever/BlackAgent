@@ -1,8 +1,0 @@
-{
-  "trace_id": "c25da0a8-f67c-49e5-b558-d1e27759d4fd",
-  "source_name": "tech_forum_blackgray_search",
-  "source_url": "https://www.v2ex.com/t/326364",
-  "crawl_time": "2026-05-26T02:31:08.195315Z",
-  "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
-  "content_text": "求问 群控 核心思路 - V2ex Image 4www.v2ex.com/t/326364 问与答 - @chenjunqiang - 小弟厂需要弄一下群控的软件，就是一个 PC 机子可以控制几百台手机的那种，不知道有无大神实现过？想了解一下思路。"
-}

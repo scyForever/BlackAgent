@@ -1,0 +1,9 @@
+{
+  "trace_id": "3559abbd-9072-422b-96a6-eb3ea038023b",
+  "source_name": "crowdsourcing_task_blackgray_search",
+  "source_url": "https://www.freelancer.com/jobs/bot-development/",
+  "crawl_time": "2026-05-26T02:35:55.507172Z",
+  "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.freelancer.com%2Fjobs%20userbot",
+  "original_capture_snapshot_uri": "",
+  "content_text": "Bot Development Jobs for May 2026 | Freelancer Image 1www.freelancer.com/jobs/bot-development/ I need a lightweight Telegram **userbot** that listens for my text commands in any chat I'm active in and instantly: • rolls a die when I invoke a custom command (e.g. /d6, /d20, /d100) • returns pure random numbers on demand (e.g. /rand 1-500) • appends a short custom message I'll define per command to the result, so the output might read \"You rolled a 17! — Lucky day!\" rather ..."
+}

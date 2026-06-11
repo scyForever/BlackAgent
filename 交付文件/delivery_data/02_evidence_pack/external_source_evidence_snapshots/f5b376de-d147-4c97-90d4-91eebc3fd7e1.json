@@ -1,8 +1,0 @@
-{
-  "trace_id": "f5b376de-d147-4c97-90d4-91eebc3fd7e1",
-  "source_name": "tech_forum_blackgray_search",
-  "source_url": "https://www.v2ex.com/t/1194768",
-  "crawl_time": "2026-05-26T02:31:20.966141Z",
-  "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20automation",
-  "content_text": "Intelligent UI Automation 目前有什么实现原理的披露吗？ - V2EX Image 5www.v2ex.com/t/1194768 Google 在最新的博客里面讲了系统级别的 mcp：AppFunctions ；以及降级方案：新开发的 UI 自动化框架 Intelligent UI **Automation** 。 AppFunctions 这个已经有 API 了，但是这个新的自动化框架是啥？ 目测是不是还是基于 UIAutomator / AccessibilityService 那老一套啊？"
-}

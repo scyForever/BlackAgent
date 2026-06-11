@@ -1,8 +1,0 @@
-{
-  "trace_id": "c4a05c24-7aa3-42be-a34b-d393234c7440",
-  "source_name": "tech_forum_blackgray_search",
-  "source_url": "https://www.v2ex.com/t/1213962",
-  "crawl_time": "2026-05-26T02:31:25.856310Z",
-  "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E5%8F%91",
-  "content_text": "后端开发（Laravel/ PHP ）——textnow 云控系统协议层开发，报酬面谈 - V2EX Image 6www.v2ex.com/t/1213962 2026-05-19T23:29:01.0000000 项目背景 我们有一套自研的短信群发云控管理系统（ Avatar SMS ），前端 UI 已完成（纯原生 JS ，无框架），Laravel 后端骨架和 API 路由已搭好，现在需要一位有经验的后端开发者完成核心协议层业务逻辑。 已完成的部分（不需要你做） 前端 UI 全部页面（项目管理 / 客户管理 / 账号管理 / 任务管理 ..."
-}

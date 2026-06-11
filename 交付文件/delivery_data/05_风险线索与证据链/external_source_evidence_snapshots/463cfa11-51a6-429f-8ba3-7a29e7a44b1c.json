@@ -1,0 +1,9 @@
+{
+  "trace_id": "463cfa11-51a6-429f-8ba3-7a29e7a44b1c",
+  "source_name": "direct_crowdsourcing_search",
+  "source_url": "https://github.com/D4Vinci/Scrapling",
+  "crawl_time": "2026-06-08T17:10:10.344432Z",
+  "raw_payload_uri": "https://www.bing.com/search?q=site%3Awww.freelancer.com%2Fjobs%20scraper",
+  "original_capture_snapshot_uri": "",
+  "content_text": "github.com https://github.com › Scrapling Developer/Web Scraper Friendly Experience 🎯 Interactive Web Scraping Shell: Optional built-in IPython shell with Scrapling integration, shortcuts, and new tools to speed up Web Scraping scripts …"
+}

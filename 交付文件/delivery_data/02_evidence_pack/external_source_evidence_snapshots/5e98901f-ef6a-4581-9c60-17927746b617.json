@@ -1,8 +1,0 @@
-{
-  "trace_id": "5e98901f-ef6a-4581-9c60-17927746b617",
-  "source_name": "tech_forum_blackgray_search",
-  "source_url": "https://www.v2ex.com/t/558977",
-  "crawl_time": "2026-05-26T02:31:08.195315Z",
-  "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
-  "content_text": "有点好奇，那种群控安卓机的技术是怎么实现的呢 - V2ex Image 5www.v2ex.com/t/558977 这是一个创建于 2206 天前的主题，其中的信息可能已经有所发展或是发生改变。 有点好奇，那种群控安卓机的技术是怎么实现的呢？ 我的猜测是安卓安装个软件，可以实现一些手势指令，然后电脑发送指令给那个软件，软件进行操作？"
-}

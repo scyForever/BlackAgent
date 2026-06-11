@@ -1,9 +1,0 @@
-{
-  "trace_id": "a58b6e56-b9f5-4bc5-9d89-eb2df97b1b3b",
-  "source_name": "direct_secondhand_epicnpc_search",
-  "source_url": "https://blog.csdn.net/Tisfy/article/details/144796175",
-  "crawl_time": "2026-06-08T17:09:36.325602Z",
-  "raw_payload_uri": "https://www.bing.com/search?q=site%3Aepicnpc.com%20verified%20account",
-  "original_capture_snapshot_uri": "",
-  "content_text": "csdn.net https://blog.csdn.net › Tisfy › article › details 2024年12月31日 · Github - 如何提交一个带有“verified”标识的commit 前言 (Why) 今天在Github上浏览某项目的 commit 记录的时候发现，有的commit记录带有 verified 绿色标识，有的带有橘色的 …"
-}

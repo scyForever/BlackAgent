@@ -1,0 +1,9 @@
+{
+  "trace_id": "912be97e-4b3a-41e9-850b-6eead726dc7a",
+  "source_name": "direct_crowdsourcing_upwork_search",
+  "source_url": "https://blog.csdn.net/qq_24208545/article/details/154842123",
+  "crawl_time": "2026-06-08T17:10:34.331275Z",
+  "raw_payload_uri": "https://www.bing.com/search?q=site%3Awww.upwork.com%2Ffreelance-jobs%20telegram%20bot",
+  "original_capture_snapshot_uri": "",
+  "content_text": "csdn.net https://blog.csdn.net › article › details 2025年11月14日 · 在 Telegram 上开发机器人（Bot）时，你通常需要让 Bot 加入频道或群组并进行自动化操作。 本教程将手把手教 …"
+}

@@ -1,0 +1,8 @@
+{
+  "trace_id": "997a04e4-666b-4aaa-b736-21844985d274",
+  "source_name": "telegram_blackgray_search",
+  "source_url": "https://t.me/s/moonuserbot?before=230",
+  "crawl_time": "2026-05-26T02:33:08.473583Z",
+  "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3At.me%2Fs%20userbot",
+  "content_text": "Moon UserBot - Telegram Image 8t.me/s/moonuserbot?before=230 The **userbot** is now significantly more lightweight. * Pure Python Git: Replaced git CLI dependencies with dulwich. * Asynchronous Core: Refactored all HTTP requests to use aiohttp. Custom Modules * tts modules have been updated and fixed with better voice output support. * pdf2md has been fixed."
+}
