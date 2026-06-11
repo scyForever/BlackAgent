@@ -1,0 +1,9 @@
+{
+  "trace_id": "63b1936b-623b-43cb-8c2b-e5601e098528",
+  "source_name": "direct_technical_github_discussions_search",
+  "source_url": "https://blog.csdn.net/dwl764457208/article/details/128499577",
+  "crawl_time": "2026-06-08T17:11:38.292072Z",
+  "raw_payload_uri": "https://www.bing.com/search?q=site%3Agithub.com%2Fdiscussions%20telethon%20userbot",
+  "original_capture_snapshot_uri": "",
+  "content_text": "csdn.net https://blog.csdn.net › article › details 2024年6月6日 · 博客已迁移至github 村长在路上 百分百可实现完成，无坑文档 官网文档 Quick-Start — Telethon 1.26.1 documentation 版本要求： python3.8 安装依赖： ... 申请api_id 与 api_hash 申请时 …"
+}

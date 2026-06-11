@@ -1,0 +1,172 @@
+{
+  "package": "BlackAgent delivery_data",
+  "organized_by": "Agent.docx 分阶段目标",
+  "generator": "scripts/build_phase_delivery_package.py",
+  "merge_note": "各阶段语料 = full_production_run ∪ final3_defense_run（两 run 不相交，无损并集；每条记录带 delivery_source_run）",
+  "merged_corpora": [
+    {
+      "file": "01_数据采集_原始情报数据集/raw_dataset.jsonl",
+      "full_rows": 4163,
+      "final3_rows": 405,
+      "total_rows": 4568
+    },
+    {
+      "file": "02_智能清洗_清洗后高质量语料/cleaned_corpus.jsonl",
+      "full_rows": 3464,
+      "final3_rows": 268,
+      "total_rows": 3732
+    },
+    {
+      "file": "02_智能清洗_清洗后高质量语料/high_risk_corpus.jsonl",
+      "full_rows": 1095,
+      "final3_rows": 151,
+      "total_rows": 1246
+    },
+    {
+      "file": "03_意图分类_风险分类与标签体系/classifications.jsonl",
+      "full_rows": 3464,
+      "final3_rows": 268,
+      "total_rows": 3732
+    },
+    {
+      "file": "04_实体抽取_结构化实体库/entities.jsonl",
+      "full_rows": 21774,
+      "final3_rows": 642,
+      "total_rows": 22416
+    }
+  ],
+  "structure": {
+    "00_总览与验收": [
+      {
+        "name": "BlackAgent_原始数据完整内容.md",
+        "bytes": 370212
+      },
+      {
+        "name": "BlackAgent_真实样例逐步明细.md",
+        "bytes": 93742
+      },
+      {
+        "name": "eval_llm_ablation.json",
+        "bytes": 168888
+      },
+      {
+        "name": "eval_llm_hard_ablation.json",
+        "bytes": 119580
+      },
+      {
+        "name": "eval_manual_heldout_clue_recall_report.json",
+        "bytes": 67210
+      },
+      {
+        "name": "final_acceptance_summary.json",
+        "bytes": 52578
+      },
+      {
+        "name": "heldout_review_task.csv",
+        "bytes": 175145
+      },
+      {
+        "name": "latest_llm_value_report.json",
+        "bytes": 3509
+      },
+      {
+        "name": "manual_heldout_classification.jsonl",
+        "bytes": 327145
+      },
+      {
+        "name": "manual_heldout_clues.jsonl",
+        "bytes": 19263
+      },
+      {
+        "name": "manual_heldout_eval_current.json",
+        "bytes": 65971
+      },
+      {
+        "name": "manual_heldout_report.json",
+        "bytes": 1259
+      },
+      {
+        "name": "ocr_hardset_report.json",
+        "bytes": 4181
+      },
+      {
+        "name": "scale_benchmark_report.json",
+        "bytes": 1972
+      }
+    ],
+    "01_数据采集_原始情报数据集": [
+      {
+        "name": "external_balanced_source_evidence_pack.jsonl",
+        "bytes": 160235
+      },
+      {
+        "name": "hydrated_pages.jsonl",
+        "bytes": 751509
+      },
+      {
+        "name": "raw_dataset.jsonl",
+        "bytes": 12514259
+      }
+    ],
+    "02_智能清洗_清洗后高质量语料": [
+      {
+        "name": "cleaned_corpus.jsonl",
+        "bytes": 6773496
+      },
+      {
+        "name": "high_risk_corpus.jsonl",
+        "bytes": 2178707
+      }
+    ],
+    "03_意图分类_风险分类与标签体系": [
+      {
+        "name": "classifications.jsonl",
+        "bytes": 2375131
+      },
+      {
+        "name": "risk_taxonomy.yaml",
+        "bytes": 7117
+      }
+    ],
+    "04_实体抽取_结构化实体库": [
+      {
+        "name": "entities.jsonl",
+        "bytes": 13053030
+      }
+    ],
+    "05_风险线索与证据链": [
+      {
+        "name": "collection_phase_multi_source_clue_evidence_index.json",
+        "bytes": 70654
+      },
+      {
+        "name": "collection_phase_multi_source_curated_clues.jsonl",
+        "bytes": 6221
+      },
+      {
+        "name": "collection_phase_multi_source_evidence_pack.jsonl",
+        "bytes": 4391534
+      },
+      {
+        "name": "collection_phase_multi_source_evidence_pack_report.json",
+        "bytes": 2224
+      },
+      {
+        "name": "external_source_evidence_snapshots/",
+        "files": 156
+      }
+    ]
+  },
+  "trimmed_as_redundant": [
+    "acceptance_direct_final3_raw_classifications.jsonl",
+    "acceptance_direct_final3_raw_entities.jsonl",
+    "acceptance_direct_final3_delivery_manifest.json",
+    "collection_phase_multi_source_acceptance_pack.jsonl",
+    "authorized_source_rerun_pack.jsonl"
+  ],
+  "boundaries": [
+    "线索均为人工复核候选，非执法定性、非自动处置",
+    "指标来自本地公开/授权 held-out，不代表线上泛化",
+    "不覆盖私群/登录后页面/验证码绕过/购买数据"
+  ]
+}

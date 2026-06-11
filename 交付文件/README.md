@@ -22,6 +22,21 @@
 | `BlackAgent_真实样例逐步明细.md` | 一次真实联网样例（75 条 → 高质量候选线索）的逐条追踪明细 |
 | `BlackAgent_原始数据完整内容.md` | 同源复跑得到的原始完整行附录 |
 
+> 上表最后两份 `.md` 附录现随交付数据包组织于 `delivery_data/00_总览与验收/`。
+
+## 交付数据包（`delivery_data/`）
+
+`delivery_data/` 按 `Agent.docx`「分阶段目标」组织，每个阶段目录直接对应该阶段产出物；详见 `delivery_data/README.md` 与 `delivery_data/delivery_manifest.json`。各阶段语料把**全量生产 run** 与 **final3 答辩 run** 两份真实数据**合并到一起**（二者不相交、无损并集，每条记录带 `delivery_source_run`），由 `scripts/build_phase_delivery_package.py` 复跑生成。
+
+| 目录 | 产出物 | 规模 |
+| --- | --- | --- |
+| `00_总览与验收/` | 验收摘要 + 人工评测 / 线索 / 规模 / OCR 证据 | — |
+| `01_数据采集_原始情报数据集/` | 原始情报数据集 | raw 4568（全量 4163 + final3 405） |
+| `02_智能清洗_清洗后高质量语料/` | 清洗后高质量语料 | cleaned 3732 / 高风险 1246 |
+| `03_意图分类_风险分类与标签体系/` | 分类结果 + 标签体系 | 分类 3732 + `risk_taxonomy.yaml` |
+| `04_实体抽取_结构化实体库/` | 结构化实体库 | 实体 22416 |
+| `05_风险线索与证据链/` | 风险线索 + 证据链 | 500 行 evidence pack / 4 线索 17 卡 / 156 snapshot |
+
 ## 怎么生成 / 复跑
 
 - PPT 与 Word 由 `scripts/build_delivery_deck.py` **数据绑定**生成：数字读取自

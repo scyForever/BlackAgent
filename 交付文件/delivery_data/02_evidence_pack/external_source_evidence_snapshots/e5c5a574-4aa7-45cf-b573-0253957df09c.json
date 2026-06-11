@@ -1,9 +1,0 @@
-{
-  "trace_id": "e5c5a574-4aa7-45cf-b573-0253957df09c",
-  "source_name": "tech_forum_blackgray_search",
-  "source_url": "https://www.v2ex.com/t/347997",
-  "crawl_time": "2026-05-26T02:31:08.195315Z",
-  "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
-  "original_capture_snapshot_uri": "",
-  "content_text": "个人微信号群控机器人 - V2ex Image 7www.v2ex.com/t/347997 Vbot 是基于微信 web API 实现的机器人，通过 匿名函数 能够实现多种自定义的效果 体验 扫码加好友，验证输入 上山打老虎 即可自动加为好友并且拉入 vbot 群。 vbot 并非 24 小时执行，有时会因为开发调试等原因暂停功能。如果碰巧遇到关闭情况，可加 Q 群 492548647 了解开放时间。执行后发送\"拉我 ..."
-}

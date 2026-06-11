@@ -1,9 +1,0 @@
-{
-  "trace_id": "5f0c3f46-ca73-40b1-afc6-5fa22e2991c7",
-  "source_name": "direct_crowdsourcing_search",
-  "source_url": "https://blog.csdn.net/weixin_42968145/article/details/116105263",
-  "crawl_time": "2026-06-08T17:10:10.342346Z",
-  "raw_payload_uri": "https://www.bing.com/search?q=site%3Awww.freelancer.com%2Fjobs%20scraper",
-  "original_capture_snapshot_uri": "",
-  "content_text": "csdn.net https://blog.csdn.net › article › details › ... 2021年4月27日 · Web scraper具备反爬虫机制，模拟人手动操作浏览器，而且免费！ 基本操作打开Web scraper当我们想要抓取某网页的时候，需要调出来Web scraper的开发界面，这点开发人员肯定很懂 …"
-}

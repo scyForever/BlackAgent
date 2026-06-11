@@ -1,0 +1,969 @@
+{
+  "status": "completed",
+  "run_type": "final_acceptance_gate",
+  "generated_at": "2026-06-10T07:45:13.734568+00:00",
+  "artifact_sources": {
+    "manual_heldout": {
+      "path": "data/manual_heldout_eval_current.json",
+      "exists": true,
+      "size_bytes": 65971,
+      "mtime": "2026-06-10T07:45:06.853495+00:00",
+      "sha256": "17c1671414b34f87587c63f65bd8cad52ca42fa8521058c62a4c9c7dd7e368d5"
+    },
+    "clue_recall": {
+      "path": "data/eval_manual_heldout_clue_recall_report.json",
+      "exists": true,
+      "size_bytes": 67210,
+      "mtime": "2026-06-10T07:45:10.445515+00:00",
+      "sha256": "456c691da7ff46f42fc7550fc9f2eb8e69da0b0e6d41398750d8d98c317d76f0"
+    },
+    "external_balanced_pack_report": {
+      "path": "data/external_balanced_source_evidence_pack_report.json",
+      "exists": true,
+      "size_bytes": 3192,
+      "mtime": "2026-06-09T10:18:42.398645+00:00",
+      "sha256": "1657a73d71b40e3069c12a9fcbbe57648de2569d5fac2db356ded331687c35ab"
+    },
+    "external_balanced_pack_jsonl": {
+      "path": "data/external_balanced_source_evidence_pack.jsonl",
+      "exists": true,
+      "size_bytes": 160235,
+      "mtime": "2026-06-09T10:18:42.398645+00:00",
+      "sha256": "b1cd2249b780a012c863f565b4fcc0735e473d7ee6f00a1f537143ecafbc0df8"
+    },
+    "joined_evidence_pack_report": {
+      "path": "data/collection_phase_multi_source_evidence_pack_report.json",
+      "exists": true,
+      "size_bytes": 1857,
+      "mtime": "2026-06-10T07:45:11.627592+00:00",
+      "sha256": "a791a3c008aeadc44047f7805b66e1917ac8b4c9e0dd5fb98d19fc0868305367"
+    },
+    "joined_evidence_pack_jsonl": {
+      "path": "data/collection_phase_multi_source_evidence_pack.jsonl",
+      "exists": true,
+      "size_bytes": 2489965,
+      "mtime": "2026-06-10T07:45:11.626514+00:00",
+      "sha256": "14b088b32cc57c01c4761b6d315cb92862f2c1a2aeba80eff59372df410392cf"
+    },
+    "scale_benchmark_report": {
+      "path": "data/scale_benchmark_report.json",
+      "exists": true,
+      "size_bytes": 1972,
+      "mtime": "2026-06-09T20:26:33.842299+00:00",
+      "sha256": "c16bb4513606a9d0f5fd9aa1c0ae5ed647bb3c979c845b9ac818aa401a64fa28"
+    },
+    "ocr_hardset_report": {
+      "path": "data/ocr_hardset_report.json",
+      "exists": true,
+      "size_bytes": 4181,
+      "mtime": "2026-06-09T20:26:24.965236+00:00",
+      "sha256": "9aa3c68aa35bb934fe77cea591ab9f0c7935664f8ffb451a004a90b900840ac2"
+    },
+    "source_smoke_report": {
+      "path": "data/source_smoke_report.json",
+      "exists": true,
+      "size_bytes": 16950,
+      "mtime": "2026-06-09T04:51:09.864649+00:00",
+      "sha256": "5fec124288ed514f1f8cf06f77db64299de7d90088de6b515e1abb63a697b4a9"
+    },
+    "source_live_smoke_report": {
+      "path": "data/source_live_smoke_report.json",
+      "exists": true,
+      "size_bytes": 81232,
+      "mtime": "2026-06-10T07:45:13.578762+00:00",
+      "sha256": "53b24a697b1e4065b9c65b4edf118f29c91d7783c45d44f80470f21454a4c783"
+    },
+    "authorized_source_rerun_pack_report": {
+      "path": "data/authorized_source_rerun_pack_report.json",
+      "exists": true,
+      "size_bytes": 7117,
+      "mtime": "2026-06-09T20:32:27.034322+00:00",
+      "sha256": "2a67e970be5a546c2637bfc0103fdab1d1006c0d6ffdeeb3cbb9dbf1bcddd2c2"
+    },
+    "authorized_source_rerun_pack_jsonl": {
+      "path": "data/authorized_source_rerun_pack.jsonl",
+      "exists": true,
+      "size_bytes": 113508,
+      "mtime": "2026-06-09T20:32:27.033322+00:00",
+      "sha256": "097a00016b029bf2d60a37904d0e7410010bfa2d40780fc4fa8932e872997b81"
+    }
+  },
+  "classification": {
+    "dataset": {
+      "name": "blackagent_local_public_authorized_heldout_v1",
+      "kind": "manual_heldout_public_authorized",
+      "record_count": 193,
+      "is_heldout": true,
+      "annotation_sources": [
+        {
+          "value": "human_confirmed",
+          "count": 193
+        }
+      ],
+      "source_types": [
+        {
+          "value": "IM",
+          "count": 89
+        },
+        {
+          "value": "Social",
+          "count": 71
+        },
+        {
+          "value": "Forum",
+          "count": 27
+        },
+        {
+          "value": "Vertical",
+          "count": 6
+        }
+      ],
+      "source_names_top": [
+        {
+          "value": "tieba_blackgray_search",
+          "count": 48
+        },
+        {
+          "value": "x_blackgray_search",
+          "count": 47
+        },
+        {
+          "value": "tech_forum_blackgray_search",
+          "count": 27
+        },
+        {
+          "value": "telegram_blackgray_search",
+          "count": 16
+        },
+        {
+          "value": "seeding_note_blackgray_search",
+          "count": 11
+        },
+        {
+          "value": "telegram_public_delivery:alanghome",
+          "count": 9
+        },
+        {
+          "value": "telegram_public_delivery:thunderuserbot",
+          "count": 9
+        },
+        {
+          "value": "tieba_task_fraud_search",
+          "count": 8
+        },
+        {
+          "value": "short_video_blackgray_search",
+          "count": 4
+        },
+        {
+          "value": "crowdsourcing_task_blackgray_search",
+          "count": 4
+        },
+        {
+          "value": "telegram_public_delivery:Dragon_Userbot",
+          "count": 3
+        },
+        {
+          "value": "telegram_public_delivery:xieyihao89",
+          "count": 1
+        }
+      ],
+      "content_modalities": [
+        {
+          "value": "image_text",
+          "count": 162
+        },
+        {
+          "value": "text",
+          "count": 31
+        }
+      ],
+      "holdout_splits": [
+        {
+          "value": "p0_p2_2026_06",
+          "count": 193
+        }
+      ],
+      "claim_boundary": "Held-out/public-authorized reports prove only this local annotated split; they must not be described as full online generalization."
+    },
+    "profile": "fast",
+    "record_count": 193,
+    "primary_classification_f1": 0.8662,
+    "secondary_classification_f1": 0.8258,
+    "hierarchical_classification_f1": 0.7929,
+    "entity_f1": 0.9484,
+    "false_positive_rate": 0.0504,
+    "classification_review_rate": 0.1865,
+    "review_load": {
+      "review_required_count": 36,
+      "record_count": 193,
+      "review_rate": 0.1865,
+      "review_load_per_100_records": 18.6528,
+      "by_review_bucket": [
+        {
+          "value": "human_review_required",
+          "count": 36
+        }
+      ],
+      "final_review_buckets": [
+        {
+          "value": "low_relevance",
+          "count": 111
+        },
+        {
+          "value": "explicit_risk",
+          "count": 46
+        },
+        {
+          "value": "human_review_required",
+          "count": 36
+        }
+      ],
+      "by_risk_category": [
+        {
+          "value": "诈骗引流",
+          "count": 9
+        },
+        {
+          "value": "工具交易",
+          "count": 9
+        },
+        {
+          "value": "unknown",
+          "count": 7
+        },
+        {
+          "value": "账号交易",
+          "count": 7
+        },
+        {
+          "value": "刷单作弊",
+          "count": 2
+        },
+        {
+          "value": "众包服务",
+          "count": 2
+        }
+      ],
+      "by_secondary_label": [
+        {
+          "value": "私域导流",
+          "count": 8
+        },
+        {
+          "value": "待研判",
+          "count": 8
+        },
+        {
+          "value": "群控脚本",
+          "count": 7
+        },
+        {
+          "value": "实名账号买卖",
+          "count": 4
+        },
+        {
+          "value": "代投服务",
+          "count": 2
+        },
+        {
+          "value": "账号养号",
+          "count": 2
+        },
+        {
+          "value": "手工做单",
+          "count": 1
+        },
+        {
+          "value": "卡密交易",
+          "count": 1
+        },
+        {
+          "value": "未细分",
+          "count": 1
+        },
+        {
+          "value": "订单卡单",
+          "count": 1
+        },
+        {
+          "value": "返利引流",
+          "count": 1
+        }
+      ],
+      "by_conflict_status": [
+        {
+          "value": "RESOLVED",
+          "count": 17
+        },
+        {
+          "value": "CONFLICT_REVIEW",
+          "count": 12
+        },
+        {
+          "value": "UNKNOWN",
+          "count": 7
+        }
+      ]
+    }
+  },
+  "clues": {
+    "dataset": {
+      "name": "blackagent_local_public_authorized_heldout_v1",
+      "kind": "manual_heldout_clue_gold",
+      "record_count": 193,
+      "is_heldout": true,
+      "annotation_sources": [
+        {
+          "value": "human_confirmed",
+          "count": 193
+        }
+      ],
+      "source_types": [
+        {
+          "value": "IM",
+          "count": 89
+        },
+        {
+          "value": "Social",
+          "count": 71
+        },
+        {
+          "value": "Forum",
+          "count": 27
+        },
+        {
+          "value": "Vertical",
+          "count": 6
+        }
+      ],
+      "source_names_top": [
+        {
+          "value": "tieba_blackgray_search",
+          "count": 48
+        },
+        {
+          "value": "x_blackgray_search",
+          "count": 47
+        },
+        {
+          "value": "tech_forum_blackgray_search",
+          "count": 27
+        },
+        {
+          "value": "telegram_blackgray_search",
+          "count": 16
+        },
+        {
+          "value": "seeding_note_blackgray_search",
+          "count": 11
+        },
+        {
+          "value": "telegram_public_delivery:alanghome",
+          "count": 9
+        },
+        {
+          "value": "telegram_public_delivery:thunderuserbot",
+          "count": 9
+        },
+        {
+          "value": "tieba_task_fraud_search",
+          "count": 8
+        },
+        {
+          "value": "short_video_blackgray_search",
+          "count": 4
+        },
+        {
+          "value": "crowdsourcing_task_blackgray_search",
+          "count": 4
+        },
+        {
+          "value": "telegram_public_delivery:Dragon_Userbot",
+          "count": 3
+        },
+        {
+          "value": "telegram_public_delivery:xieyihao89",
+          "count": 1
+        }
+      ],
+      "content_modalities": [
+        {
+          "value": "image_text",
+          "count": 162
+        },
+        {
+          "value": "text",
+          "count": 31
+        }
+      ],
+      "holdout_splits": [
+        {
+          "value": "p0_p2_2026_06",
+          "count": 193
+        }
+      ],
+      "claim_boundary": "Held-out/public-authorized reports prove only this local annotated split; they must not be described as full online generalization."
+    },
+    "profile": "high_recall",
+    "clue_precision": 1.0,
+    "clue_recall": 1.0,
+    "clue_f1": 1.0,
+    "object_clue_precision": 1.0,
+    "object_clue_recall": 1.0,
+    "object_clue_f1": 1.0,
+    "evidence_chain_precision": 0.9583,
+    "evidence_chain_recall": 0.9583,
+    "evidence_reviewability_rate": 1.0,
+    "duplicate_clue_rate": 0.0
+  },
+  "evidence_pack": {
+    "external_balanced": {
+      "status": "completed",
+      "selected_count": 80,
+      "record_count": null,
+      "per_group_target": 20,
+      "target_groups": [
+        "im_or_group",
+        "public_account_or_article",
+        "social_or_forum",
+        "vertical_or_technical"
+      ],
+      "available_group_counts": {
+        "im_or_group": 3798,
+        "public_account_or_article": 105,
+        "social_or_forum": 300,
+        "vertical_or_technical": 204
+      },
+      "eligible_group_counts": {
+        "im_or_group": 20,
+        "public_account_or_article": 20,
+        "social_or_forum": 20,
+        "vertical_or_technical": 20
+      },
+      "selected_group_counts": {
+        "im_or_group": 20,
+        "public_account_or_article": 20,
+        "social_or_forum": 20,
+        "vertical_or_technical": 20
+      },
+      "source_counts": [
+        {
+          "source_name": "direct_public_article_search",
+          "count": 7
+        },
+        {
+          "source_name": "direct_public_article_broad_search",
+          "count": 7
+        },
+        {
+          "source_name": "direct_public_article_news_blog_search",
+          "count": 6
+        },
+        {
+          "source_name": "tieba_blackgray_search",
+          "count": 3
+        },
+        {
+          "source_name": "short_video_blackgray_search",
+          "count": 3
+        },
+        {
+          "source_name": "direct_secondhand_epicnpc_search",
+          "count": 3
+        },
+        {
+          "source_name": "seeding_note_blackgray_search",
+          "count": 2
+        },
+        {
+          "source_name": "x_blackgray_search",
+          "count": 2
+        },
+        {
+          "source_name": "tieba_task_fraud_search",
+          "count": 2
+        },
+        {
+          "source_name": "tieba_account_trade_search",
+          "count": 2
+        },
+        {
+          "source_name": "x_account_trade_search",
+          "count": 2
+        },
+        {
+          "source_name": "tieba_fraud_traffic_search",
+          "count": 2
+        },
+        {
+          "source_name": "tech_forum_blackgray_search",
+          "count": 2
+        },
+        {
+          "source_name": "crowdsourcing_task_blackgray_search",
+          "count": 2
+        },
+        {
+          "source_name": "direct_technical_forum_search",
+          "count": 2
+        },
+        {
+          "source_name": "direct_technical_stackoverflow_search",
+          "count": 2
+        },
+        {
+          "source_name": "direct_technical_github_search",
+          "count": 2
+        },
+        {
+          "source_name": "telegram_blackgray_search",
+          "count": 1
+        },
+        {
+          "source_name": "telegram_public_delivery:haoshangmashang",
+          "count": 1
+        },
+        {
+          "source_name": "telegram_public_delivery:alanghome",
+          "count": 1
+        }
+      ],
+      "missing_required_fields": 0,
+      "completeness_counts": null,
+      "review_status_counts": null,
+      "source_evidence_counts": null,
+      "source_evidence_counts_by_category": null,
+      "skipped_counts": {
+        "im_or_group_missing_required_fields": 6,
+        "unsupported_group": 161,
+        "vertical_or_technical_missing_required_fields": 2
+      },
+      "warnings": [],
+      "claim_boundary": "small_balanced_external_public_source_evidence_pack"
+    },
+    "joined_multi_source": {
+      "status": "completed",
+      "selected_count": null,
+      "record_count": 500,
+      "per_group_target": null,
+      "target_groups": null,
+      "available_group_counts": null,
+      "eligible_group_counts": null,
+      "selected_group_counts": null,
+      "source_counts": null,
+      "missing_required_fields": null,
+      "completeness_counts": {
+        "has_raw_snippet": 500,
+        "has_clean_text": 500,
+        "has_inline_cleaning_text": 500,
+        "has_auditable_clean_text": 500,
+        "has_clue_chain": 500
+      },
+      "review_status_counts": {
+        "no_cross_source_clue_yet": 500
+      },
+      "source_evidence_counts": {
+        "has_source_evidence": 500,
+        "has_raw_text": 500,
+        "has_raw_snippet": 500,
+        "has_source_url": 500,
+        "has_crawl_time": 500,
+        "has_publish_time": 500,
+        "has_raw_payload_uri": 500,
+        "raw_text_differs_from_raw_snippet": 344,
+        "has_capture_snapshot_uri": 342
+      },
+      "source_evidence_counts_by_category": {
+        "im_or_group": {
+          "has_source_evidence": 344,
+          "has_raw_text": 344,
+          "has_raw_snippet": 344,
+          "has_source_url": 344,
+          "has_crawl_time": 344,
+          "has_publish_time": 344,
+          "has_raw_payload_uri": 344,
+          "raw_text_differs_from_raw_snippet": 342,
+          "has_capture_snapshot_uri": 342
+        },
+        "social_or_forum": {
+          "has_source_evidence": 135,
+          "has_raw_text": 135,
+          "has_raw_snippet": 135,
+          "has_source_url": 135,
+          "has_crawl_time": 135,
+          "has_publish_time": 135,
+          "has_raw_payload_uri": 135
+        },
+        "vertical_or_technical": {
+          "has_source_evidence": 21,
+          "has_raw_text": 21,
+          "has_raw_snippet": 21,
+          "has_source_url": 21,
+          "has_crawl_time": 21,
+          "has_publish_time": 21,
+          "has_raw_payload_uri": 21,
+          "raw_text_differs_from_raw_snippet": 2
+        }
+      },
+      "skipped_counts": null,
+      "warnings": null,
+      "claim_boundary": "evidence_pack_joins_available_artifacts_missing_clues_are_not_claimed"
+    }
+  },
+  "demo_paths": {
+    "offline_stable_demo": {
+      "mode": "local_corpus_and_evidence_pack",
+      "command": "python scripts/run_agent_cli.py --demo-sample --show summary --dry-run"
+    },
+    "authorized_network_demo": {
+      "mode": "authorized_live_sources_when_configured",
+      "command": "python scripts/run_agent_cli.py --query \"诈骗引流线索\" --enable-network --routing-profile high_recall --source-config-path config/intel_sources.acceptance_telegramnav_live.yaml --max-sources 4 --show summary"
+    },
+    "credential_boundary": "If X/TG credentials are missing, source-specific collectors are skipped/not claimed; live coverage is claimed only when credentialed live artifacts are attached."
+  },
+  "stale_artifacts": [
+    {
+      "path": "data/eval_report.json",
+      "exists": true,
+      "size_bytes": 28851,
+      "mtime": "2026-06-09T07:28:04.939725+00:00",
+      "sha256": "5b455a4e1e5b1bc84d39952b467412108070b6d82fc3936f292a223e63297c30",
+      "status": "stale_not_authoritative",
+      "reason": "Superseded by current manual held-out and clue recall reports; must not be used as the final acceptance scope."
+    }
+  ],
+  "commands": [
+    {
+      "name": "unit_tests",
+      "command": "D:\\Anaconda\\python.exe -m pytest -q",
+      "returncode": 0,
+      "status": "passed",
+      "elapsed_ms": 153324.63,
+      "stdout_excerpt": "........................................................................ [ 12%]\n........................................................................ [ 25%]\n........................................................................ [ 38%]\n........................................................................ [ 51%]\n........................................................................ [ 64%]\n........................................................................ [ 77%]\n........................................................................ [ 90%]\n...................................................                      [100%]\n",
+      "stderr_excerpt": ""
+    },
+    {
+      "name": "demo_cli",
+      "command": "D:\\Anaconda\\python.exe scripts/run_agent_cli.py --demo-sample --show summary --dry-run",
+      "returncode": 0,
+      "status": "passed",
+      "elapsed_ms": 1391.53,
+      "stdout_excerpt": "\n=== BlackAgent Agent Result ===\nstatus: completed\nmode: provided_records_pipeline\nquery: ���� demo �����еĽ��롢Ⱥ�ء��������˺Ž��׷�������\ninput_count: 3\nhigh_quality_count: 4\ncandidate_count: 12\n\n--- execution_summary ---\nstatus: completed\nrun_mode: provided_records_pipeline\nmode: hybrid_investigation\nbudget: {'max_sources': 2, 'max_raw_records': 3000, 'max_candidate_clues': 50, 'max_llm_refine_clues': 6, 'max_llm_calls': 10, 'max_llm_tokens': 10000, 'max_llm_classify_records': 20, 'max_llm_extract_records': 20, 'max_query_rewrite_sources': 2, 'max_elapsed_seconds': 30}\naccepted_count: 3\ndropped_count: 0\nclassification_count: 3\nentity_count: 18\ncluster_count: 0\nrisk_clue_count: 5\nplaybook_count: 1\nstrategy_count: 6\nrefined_clue_count: 5\ngraph_clue_generation_enabled: True\nmodel_route_count: 16\n\n--- main_flow_stages ---\ninput_task: status=accepted\nroute_and_guard: status=completed\nasset_retrieval: status=completed needs_fresh_data=True decision=user_provided_records\nintelligence_pipeline: status=completed mode=collection_or_input_records\nclue_generation_report: status=completed\n\n--- llm_call_traces ---\nintent_parse: llm_ok=False used_fallback=False error=None\ninvestigation_plan: llm_ok=False used_fallback=True error=simple_query_rule_parser\nclue_refine: llm_ok=True used_fallback=None error=None\n\n--- llm_item_traces ---\nclue_refine_item: llm_ok=True used_fallback=True error=None\nclue_refine_item: llm_ok=True used_fallback=True error=None\nclue_refine_item: llm_ok=True used_fallback=True error=None\nclue_refine_item: llm_ok=True used_fallback=True error=None\nclue_refine_item: llm_ok=True used_fallback=True error=None\n\n--- model_route_traces ---\nmodel_route: target=clue_refine action=llm_refine_only reason=reviewable_high_value_clue\nmodel_route: target=clue_refine action=llm_refine_only reason=reviewable_high_value_clue\nmodel_route: target=clue_refine action=llm_refine_only reason=reviewable_high_value_clue\nmodel_route: target=clue_refine action=llm_refine_only reason=reviewable_high_value_clue\nmodel_route: target=clue_refine action=llm_refine_only reason=reviewable_high_value_clue\nmodel_route: target=clue_refine action=deterministic_only reason=outside_refine_target_policy\nmodel_route: target=clue_refine action=deterministic_only reason=outside_refine_target_policy\nmodel_route: target=clue_refine action=deterministic_only reason=outside_refine_target_policy\nmodel_route: target=clue_refine action=deterministic_only reason=outside_refine_target_policy\nmodel_route: target=clue_refine action=deterministic_only reason=outside_refine_target_policy\nmodel_route: target=clue_refine action=deterministic_only reason=outside_refine_target_policy\nmodel_route: target=clue_refine action=deterministic_only reason=outside_refine_target_policy\nmodel_route: target=clue_refine action=deterministic_only reason=outside_refine_target_policy\nmodel_route: target=clue_refine action=deterministic_only reason=outside_refine_target_policy\nmodel_route: target=clue_refine action=deterministic_only reason=outside_refine_target_policy\nmodel_route: target=clue_refine action=deterministic_only reason=outside_refine_target_policy\n\n--- flow_decision_traces ---\nprovided_records: next=run_fresh_processing reason=user_provided_records_bypass_asset_preflight\nsemantic_local_empty: next=consider_live_collection reason=no_semantic_local_records_or_clues\nlive_collection_disabled: next=run_fresh_processing reason=provided_records_bypass_live_collection\nfresh_processing_started: next=refine_candidates reason=fresh_records_or_built_clues_available\nclue_refine_started: next=finish_report reason=llm_refine_applied\n",
+      "stderr_excerpt": ""
+    },
+    {
+      "name": "manual_heldout_eval",
+      "command": "D:\\Anaconda\\python.exe scripts/evaluate_pipeline.py --gold tests/evaluation/manual_heldout_classification.jsonl --entities-gold tests/evaluation/manual_heldout_classification.jsonl --classification-granularity auto --dataset-kind manual_heldout_public_authorized --profile fast --max-hard-negative-fpr 0.1 --max-classification-review-rate 0.25 --output data/manual_heldout_eval_current.json",
+      "returncode": 0,
+      "status": "passed",
+      "elapsed_ms": 3394.22,
+      "stdout_excerpt": "{\n  \"status\": \"completed\",\n  \"dataset\": {\n    \"name\": \"blackagent_local_public_authorized_heldout_v1\",\n    \"kind\": \"manual_heldout_public_authorized\",\n    \"record_count\": 193,\n    \"is_heldout\": true,\n    \"annotation_sources\": [\n      {\n        \"value\": \"human_confirmed\",\n        \"count\": 193\n      }\n    ],\n    \"source_types\": [\n      {\n        \"value\": \"IM\",\n        \"count\": 89\n      },\n      {\n        \"value\": \"Social\",\n        \"count\": 71\n      },\n      {\n        \"value\": \"Forum\",\n        \"count\": 27\n      },\n      {\n        \"value\": \"Vertical\",\n        \"count\": 6\n      }\n    ],\n    \"source_names_top\": [\n      {\n        \"value\": \"tieba_blackgray_search\",\n        \"count\": 48\n      },\n      {\n        \"value\": \"x_blackgray_search\",\n        \"count\": 47\n      },\n      {\n        \"value\": \"tech_forum_blackgray_search\",\n        \"count\": 27\n      },\n      {\n        \"value\": \"telegram_blackgray_search\",\n        \"count\": 16\n      },\n      {\n        \"value\": \"seeding_note_blackgray_search\",\n        \"count\": 11\n      },\n      {\n        \"value\": \"telegram_public_delivery:alanghome\",\n        \"count\": 9\n      },\n      {\n        \"value\": \"telegram_public_delivery:thunderuserbot\",\n        \"count\": 9\n      },\n      {\n        \"value\": \"tieba_task_fraud_search\",\n        \"count\": 8\n      },\n      {\n        \"value\": \"short_video_blackgray_search\",\n        \"count\": 4\n      },\n      {\n        \"value\": \"crowdsourcing_task_blackgray_search\",\n        \"count\": 4\n      },\n      {\n        \"value\": \"telegram_public_delivery:Dragon_Userbot\",\n        \"count\": 3\n      },\n      {\n        \"value\": \"telegram_public_delivery:xieyihao89\",\n        \"count\": 1\n      }\n    ],\n    \"content_modalities\": [\n      {\n        \"value\": \"image_text\",\n        \"count\": 162\n      },\n      {\n        \"value\": \"text\",\n        \"count\": 31\n      }\n    ],\n    \"holdout_splits\": [\n      {\n        \"value\": \"p0_p2_2026_06\",\n        \"count\": 193\n      }\n    ],\n    \"claim_boundary\": \"Held-out/public-authorized reports prove only this local annotated split; they must not be described as full online generalization.\"\n  },\n  \"profile\": \"fast\",\n  \"record_count\": 193,\n  \"classification_record_count\": 193,\n  \"entity_record_count\": 193,\n  \"clue_record_count\": 0,\n  \"hard_negative_record_count\": 0,\n  \"classification\": {\n    \"overall\": {\n      \"precision\": 0.7528,\n      \"recall\": 0.8375,\n      \"f1\": 0.7929,\n      \"status\": \"completed\",\n      \"metric_note\": \"hierarchical_primary_secondary_f1\"\n    },\n    \"primary\": {\n      \"precision\": 0.8395,\n      \"recall\": 0.8947,\n      \"f1\": 0.8662,\n      \"tp\": 68,\n      \"fp\": 13,\n      \"fn\": 8,\n      \"status\": \"completed\"\n    },\n    \"secondary\": {\n      \"precision\": 0.8101,\n      \"recall\": 0.8421,\n      \"f1\": 0.8258,\n      \"status\": \"completed\",\n      \"metric_note\": \"secondary_gold_present\",\n      \"tp\": 64,\n      \"fp\": 15,\n      \"fn\": 12\n    },\n    \"hierarchical\": {\n      \"precision\": 0.7528,\n      \"recall\": 0.8375,\n      \"f1\": 0.7929,\n      \"status\": \"completed\",\n      \"metric_note\": \"primary_secondary_pair_f1\",\n      \"tp\": 67,\n      \"fp\": 22,\n      \"fn\": 13\n    },\n    \"confusion_analysis\": {\n      \"status\": \"completed\",\n      \"primary\": {\n        \"__extra_prediction__\": {\n          \"众包服务\": 5,\n          \"工具交易\": 3,\n          \"诈骗引流\": 2,\n          \"账号交易\": 3\n        },\n        \"__negative__\": {\n          \"__negative__\": 113\n        },\n        \"__no_gold__\": {\n          \"众包服务\": 1,\n          \"刷单作弊\": 3,\n          \"账号交易\": 2\n        },\n        \"众包服务\": {\n          \"众包服务\": 3\n        },\n        \"刷单作弊\": {\n          \"刷单作弊\": 2\n        },\n        \"工具交易\": {\n          \"众包服务\": 2,\n          \"工具交易\": 17,\n          \"诈骗引流\": 2\n        },\n        \"诈骗引流\": {\n          \"__missing_prediction__\": 3,\n          \"诈骗引流\": 19\n        },\n        \"账号交易\": {\n          \"__missing_prediction__\": 2,\n          \"账号交易\": 27\n        }\n      },\n      \"secondary\": {\n        \"__extra_prediction__\": {\n          \"代投服务\": 2,\n          \"低相关\": 5,\n          \"私域导流\": 2\n        },\n        \"__negative__\": {\n          \"__negati\n...[truncated]",
+      "stderr_excerpt": ""
+    },
+    {
+      "name": "clue_recall_eval",
+      "command": "D:\\Anaconda\\python.exe scripts/evaluate_pipeline.py --gold tests/evaluation/manual_heldout_classification.jsonl --entities-gold tests/evaluation/manual_heldout_classification.jsonl --clues-gold tests/evaluation/manual_heldout_clues.jsonl --classification-granularity auto --dataset-kind manual_heldout_clue_gold --profile high_recall --min-clue-recall 0.95 --min-object-clue-recall 0.95 --max-clue-overgeneration-ratio 1.05 --output data/eval_manual_heldout_clue_recall_report.json",
+      "returncode": 0,
+      "status": "passed",
+      "elapsed_ms": 3582.38,
+      "stdout_excerpt": "{\n  \"status\": \"completed\",\n  \"dataset\": {\n    \"name\": \"blackagent_local_public_authorized_heldout_v1\",\n    \"kind\": \"manual_heldout_clue_gold\",\n    \"record_count\": 193,\n    \"is_heldout\": true,\n    \"annotation_sources\": [\n      {\n        \"value\": \"human_confirmed\",\n        \"count\": 193\n      }\n    ],\n    \"source_types\": [\n      {\n        \"value\": \"IM\",\n        \"count\": 89\n      },\n      {\n        \"value\": \"Social\",\n        \"count\": 71\n      },\n      {\n        \"value\": \"Forum\",\n        \"count\": 27\n      },\n      {\n        \"value\": \"Vertical\",\n        \"count\": 6\n      }\n    ],\n    \"source_names_top\": [\n      {\n        \"value\": \"tieba_blackgray_search\",\n        \"count\": 48\n      },\n      {\n        \"value\": \"x_blackgray_search\",\n        \"count\": 47\n      },\n      {\n        \"value\": \"tech_forum_blackgray_search\",\n        \"count\": 27\n      },\n      {\n        \"value\": \"telegram_blackgray_search\",\n        \"count\": 16\n      },\n      {\n        \"value\": \"seeding_note_blackgray_search\",\n        \"count\": 11\n      },\n      {\n        \"value\": \"telegram_public_delivery:alanghome\",\n        \"count\": 9\n      },\n      {\n        \"value\": \"telegram_public_delivery:thunderuserbot\",\n        \"count\": 9\n      },\n      {\n        \"value\": \"tieba_task_fraud_search\",\n        \"count\": 8\n      },\n      {\n        \"value\": \"short_video_blackgray_search\",\n        \"count\": 4\n      },\n      {\n        \"value\": \"crowdsourcing_task_blackgray_search\",\n        \"count\": 4\n      },\n      {\n        \"value\": \"telegram_public_delivery:Dragon_Userbot\",\n        \"count\": 3\n      },\n      {\n        \"value\": \"telegram_public_delivery:xieyihao89\",\n        \"count\": 1\n      }\n    ],\n    \"content_modalities\": [\n      {\n        \"value\": \"image_text\",\n        \"count\": 162\n      },\n      {\n        \"value\": \"text\",\n        \"count\": 31\n      }\n    ],\n    \"holdout_splits\": [\n      {\n        \"value\": \"p0_p2_2026_06\",\n        \"count\": 193\n      }\n    ],\n    \"claim_boundary\": \"Held-out/public-authorized reports prove only this local annotated split; they must not be described as full online generalization.\"\n  },\n  \"profile\": \"high_recall\",\n  \"record_count\": 193,\n  \"classification_record_count\": 193,\n  \"entity_record_count\": 193,\n  \"clue_record_count\": 24,\n  \"hard_negative_record_count\": 0,\n  \"classification\": {\n    \"overall\": {\n      \"precision\": 0.7528,\n      \"recall\": 0.8375,\n      \"f1\": 0.7929,\n      \"status\": \"completed\",\n      \"metric_note\": \"hierarchical_primary_secondary_f1\"\n    },\n    \"primary\": {\n      \"precision\": 0.8395,\n      \"recall\": 0.8947,\n      \"f1\": 0.8662,\n      \"tp\": 68,\n      \"fp\": 13,\n      \"fn\": 8,\n      \"status\": \"completed\"\n    },\n    \"secondary\": {\n      \"precision\": 0.8101,\n      \"recall\": 0.8421,\n      \"f1\": 0.8258,\n      \"status\": \"completed\",\n      \"metric_note\": \"secondary_gold_present\",\n      \"tp\": 64,\n      \"fp\": 15,\n      \"fn\": 12\n    },\n    \"hierarchical\": {\n      \"precision\": 0.7528,\n      \"recall\": 0.8375,\n      \"f1\": 0.7929,\n      \"status\": \"completed\",\n      \"metric_note\": \"primary_secondary_pair_f1\",\n      \"tp\": 67,\n      \"fp\": 22,\n      \"fn\": 13\n    },\n    \"confusion_analysis\": {\n      \"status\": \"completed\",\n      \"primary\": {\n        \"__extra_prediction__\": {\n          \"众包服务\": 5,\n          \"工具交易\": 3,\n          \"诈骗引流\": 2,\n          \"账号交易\": 3\n        },\n        \"__negative__\": {\n          \"__negative__\": 113\n        },\n        \"__no_gold__\": {\n          \"众包服务\": 1,\n          \"刷单作弊\": 3,\n          \"账号交易\": 2\n        },\n        \"众包服务\": {\n          \"众包服务\": 3\n        },\n        \"刷单作弊\": {\n          \"刷单作弊\": 2\n        },\n        \"工具交易\": {\n          \"众包服务\": 2,\n          \"工具交易\": 17,\n          \"诈骗引流\": 2\n        },\n        \"诈骗引流\": {\n          \"__missing_prediction__\": 3,\n          \"诈骗引流\": 19\n        },\n        \"账号交易\": {\n          \"__missing_prediction__\": 2,\n          \"账号交易\": 27\n        }\n      },\n      \"secondary\": {\n        \"__extra_prediction__\": {\n          \"代投服务\": 2,\n          \"低相关\": 5,\n          \"私域导流\": 2\n        },\n        \"__negative__\": {\n          \"__negati\n...[truncated]",
+      "stderr_excerpt": ""
+    },
+    {
+      "name": "evidence_pack",
+      "command": "D:\\Anaconda\\python.exe scripts/build_acceptance_evidence_pack.py --acceptance-pack data/collection_phase_multi_source_acceptance_pack.jsonl --cleaned data/acceptance_direct_final3_cleaned_corpus.jsonl --classifications data/acceptance_direct_final3_raw_classifications.jsonl --entities data/acceptance_direct_final3_raw_entities.jsonl --clues data/collection_phase_multi_source_clues.jsonl --graph-relations data/collection_phase_multi_source_graph_relations.jsonl --hydrated data/acceptance_direct_final3_hydrated_pages.jsonl --output data/collection_phase_multi_source_evidence_pack.jsonl --report-out data/collection_phase_multi_source_evidence_pack_report.json --clue-index-output data/collection_phase_multi_source_clue_evidence_index.json",
+      "returncode": 0,
+      "status": "passed",
+      "elapsed_ms": 1176.64,
+      "stdout_excerpt": "{\n  \"status\": \"completed\",\n  \"record_count\": 500,\n  \"output\": \"D:\\\\��һ\\\\BlackAgent\\\\data\\\\collection_phase_multi_source_evidence_pack.jsonl\",\n  \"completeness_counts\": {\n    \"has_raw_snippet\": 500,\n    \"has_clean_text\": 500,\n    \"has_inline_cleaning_text\": 500,\n    \"has_auditable_clean_text\": 500,\n    \"has_clue_chain\": 500\n  },\n  \"source_evidence_counts\": {\n    \"has_source_evidence\": 500,\n    \"has_raw_text\": 500,\n    \"has_raw_snippet\": 500,\n    \"has_source_url\": 500,\n    \"has_crawl_time\": 500,\n    \"has_publish_time\": 500,\n    \"has_raw_payload_uri\": 500,\n    \"raw_text_differs_from_raw_snippet\": 344,\n    \"has_capture_snapshot_uri\": 342\n  },\n  \"source_evidence_counts_by_category\": {\n    \"im_or_group\": {\n      \"has_source_evidence\": 344,\n      \"has_raw_text\": 344,\n      \"has_raw_snippet\": 344,\n      \"has_source_url\": 344,\n      \"has_crawl_time\": 344,\n      \"has_publish_time\": 344,\n      \"has_raw_payload_uri\": 344,\n      \"raw_text_differs_from_raw_snippet\": 342,\n      \"has_capture_snapshot_uri\": 342\n    },\n    \"social_or_forum\": {\n      \"has_source_evidence\": 135,\n      \"has_raw_text\": 135,\n      \"has_raw_snippet\": 135,\n      \"has_source_url\": 135,\n      \"has_crawl_time\": 135,\n      \"has_publish_time\": 135,\n      \"has_raw_payload_uri\": 135\n    },\n    \"vertical_or_technical\": {\n      \"has_source_evidence\": 21,\n      \"has_raw_text\": 21,\n      \"has_raw_snippet\": 21,\n      \"has_source_url\": 21,\n      \"has_crawl_time\": 21,\n      \"has_publish_time\": 21,\n      \"has_raw_payload_uri\": 21,\n      \"raw_text_differs_from_raw_snippet\": 2\n    }\n  },\n  \"review_status_counts\": {\n    \"no_cross_source_clue_yet\": 500\n  },\n  \"cleaning_source_counts\": {\n    \"evidence_pack_inline_cleaning\": 500\n  },\n  \"claim_boundary\": \"evidence_pack_joins_available_artifacts_missing_clues_are_not_claimed\"\n}\n",
+      "stderr_excerpt": ""
+    },
+    {
+      "name": "network_smoke",
+      "command": "D:\\Anaconda\\python.exe scripts/run_live_source_smoke.py --output data/source_live_smoke_report.json",
+      "returncode": 0,
+      "status": "passed",
+      "elapsed_ms": 1959.22,
+      "stdout_excerpt": "{\n  \"status\": \"completed\",\n  \"run_type\": \"live_authorized_loopback_collection_smoke\",\n  \"smoke_scope\": \"four_required_source_evidence_groups\",\n  \"network_attempted\": true,\n  \"loopback_only\": true,\n  \"authorization_enforced\": true,\n  \"unauthorized_probe_statuses\": {\n    \"im_or_group\": 401,\n    \"social_or_forum\": 401,\n    \"vertical_or_technical\": 401,\n    \"public_account_or_article\": 401\n  },\n  \"authorized_request_headers\": [\n    \"Authorization\"\n  ],\n  \"required_source_classes\": [\n    \"im_or_group\",\n    \"social_or_forum\",\n    \"vertical_or_technical\"\n  ],\n  \"covered_source_classes\": [\n    \"im_or_group\",\n    \"social_or_forum\",\n    \"vertical_or_technical\"\n  ],\n  \"required_smoke_groups\": [\n    \"im_or_group\",\n    \"public_account_or_article\",\n    \"social_or_forum\",\n    \"vertical_or_technical\"\n  ],\n  \"covered_smoke_groups\": [\n    \"im_or_group\",\n    \"public_account_or_article\",\n    \"social_or_forum\",\n    \"vertical_or_technical\"\n  ],\n  \"source_evidence_by_group\": {\n    \"im_or_group\": [\n      {\n        \"source\": \"loopback-authorized-im-feed\",\n        \"source_name\": \"loopback-authorized-im-feed\",\n        \"source_class\": \"im_or_group\",\n        \"smoke_group\": \"im_or_group\",\n        \"source_type\": \"IM\",\n        \"platform\": \"\",\n        \"url\": \"https://t.me/authorized_live_smoke/1\",\n        \"source_url\": \"https://t.me/authorized_live_smoke/1\",\n        \"hydrated_body\": \"\",\n        \"raw_body\": \"Ⱥ�ؽű������ϳ�����ϵ TG:live001����� https://live-smoke.example/a\",\n        \"raw_snippet\": \"Ⱥ�ؽű������ϳ�����ϵ TG:live001����� https://live-smoke.example/a\",\n        \"crawl_time\": \"2026-06-10T07:45:12.285482Z\",\n        \"capture_snapshot_uri\": \"loopback://snapshots/im-feed/message-1.json\",\n        \"raw_payload_uri\": \"http://127.0.0.1:64358/authorized-im-feed.json\",\n        \"cleaning_reason\": \"retained_after_authorized_keyword_filter\",\n        \"entity_source_snippets\": [\n          {\n            \"entity_type\": \"contact\",\n            \"raw_value\": \"live001\",\n            \"normalized_value\": \"Telegram:live001\",\n            \"source_snippet\": \"Ⱥ�ؽű������ϳ�����ϵ TG:live001����� https://live-smoke.example/a\"\n          },\n          {\n            \"entity_type\": \"url\",\n            \"raw_value\": \"https://live-smoke.example/a\",\n            \"normalized_value\": \"https://live-smoke.example/a\",\n            \"source_snippet\": \"Ⱥ�ؽű������ϳ�����ϵ TG:live001����� https://live-smoke.example/a\"\n          },\n          {\n            \"entity_type\": \"tool_name\",\n            \"raw_value\": \"Ⱥ��\",\n            \"normalized_value\": \"Ⱥ��\",\n            \"source_snippet\": \"Ⱥ�ؽű������ϳ�����ϵ TG:live001����� https://live-smo\"\n          },\n          {\n            \"entity_type\": \"tool_name\",\n            \"raw_value\": \"�ű�\",\n            \"normalized_value\": \"�ű�\",\n            \"source_snippet\": \"Ⱥ�ؽű������ϳ�����ϵ TG:live001����� https://live-smoke\"\n          },\n          {\n            \"entity_type\": \"tool_name\",\n            \"raw_value\": \"����\",\n            \"normalized_value\": \"����\",\n            \"source_snippet\": \"Ⱥ�ؽű������ϳ�����ϵ TG:live001����� https://live-smoke.e\"\n          }\n        ]\n      },\n      {\n        \"source\": \"loopback-authorized-im-feed\",\n        \"source_name\": \"loopback-authorized-im-feed\",\n        \"source_class\": \"im_or_group\",\n        \"smoke_group\": \"im_or_group\",\n        \"source_type\": \"IM\",\n        \"platform\": \"\",\n        \"url\": \"https://t.me/authorized_live_smoke/2\",\n        \"source_url\": \"https://t.me/authorized_live_smoke/2\",\n        \"hydrated_body\": \"\",\n        \"raw_body\": \"Ⱥ�ؽű������ϳ�����ϵ TG:live001����� https://live-smoke.example/a\",\n        \"raw_snippet\": \"Ⱥ�ؽű������ϳ�����ϵ TG:live001����� https://live-smoke.example/a\",\n        \"crawl_time\": \"2026-06-10T07:45:12.304465Z\",\n        \"capture_snapshot_uri\": \"loopback://snapshots/im-feed/message-2.json\",\n        \"raw_payload_uri\": \"http://127.0.0.1:64358/authorized-im-feed.json\",\n        \"cleaning_reason\": \"retained_after_authorized_keyword_filter\",\n        \"entity_source_snippets\": [\n          {\n            \"entity_type\": \"contact\",\n\n...[truncated]",
+      "stderr_excerpt": ""
+    }
+  ],
+  "claim_boundary": "This summary is the only final acceptance scope for the current delivery artifacts. It does not claim online production generalization or live X/TG coverage unless credentialed live artifacts are attached and listed as authoritative sources.",
+  "scale_benchmark": {
+    "status": "completed",
+    "run_type": "scale_benchmark_core_routing",
+    "profile": "fast",
+    "batch_size": 1000,
+    "default_defense_scales": [
+      1000,
+      10000,
+      100000
+    ],
+    "scenario_count": 2,
+    "sample_sizes": [
+      1000,
+      10000
+    ],
+    "max_sample_size": 10000,
+    "estimated_llm_cost_usd_total": 0.0,
+    "claim_boundary": "Benchmark is a deterministic local throughput and routing-cost proof covering classification, entity extraction, and model-routing token budget. It is not a live LLM latency or live LLM cost proof, and intentionally excludes external live collection and entity-graph aggregation."
+  },
+  "ocr_hardset": {
+    "status": "completed",
+    "run_type": "build_ocr_image_text_hardset",
+    "record_count": 20,
+    "ocr_quality_metrics": {
+      "evaluated_count": 20,
+      "exact_match_count": 0,
+      "exact_match_rate": 0.0,
+      "substring_match_count": 20,
+      "substring_match_rate": 1.0
+    },
+    "image_kind_coverage": {
+      "required_kinds": [
+        "chat",
+        "poster",
+        "qr",
+        "screenshot"
+      ],
+      "present_kinds": [
+        "chat",
+        "poster",
+        "qr",
+        "screenshot"
+      ],
+      "missing_kinds": [],
+      "complete": true
+    },
+    "real_scene_assessment": {
+      "target_range": {
+        "min": 30,
+        "max": 50
+      },
+      "authorized_manifest_count": 0,
+      "coverage_status": "not_real_scene_manifest",
+      "image_kind_counts": {},
+      "image_kind_coverage": {
+        "required_kinds": [
+          "chat",
+          "poster",
+          "qr",
+          "screenshot"
+        ],
+        "present_kinds": [],
+        "missing_kinds": [
+          "chat",
+          "poster",
+          "qr",
+          "screenshot"
+        ],
+        "complete": false
+      },
+      "ocr_quality_metrics": {
+        "evaluated_count": 0,
+        "exact_match_count": 0,
+        "exact_match_rate": 0.0,
+        "substring_match_count": 0,
+        "substring_match_rate": 0.0
+      },
+      "entity_extraction_impact": {
+        "expected_entity_count": 0,
+        "ocr_supported_entity_count": 0,
+        "missing_entity_count": 0,
+        "missing_entity_rate": 0.0
+      },
+      "failure_samples": [],
+      "claim_boundary": "Generated PBM hardset is not real-scene proof; manifest rows are only as authorized as the supplied manifest."
+    },
+    "claim_boundary": "This hard set validates the image-text contract and deterministic pixel OCR path; production OCR quality still depends on the injected external engine and separately authorized screenshots/posters."
+  },
+  "authorized_source_rerun": {
+    "status": "completed",
+    "row_count": 80,
+    "real_external_row_count": 80,
+    "loopback_row_count": 0,
+    "credential_boundary": {
+      "has_real_external_source": true,
+      "loopback_only": false,
+      "credentialed_source_names": [
+        "loopback-authorized-feed",
+        "loopback-authorized-forum-feed",
+        "loopback-authorized-im-feed",
+        "loopback-authorized-public-account-article-feed",
+        "loopback-authorized-vertical-feed"
+      ],
+      "credential_fields_present": [
+        "Authorization",
+        "authorization_enforced",
+        "authorization_statement",
+        "authorized_request_headers"
+      ],
+      "redacted_credential_fields": [
+        "Authorization",
+        "authorization_enforced",
+        "authorization_statement",
+        "authorized_request_headers"
+      ],
+      "claim_boundary": "Credential values are never stored in this artifact; only field names are listed. Rows marked loopback or localhost are excluded from real external source claims."
+    },
+    "source_coverage": {
+      "covered_groups": {
+        "real_telegram": 22,
+        "public_account_or_article": 20,
+        "secondhand_market": 3,
+        "crowdsourcing_platform": 6,
+        "im_or_group": 20,
+        "social_or_forum": 47,
+        "vertical_or_technical": 6,
+        "other_authorized": 7,
+        "public_account_article": 20
+      },
+      "all_group_counts": {
+        "real_telegram": 22,
+        "public_account_or_article": 20,
+        "secondhand_market": 3,
+        "crowdsourcing_platform": 6,
+        "im_or_group": 20,
+        "social_or_forum": 47,
+        "vertical_or_technical": 6,
+        "other_authorized": 7,
+        "public_account_article": 20
+      },
+      "loopback_group_counts": {
+        "real_telegram": 0,
+        "public_account_or_article": 0,
+        "secondhand_market": 0,
+        "crowdsourcing_platform": 0,
+        "im_or_group": 0,
+        "social_or_forum": 0,
+        "vertical_or_technical": 0,
+        "other_authorized": 0,
+        "public_account_article": 0
+      },
+      "source_name_counts": {
+        "crowdsourcing_task_blackgray_search": 2,
+        "darkweb_blackgray_search": 1,
+        "direct_crowdsourcing_fiverr_search": 1,
+        "direct_crowdsourcing_guru_search": 1,
+        "direct_crowdsourcing_search": 1,
+        "direct_crowdsourcing_upwork_search": 1,
+        "direct_public_article_broad_search": 7,
+        "direct_public_article_news_blog_search": 6,
+        "direct_public_article_search": 7,
+        "direct_secondhand_epicnpc_search": 3,
+        "direct_technical_cn_blog_search": 1,
+        "direct_technical_forum_search": 2,
+        "direct_technical_github_discussions_search": 1,
+        "direct_technical_github_search": 2,
+        "direct_technical_reddit_search": 1,
+        "direct_technical_stackoverflow_search": 2,
+        "direct_technical_v2ex_broad_search": 1,
+        "seeding_note_blackgray_search": 2,
+        "short_video_blackgray_search": 3,
+        "tech_forum_blackgray_search": 2,
+        "telegram_blackgray_search": 1,
+        "telegram_public_delivery:AccountOps_Lab": 1,
+        "telegram_public_delivery:aidedzhou5": 1,
+        "telegram_public_delivery:alanghome": 1,
+        "telegram_public_delivery:amy531com": 1,
+        "telegram_public_delivery:chaojiyun88": 1,
+        "telegram_public_delivery:chuanghuikeji02": 1,
+        "telegram_public_delivery:haizhuma": 1,
+        "telegram_public_delivery:hao_dfyJm": 1,
+        "telegram_public_delivery:haoshangmashang": 1,
+        "telegram_public_delivery:huzige1916": 1,
+        "telegram_public_delivery:inoprjiema": 1,
+        "telegram_public_delivery:jiema010101": 1,
+        "telegram_public_delivery:jymhpd": 1,
+        "telegram_public_delivery:quannenghao": 1,
+        "telegram_public_delivery:rkg_automation": 1,
+        "telegram_public_delivery:sifangsms": 1,
+        "telegram_public_delivery:thunderuserbot": 1,
+        "telegram_public_delivery:xthaoorg": 1,
+        "telegram_public_delivery:yeziyui": 1,
+        "tieba_account_trade_search": 2,
+        "tieba_blackgray_search": 3,
+        "tieba_fraud_traffic_search": 2,
+        "tieba_task_fraud_search": 2,
+        "x_account_trade_search": 2,
+        "x_blackgray_search": 2
+      },
+      "real_external_source_names": [
+        "crowdsourcing_task_blackgray_search",
+        "darkweb_blackgray_search",
+        "direct_crowdsourcing_fiverr_search",
+        "direct_crowdsourcing_guru_search",
+        "direct_crowdsourcing_search",
+        "direct_crowdsourcing_upwork_search",
+        "direct_public_article_broad_search",
+        "direct_public_article_news_blog_search",
+        "direct_public_article_search",
+        "direct_secondhand_epicnpc_search",
+        "direct_technical_cn_blog_search",
+        "direct_technical_forum_search",
+        "direct_technical_github_discussions_search",
+        "direct_technical_github_search",
+        "direct_technical_reddit_search",
+        "direct_technical_stackoverflow_search",
+        "direct_technical_v2ex_broad_search",
+        "seeding_note_blackgray_search",
+        "short_video_blackgray_search",
+        "tech_forum_blackgray_search",
+        "telegram_blackgray_search",
+        "telegram_public_delivery:AccountOps_Lab",
+        "telegram_public_delivery:aidedzhou5",
+        "telegram_public_delivery:alanghome",
+        "telegram_public_delivery:amy531com",
+        "telegram_public_delivery:chaojiyun88",
+        "telegram_public_delivery:chuanghuikeji02",
+        "telegram_public_delivery:haizhuma",
+        "telegram_public_delivery:hao_dfyJm",
+        "telegram_public_delivery:haoshangmashang",
+        "telegram_public_delivery:huzige1916",
+        "telegram_public_delivery:inoprjiema",
+        "telegram_public_delivery:jiema010101",
+        "telegram_public_delivery:jymhpd",
+        "telegram_public_delivery:quannenghao",
+        "telegram_public_delivery:rkg_automation",
+        "telegram_public_delivery:sifangsms",
+        "telegram_public_delivery:thunderuserbot",
+        "telegram_public_delivery:xthaoorg",
+        "telegram_public_delivery:yeziyui",
+        "tieba_account_trade_search",
+        "tieba_blackgray_search",
+        "tieba_fraud_traffic_search",
+        "tieba_task_fraud_search",
+        "x_account_trade_search",
+        "x_blackgray_search"
+      ],
+      "loopback_source_names": []
+    },
+    "snapshot_coverage": {
+      "capture_snapshot_uri_count": 80,
+      "raw_snapshot_uri_count": 80,
+      "raw_payload_uri_count": 80,
+      "missing_snapshot_count": 0,
+      "rows_missing_snapshots": []
+    },
+    "failure_summary": {
+      "by_reason": {},
+      "failed_source_names": [],
+      "failed_source_count": 0
+    },
+    "collection_window": {
+      "collection_started_at": "",
+      "collection_finished_at": "",
+      "crawl_time_min": "2026-05-26T02:27:48.950089Z",
+      "crawl_time_max": "2026-06-08T17:11:40.307169Z",
+      "generated_at": "2026-06-09T20:32:27.031321+00:00"
+    },
+    "claim_boundary": "Authorized rerun pack contains at least one non-loopback external source row; it does not claim loopback-only demos as real external platform coverage.",
+    "artifact_pair_complete": true,
+    "artifact_paths": {
+      "report": "data/authorized_source_rerun_pack_report.json",
+      "jsonl": "data/authorized_source_rerun_pack.jsonl"
+    }
+  },
+  "gate_failures": []
+}

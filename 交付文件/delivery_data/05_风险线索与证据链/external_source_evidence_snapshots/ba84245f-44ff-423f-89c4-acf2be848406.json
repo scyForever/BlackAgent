@@ -1,0 +1,8 @@
+{
+  "trace_id": "ba84245f-44ff-423f-89c4-acf2be848406",
+  "source_name": "tieba_blackgray_search",
+  "source_url": "https://tieba.baidu.com/p/9323021539",
+  "crawl_time": "2026-05-26T02:28:07.201469Z",
+  "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Atieba.baidu.com%2Fp%20%E4%BA%91%E7%9F%AD%E4%BF%A1",
+  "content_text": "云闪付切换设备需付费短信验证，哪些软件也如此？ Image 8tieba.baidu.com/p/9323021539 云闪付app切换设备登录还要用户发短信后才发验证码，算什么水平？ 短信费用谁报销哈？ 有无数的安全验证机制，为什么要选择这种变相收费的呢？（当然获利的是第三方通信运营商~） 还有哪些软件也是这样的？"
+}

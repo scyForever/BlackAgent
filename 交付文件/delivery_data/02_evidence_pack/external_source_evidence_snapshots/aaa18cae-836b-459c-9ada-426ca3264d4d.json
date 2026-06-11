@@ -1,9 +1,0 @@
-{
-  "trace_id": "aaa18cae-836b-459c-9ada-426ca3264d4d",
-  "source_name": "direct_technical_stackoverflow_search",
-  "source_url": "https://baike.baidu.com/item/automation/1915084",
-  "crawl_time": "2026-06-08T17:05:06.910850Z",
-  "raw_payload_uri": "https://www.bing.com/search?q=site%3Astackoverflow.com%2Fquestions%20automation",
-  "original_capture_snapshot_uri": "",
-  "content_text": "baidu.com https://baike.baidu.com › item › automation automation是英语名词，不可数，发音为英式/ˌɔː.təˈmeɪ.ʃən/、美式/ˌɑː.t̬əˈmeɪ.ʃən/，其核心定义为“the use of machines and …"
-}

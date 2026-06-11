@@ -1,8 +1,0 @@
-{
-  "trace_id": "e9a93f66-4c25-41e8-9c57-97a4a6917d23",
-  "source_name": "direct_technical_reddit_search",
-  "source_url": "https://cloud.tencent.com/developer/article/2537037",
-  "crawl_time": "2026-06-08T17:06:48.935523Z",
-  "raw_payload_uri": "https://www.bing.com/search?q=site%3Areddit.com%2Fr%20selenium%20automation",
-  "content_text": "tencent.com https://cloud.tencent.com › developer › article 2025年7月2日 · 介绍Selenium环境安装、基础用法，包括初始化浏览器、访问页面、设置大小等，还讲解定位元素、基本操作、无界面启动及三种等待方式，涵盖点击、输入等操作与不同等待机制。"
-}

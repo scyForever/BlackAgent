@@ -1,8 +1,0 @@
-{
-  "trace_id": "d1ee31bd-90ef-4964-a99e-8e12e0cdfb7f",
-  "source_name": "tech_forum_blackgray_search",
-  "source_url": "https://www.v2ex.com/t/370517",
-  "crawl_time": "2026-05-26T02:31:08.195315Z",
-  "raw_payload_uri": "http://r.jina.ai/http://html.duckduckgo.com/html/?q=site%3Awww.v2ex.com%20%E7%BE%A4%E6%8E%A7",
-  "content_text": "有什么手机群控解决方案？ - V2ex Image 6www.v2ex.com/t/370517 大概需求是用一台 PC 开上百个手机模拟器，每个模拟器设定不同的 GPS 定位。 每个模拟器对应一部真实手机，带 sim 卡的，可以携带外出，回来插 USB 同步。 目前在用逍遥，比较吃 GPU，而且不太方便。 不知道有没有更好的方案，或者已经有脚本实现了在逍遥上群控？"
-}

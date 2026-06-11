@@ -1,9 +1,0 @@
-{
-  "trace_id": "0bb9e9ad-db30-4bff-89af-c8e00d2b87f5",
-  "source_name": "direct_crowdsourcing_upwork_search",
-  "source_url": "https://github.com/itgoyo/TelegramBot",
-  "crawl_time": "2026-06-08T17:10:34.333344Z",
-  "raw_payload_uri": "https://www.bing.com/search?q=site%3Awww.upwork.com%2Ffreelance-jobs%20telegram%20bot",
-  "original_capture_snapshot_uri": "",
-  "content_text": "github.com https://github.com › itgoyo › TelegramBot 持续收集更新全网最全最有趣的Telegram机器人🤖大全，相信总有你需要的一款机器人~. Contribute to itgoyo/TelegramBot …"
-}
