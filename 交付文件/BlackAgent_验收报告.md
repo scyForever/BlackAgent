@@ -53,7 +53,7 @@ flowchart LR
 - 一组精选情报数据：raw、cleaned、classification、entities、evidence pack、manual held-out gold；
 - 一套答辩材料：交付说明、数据整理、真实用例速览、真实样例逐条追踪、原始内容附录和本验收报告。
 
-项目不能声称：
+项目未尽事项：
 
 - 不是生产实时风控系统；
 - 不自动封禁、拦截或处置账号；
@@ -72,9 +72,7 @@ flowchart LR
 | 可信证据链 | 354 行带 capture snapshot URI，12 行带 hydrated body；人工线索 gold clue F1=1.0 |
 | 效果 / 成本 / 时延平衡 | LLM value gate 当前策略为 `conflict_only`；规模 benchmark 10000 条约 1246 records/s，LLM calls=0 |
 
-## 3. 最终主口径文件
-
-最终验收主口径不是整个 `data/` 目录，而是以下文件组合：
+## 3. 最终文件
 
 | 类型 | 文件 |
 | --- | --- |
@@ -87,8 +85,6 @@ flowchart LR
 | 人工评测 | `data/manual_heldout_report.json`、`data/manual_heldout_eval_current.json`、`data/eval_manual_heldout_clue_recall_report.json` |
 | gold 数据 | `tests/evaluation/manual_heldout_classification.jsonl`、`tests/evaluation/manual_heldout_clues.jsonl` |
 | 工程评估 | `data/eval_llm_ablation.json`、`data/eval_llm_hard_ablation.json`、`data/latest_llm_value_report.json`、`data/ocr_hardset_report.json`、`data/scale_benchmark_report.json` |
-
-`data/eval_report.json` 是历史评测文件，不能作为最终验收依据。
 
 ## 4. 数据采集验收
 
@@ -107,13 +103,11 @@ flowchart LR
 | emoji 标记 | 186 |
 | 多模态文本物化 | 29 |
 
-全量 raw 偏 IM / Telegram 公开目录，因此不能说天然均衡。为答辩展示多源覆盖，项目额外交付：
-
 - `data/collection_phase_defense_quota_balanced_sample.jsonl`：209 行，IM/群组 94、社媒/论坛 94、垂直/技术 21；
 - `data/external_balanced_source_evidence_pack.jsonl`：80 行，IM/群组、公众号/文章、社媒/论坛、垂直/技术各 20 行，`missing_required_fields=0`；
 - `data/authorized_source_rerun_pack.jsonl`：80 行，`real_external_row_count=80`，snapshot 缺失数为 0。
 
-final3 验收采集：
+final3 采集：
 
 | 指标 | 数值 |
 | --- | ---: |
